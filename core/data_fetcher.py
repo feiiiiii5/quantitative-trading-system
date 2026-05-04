@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -20,29 +21,50 @@ from typing import Any, Optional
 import aiohttp
 import numpy as np
 import pandas as pd
+from urllib.parse import urlencode
 
 from core.database import SQLiteStore, get_db, ThreadSafeLRU
 from core.market_detector import MarketDetector
 
 logger = logging.getLogger(__name__)
 
+try:
+    import akshare as ak  # noqa: F811
+except ImportError:
+    ak = None
+
+try:
+    import baostock as bs  # noqa: F811
+except ImportError:
+    bs = None
+
 _aiohttp_session: Optional[aiohttp.ClientSession] = None
+_session_lock = asyncio.Lock()
 
 
 async def get_aiohttp_session() -> aiohttp.ClientSession:
     global _aiohttp_session
     if _aiohttp_session is None or _aiohttp_session.closed:
-        connector = aiohttp.TCPConnector(
-            limit=100,
-            ttl_dns_cache=300,
-            use_dns_cache=True,
-        )
-        timeout = aiohttp.ClientTimeout(total=8, connect=3)
-        _aiohttp_session = aiohttp.ClientSession(
-            connector=connector,
-            timeout=timeout,
-        )
+        async with _session_lock:
+            if _aiohttp_session is None or _aiohttp_session.closed:
+                connector = aiohttp.TCPConnector(
+                    limit=100,
+                    ttl_dns_cache=300,
+                    use_dns_cache=True,
+                )
+                timeout = aiohttp.ClientTimeout(total=8, connect=3)
+                _aiohttp_session = aiohttp.ClientSession(
+                    connector=connector,
+                    timeout=timeout,
+                )
     return _aiohttp_session
+
+
+async def close_aiohttp_session() -> None:
+    global _aiohttp_session
+    if _aiohttp_session is not None and not _aiohttp_session.closed:
+        await _aiohttp_session.close()
+        _aiohttp_session = None
 
 
 async def async_http_get(url: str, headers: Optional[dict] = None) -> Optional[str]:
@@ -76,7 +98,6 @@ async def http_get_json(
         params = {}
     if use_jsonp:
         params["cb"] = "jQuery_callback"
-    from urllib.parse import urlencode
     full_url = f"{url}?{urlencode(params)}" if params else url
     try:
         text = await async_http_get(full_url, headers={
@@ -89,7 +110,7 @@ async def http_get_json(
     if not text:
         return None
     if use_jsonp:
-        m = re.search(r'jQuery_callback\((.*)\)', text, re.DOTALL)
+        m = re.search(r'jQuery_callback\((.+)\)\s*;?\s*$', text, re.DOTALL)
         if m:
             text = m.group(1)
         else:
@@ -104,22 +125,13 @@ async def http_get_json(
 
 def _http_get(url: str, headers: Optional[dict] = None) -> Optional[str]:
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import requests
-            resp = requests.get(url, headers=headers or {}, timeout=8)
-            if resp.status_code == 200:
-                return resp.text
-            return None
-        return loop.run_until_complete(async_http_get(url, headers))
-    except Exception:
-        try:
-            import requests
-            resp = requests.get(url, headers=headers or {}, timeout=8)
-            if resp.status_code == 200:
-                return resp.text
-        except Exception as e:
-            logger.debug(f"HTTP GET fallback error: {e}")
+        import requests
+        resp = requests.get(url, headers=headers or {}, timeout=8)
+        if resp.status_code == 200:
+            return resp.text
+        return None
+    except Exception as e:
+        logger.debug(f"HTTP GET fallback error for {url}: {e}")
     return None
 
 
@@ -166,7 +178,14 @@ _indicator_cache = ThreadSafeLRU(maxsize=300, ttl=300)
 _financial_cache = ThreadSafeLRU(maxsize=200, ttl=3600)
 _northbound_cache = ThreadSafeLRU(maxsize=50, ttl=60)
 _hot_symbols_cache: list[str] = []
-_hot_symbols_lock = asyncio.Lock()
+_hot_symbols_lock: Optional[asyncio.Lock] = None
+
+
+def _get_hot_symbols_lock() -> asyncio.Lock:
+    global _hot_symbols_lock
+    if _hot_symbols_lock is None:
+        _hot_symbols_lock = asyncio.Lock()
+    return _hot_symbols_lock
 
 CACHE_TTL_TIERS = {
     "realtime": 8,
@@ -238,7 +257,8 @@ class DataSourceHealthMonitor:
                         score = success_rate * 0.6 + latency_score * 0.4
                     else:
                         score = 0.5
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Source ranking error for {name}: {e}")
                     score = 0.5
             scored.append((name, score))
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -649,7 +669,8 @@ class EastMoneySource:
     @staticmethod
     async def fetch_north_bound_flow(date=None) -> Optional[dict]:
         try:
-            import akshare as ak
+            if ak is None:
+                return None
             df_sh = await asyncio.to_thread(ak.stock_hsgt_hist_em, symbol="沪股通")
             df_sz = await asyncio.to_thread(ak.stock_hsgt_hist_em, symbol="深股通")
             valid_sh = df_sh.dropna(subset=["当日成交净买额"]) if df_sh is not None and len(df_sh) > 0 else pd.DataFrame()
@@ -843,30 +864,52 @@ class CircuitBreaker:
         self.last_failure_time = 0.0
         self.half_open_calls = 0
         self.half_open_max = half_open_calls
+        self._lock = asyncio.Lock()
+
+    @staticmethod
+    def _is_valid_result(result) -> bool:
+        if result is None:
+            return False
+        if isinstance(result, pd.DataFrame):
+            return not result.empty
+        if isinstance(result, dict):
+            return len(result) > 0
+        if isinstance(result, (list, tuple)):
+            return len(result) > 0
+        return True
 
     async def call(self, func, *args, **kwargs):
-        if self.state == "OPEN":
-            if time.time() - self.last_failure_time > self.timeout:
-                self.state = "HALF_OPEN"
-                self.half_open_calls = 0
-            else:
-                raise Exception(f"Circuit breaker OPEN for {getattr(func, '__name__', 'source')}")
+        async with self._lock:
+            if self.state == "OPEN":
+                if time.time() - self.last_failure_time > self.timeout:
+                    self.state = "HALF_OPEN"
+                    self.half_open_calls = 0
+                else:
+                    raise Exception(f"Circuit breaker OPEN for {getattr(func, '__name__', 'source')}")
 
         try:
             result = await func(*args, **kwargs)
-            if self.state == "HALF_OPEN":
-                self.half_open_calls += 1
-                if self.half_open_calls >= self.half_open_max:
-                    self.state = "CLOSED"
+            async with self._lock:
+                if self.state == "HALF_OPEN":
+                    self.half_open_calls += 1
+                    if self.half_open_calls >= self.half_open_max:
+                        self.state = "CLOSED"
+                        self.failure_count = 0
+                elif self._is_valid_result(result):
                     self.failure_count = 0
-            elif result is not None:
-                self.failure_count = 0
+                else:
+                    self.failure_count += 1
+                    self.last_failure_time = time.time()
+                    if self.failure_count >= self.failure_threshold:
+                        self.state = "OPEN"
             return result
-        except Exception:
-            self.failure_count += 1
-            self.last_failure_time = time.time()
-            if self.failure_count >= self.failure_threshold:
-                self.state = "OPEN"
+        except Exception as e:
+            logger.debug(f"CircuitBreaker call error: {e}")
+            async with self._lock:
+                self.failure_count += 1
+                self.last_failure_time = time.time()
+                if self.failure_count >= self.failure_threshold:
+                    self.state = "OPEN"
             raise
 
 
@@ -879,7 +922,7 @@ def validate_realtime_data(data: dict, symbol: str) -> bool:
     ts = data.get("timestamp", time.time())
     try:
         ts_date = datetime.fromtimestamp(float(ts)).date()
-    except Exception:
+    except (ValueError, TypeError, OSError):
         ts_date = datetime.now().date()
     ok = price > 0 and -20 <= pct <= 20 and volume >= 0 and ts_date >= (datetime.now().date() - timedelta(days=1))
     if not ok:
@@ -920,7 +963,8 @@ class AKShareSource:
     def _sync_fetch_history(symbol: str, market: str, kline_type: str = "daily",
                             adjust: str = "", period: str = "1y") -> Optional[pd.DataFrame]:
         try:
-            import akshare as ak
+            if ak is None:
+                return None
             if market == "A":
                 period_map = {"daily": "daily", "weekly": "weekly", "monthly": "monthly"}
                 adj_map = {"qfq": "qfq", "hfq": "hfq", "": ""}
@@ -977,7 +1021,8 @@ class AKShareSource:
     @staticmethod
     def _sync_fetch_fundamentals(symbol: str, market: str) -> Optional[dict]:
         try:
-            import akshare as ak
+            if ak is None:
+                return None
             if market != "A":
                 return None
             df = ak.stock_individual_info_em(symbol=symbol)
@@ -1014,7 +1059,8 @@ class BaoStockSource:
                             adjust: str = "", start_date: str = "",
                             end_date: str = "") -> Optional[pd.DataFrame]:
         try:
-            import baostock as bs
+            if bs is None:
+                return None
             lg = bs.login()
             if lg.error_code != "0":
                 return None
@@ -1064,8 +1110,8 @@ class BaoStockSource:
             logger.debug(f"BaoStock sync error: {e}")
             try:
                 bs.logout()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"BaoStock logout failed: {e}")
             return None
 
 
@@ -1119,8 +1165,8 @@ class SmartDataFetcher:
                         from core.metrics import metrics
                         metrics.increment("data_fetch_success", tags={"source": source_name, "type": "realtime"})
                         metrics.timer("data_fetch_latency", latency, tags={"source": source_name, "type": "realtime"})
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Metrics recording failed: {e}")
                     return result
                 self._health.record_request(source_name, "realtime", False, latency)
             except Exception as e:
@@ -1162,8 +1208,8 @@ class SmartDataFetcher:
                             rt = await self.get_realtime(s, m)
                             if rt:
                                 results[s] = rt
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Batch realtime fetch failed for {s}: {e}")
 
         if other_symbols:
             tasks = [self.get_realtime(s, m) for s, m in other_symbols]
@@ -1222,7 +1268,7 @@ class SmartDataFetcher:
                 )
             done, pending = await asyncio.wait(
                 tasks.values(),
-                timeout=3,
+                timeout=8,
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for p in pending:
@@ -1235,8 +1281,8 @@ class SmartDataFetcher:
                         r = task.result()
                         if r is not None and not r.empty:
                             results[src] = r
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"History source task failed: {e}")
 
             if len(results) >= 2:
                 # 结果投票：若两源数据差异>5%，以成交量更大的为准
@@ -1303,8 +1349,8 @@ class SmartDataFetcher:
                     from core.metrics import metrics
                     metrics.increment("data_fetch_success", tags={"source": source_name, "type": "history"})
                     metrics.timer("data_fetch_latency", latency, tags={"source": source_name, "type": "history"})
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"History metrics recording failed: {e}")
                 return result
             self._health.record_request(source_name, "history", False, latency)
         except Exception as e:
@@ -1505,8 +1551,8 @@ class SmartDataFetcher:
                                 northbound[name] = amount_val
                             except (ValueError, IndexError):
                                 pass
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Northbound flow fetch failed: {e}")
 
         async def fetch_temperature():
             try:
@@ -1523,7 +1569,8 @@ class SmartDataFetcher:
                     temperature["value"] = round(up_count / total * 100, 1)
                 else:
                     temperature["value"] = 50.0
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Temperature calculation failed: {e}")
                 temperature["value"] = 50.0
 
         try:
@@ -1568,12 +1615,13 @@ class SmartDataFetcher:
     async def refresh_hot_symbols_cache(self) -> None:
         global _hot_symbols_cache
         try:
-            import akshare as ak
+            if ak is None:
+                return
             df = await asyncio.to_thread(ak.stock_zh_a_spot_em)
             if df is not None and not df.empty:
                 df = df.sort_values("成交额", ascending=False) if "成交额" in df.columns else df
                 symbols = df["代码"].tolist()[:50] if "代码" in df.columns else []
-                async with _hot_symbols_lock:
+                async with _get_hot_symbols_lock():
                     _hot_symbols_cache = symbols
         except Exception as e:
             logger.debug(f"Refresh hot symbols error: {e}")
@@ -1636,10 +1684,13 @@ class SmartDataFetcher:
 
 
 _shared_fetcher: Optional[SmartDataFetcher] = None
+_shared_fetcher_lock = threading.Lock()
 
 
 def get_fetcher() -> SmartDataFetcher:
     global _shared_fetcher
     if _shared_fetcher is None:
-        _shared_fetcher = SmartDataFetcher()
+        with _shared_fetcher_lock:
+            if _shared_fetcher is None:
+                _shared_fetcher = SmartDataFetcher()
     return _shared_fetcher

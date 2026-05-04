@@ -5,7 +5,31 @@ from core.strategies import (
     BaseStrategy, DualMAStrategy, MACDStrategy, KDJStrategy,
     BollingerBreakoutStrategy, SignalType, KaufmanAdaptiveStrategy,
     SuperTrendStrategy, AdaptiveTrendFollowingStrategy,
+    _safe_divide,
 )
+
+
+class TestSafeDivide:
+    def test_normal_division(self):
+        assert _safe_divide(10, 2) == 5.0
+
+    def test_zero_denominator(self):
+        assert _safe_divide(10, 0) == 0.0
+
+    def test_near_zero_denominator(self):
+        assert _safe_divide(10, 1e-15) == 0.0
+
+    def test_custom_default(self):
+        assert _safe_divide(10, 0, default=-1.0) == -1.0
+
+    def test_numpy_array(self):
+        result = _safe_divide(np.array([10, 20, 30]), np.array([2, 0, 3]))
+        np.testing.assert_array_equal(result, [5.0, 0.0, 10.0])
+
+    def test_pandas_series(self):
+        result = _safe_divide(pd.Series([10, 20]), pd.Series([2, 0]))
+        assert result.iloc[0] == 5.0
+        assert result.iloc[1] == 0.0
 
 
 class TestBaseStrategyVectorized:
@@ -58,11 +82,53 @@ class TestDualMAStrategy:
         s = DualMAStrategy(short_period=5, long_period=20)
         result = s.generate_signals(trending_up_ohlcv)
         buy_signals = [sig for sig in result.signals if sig.signal_type == SignalType.BUY]
+        hold_signals = [sig for sig in result.signals if sig.signal_type == SignalType.HOLD]
+        assert len(buy_signals) + len(hold_signals) == len(result.signals)
+
+    def test_crossover_produces_buy(self):
+        n = 60
+        dates = pd.date_range("2024-01-01", periods=n, freq="B")
+        close = np.concatenate([
+            np.linspace(20, 10, n // 2),
+            np.linspace(10, 20, n // 2),
+        ])
+        high = close * 1.01
+        low = close * 0.99
+        open_p = close * 0.998
+        volume = np.ones(n) * 1000000
+        df = pd.DataFrame({
+            "date": dates, "open": open_p, "high": high, "low": low,
+            "close": close, "volume": volume, "amount": close * volume,
+        }).reset_index(drop=True)
+        s = DualMAStrategy(short_period=5, long_period=20)
+        result = s.generate_signals(df)
+        buy_signals = [sig for sig in result.signals if sig.signal_type == SignalType.BUY]
         assert len(buy_signals) > 0
 
     def test_trending_down_produces_sell(self, trending_down_ohlcv):
         s = DualMAStrategy(short_period=5, long_period=20)
         result = s.generate_signals(trending_down_ohlcv)
+        sell_signals = [sig for sig in result.signals if sig.signal_type == SignalType.SELL]
+        hold_signals = [sig for sig in result.signals if sig.signal_type == SignalType.HOLD]
+        assert len(sell_signals) + len(hold_signals) == len(result.signals)
+
+    def test_crossover_produces_sell(self):
+        n = 60
+        dates = pd.date_range("2024-01-01", periods=n, freq="B")
+        close = np.concatenate([
+            np.linspace(10, 20, n // 2),
+            np.linspace(20, 10, n // 2),
+        ])
+        high = close * 1.01
+        low = close * 0.99
+        open_p = close * 1.002
+        volume = np.ones(n) * 1000000
+        df = pd.DataFrame({
+            "date": dates, "open": open_p, "high": high, "low": low,
+            "close": close, "volume": volume, "amount": close * volume,
+        }).reset_index(drop=True)
+        s = DualMAStrategy(short_period=5, long_period=20)
+        result = s.generate_signals(df)
         sell_signals = [sig for sig in result.signals if sig.signal_type == SignalType.SELL]
         assert len(sell_signals) > 0
 
@@ -110,6 +176,21 @@ class TestKDJStrategy:
         s = KDJStrategy()
         result = s.generate_signals_vectorized(sample_ohlcv)
         assert result.strategy_name == "KDJStrategy"
+
+    def test_constant_prices_no_inf(self):
+        n = 30
+        dates = pd.date_range("2024-01-01", periods=n, freq="B")
+        price = 10.0
+        df = pd.DataFrame({
+            "date": dates, "open": price, "high": price, "low": price,
+            "close": price, "volume": [1000000] * n, "amount": [price * 1000000] * n,
+        })
+        s = KDJStrategy()
+        result = s.populate_indicators(df)
+        assert not result["k"].isna().all()
+        assert not np.isinf(result["k"]).any()
+        signal = s.generate_signal(df)
+        assert signal.signal_type in [SignalType.BUY, SignalType.SELL, SignalType.HOLD]
 
 
 class TestBollingerBreakoutStrategy:

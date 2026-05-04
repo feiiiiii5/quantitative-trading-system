@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -143,9 +144,17 @@ async def _fetch_eastmoney_news(page: int = 1, count: int = 40) -> list[dict]:
 async def _fetch_sina_news() -> list[dict]:
     try:
         from core.data_fetcher import async_http_get
-        url = "https://feed.mix.sina.com.cn/api/roll/get"
-        params = "?pageid=153&lid=2516&k=&num=40&page=1&r=0." + str(int(time.time() * 1000))
-        text = await async_http_get(url + params, headers={"Referer": "https://finance.sina.com.cn/"})
+        from urllib.parse import urlencode
+        base_url = "https://feed.mix.sina.com.cn/api/roll/get"
+        query_params = urlencode({
+            "pageid": "153",
+            "lid": "2516",
+            "k": "",
+            "num": "40",
+            "page": "1",
+            "r": f"0.{int(time.time() * 1000)}",
+        })
+        text = await async_http_get(f"{base_url}?{query_params}", headers={"Referer": "https://finance.sina.com.cn/"})
         if not text:
             return []
         data = json.loads(text)
@@ -246,7 +255,14 @@ class NewsEngine:
             _fetch_eastmoney_news(1, count),
             _fetch_sina_news(),
         ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=10.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("新闻获取超时（10秒），使用已有缓存")
+            return self._cache[:count] if self._cache else []
         for r in results:
             if isinstance(r, list):
                 all_news.extend(r)
@@ -358,10 +374,13 @@ class NewsEngine:
 
 
 _news_engine: Optional[NewsEngine] = None
+_news_engine_lock = threading.Lock()
 
 
 def get_news_engine() -> NewsEngine:
     global _news_engine
     if _news_engine is None:
-        _news_engine = NewsEngine()
+        with _news_engine_lock:
+            if _news_engine is None:
+                _news_engine = NewsEngine()
     return _news_engine

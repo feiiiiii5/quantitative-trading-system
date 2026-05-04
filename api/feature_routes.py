@@ -7,7 +7,7 @@ import logging
 import time
 from typing import Optional
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Path, Query, Request
 
 from api.utils import sanitize, json_response as _json_response, safe_error
 
@@ -34,7 +34,7 @@ async def get_latest_news(request: Request, count: int = Query(40)):
 
 
 @feature_router.get("/news/stock/{symbol}")
-async def get_stock_news(request: Request, symbol: str, count: int = Query(20)):
+async def get_stock_news(request: Request, symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"), count: int = Query(20)):
     count = _clamp(count, 1, 100)
     try:
         from core.news_engine import get_news_engine
@@ -122,6 +122,11 @@ async def run_stock_screener(
 
 
 _VALID_SORT_FIELDS = {"change_pct", "volume_ratio", "turnover_rate", "pe", "pb", "market_cap", "price"}
+_VALID_SCREENER_FIELDS = {
+    "change_pct", "volume_ratio", "turnover_rate", "pe", "pb", "market_cap",
+    "price", "pct_5d", "pct_20d", "high_60d_ratio", "roe", "dividend_yield",
+    "revenue_yoy", "amount", "volume",
+}
 
 @feature_router.post("/screener/custom")
 async def run_custom_screener(request: Request):
@@ -133,6 +138,8 @@ async def run_custom_screener(request: Request):
         for cond in conditions:
             if not isinstance(cond, dict) or "field" not in cond:
                 return _json_response(False, error="筛选条件缺少field字段")
+            if cond["field"] not in _VALID_SCREENER_FIELDS:
+                return _json_response(False, error=f"不支持的字段: {cond['field']}")
         sort_by = body.get("sort_by", "change_pct")
         if sort_by not in _VALID_SORT_FIELDS:
             sort_by = "change_pct"
@@ -161,7 +168,7 @@ async def run_custom_screener(request: Request):
 @feature_router.get("/moneyflow/stock/{symbol}")
 async def get_stock_money_flow(
     request: Request,
-    symbol: str,
+    symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
     days: int = Query(10),
 ):
     days = _clamp(days, 1, 60)
@@ -173,6 +180,54 @@ async def get_stock_money_flow(
             pattern = analyzer.analyze_flow_pattern(data["history"])
             data["pattern"] = pattern
         return _json_response(True, data=data)
+    except Exception as e:
+        return _json_response(False, error=safe_error(e))
+
+
+@feature_router.get("/market/snapshot")
+async def get_market_snapshot(request: Request):
+    try:
+        from datetime import datetime
+        from core.news_engine import get_market_sentiment
+        from core.market_hours import MarketHours
+
+        snapshot = {
+            "timestamp": datetime.now().isoformat(),
+            "market_status": MarketHours.get_market_status("A"),
+        }
+
+        try:
+            from core.data_fetcher import get_fetcher
+            from core.market_data import _SH_INDICES
+
+            fetcher = get_fetcher()
+            indices = {}
+            for code in ["000001", "399001", "399006", "000688"]:
+                try:
+                    data = await fetcher.fetch_realtime(code)
+                    if data:
+                        name = _SH_INDICES.get(code, code)
+                        indices[name] = {
+                            "code": code,
+                            "price": round(data.get("price", 0), 2),
+                            "change_pct": round(data.get("change_pct", 0), 2),
+                        }
+                except Exception:
+                    pass
+            snapshot["indices"] = indices
+        except Exception:
+            snapshot["indices"] = {}
+
+        try:
+            sentiment = await get_market_sentiment()
+            snapshot["sentiment"] = {
+                "score": round(sentiment.breadth_sentiment, 4),
+                "label": "偏多" if sentiment.breadth_sentiment > 0 else "偏空",
+            }
+        except Exception:
+            snapshot["sentiment"] = {"score": 0, "label": "中性"}
+
+        return _json_response(True, data=snapshot)
     except Exception as e:
         return _json_response(False, error=safe_error(e))
 
@@ -207,8 +262,8 @@ async def get_sector_money_flow(request: Request):
 @feature_router.get("/chip/{symbol}")
 async def get_chip_distribution(
     request: Request,
-    symbol: str,
-    period: str = Query("1y"),
+    symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
+    period: str = Query("1y", max_length=5),
 ):
     try:
         from core.chip_distribution import get_chip_analyzer

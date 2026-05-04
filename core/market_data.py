@@ -11,6 +11,8 @@ from typing import Optional
 
 import aiohttp
 
+from core.data_fetcher import safe_float as _num
+
 logger = logging.getLogger(__name__)
 
 _refresh_thread: Optional[threading.Thread] = None
@@ -19,6 +21,8 @@ _refresh_stop = threading.Event()
 _all_a_stocks_cache: list[dict] = []
 _all_a_stocks_ts: float = 0.0
 _A_STOCKS_TTL = 120
+_all_a_stocks_lock = threading.Lock()
+_all_a_stocks_fetching = False
 
 _SINA_LIST_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
 _SINA_HQ_URL = "https://hq.sinajs.cn/list="
@@ -125,7 +129,8 @@ async def _fetch_sina_stocks_fast() -> list[dict]:
             for result in results:
                 if isinstance(result, list):
                     all_stocks.extend(result)
-            if len(all_stocks) > 0 and i > 0 and len(all_stocks) == sum(len(r) for r in results if isinstance(r, list) and len(r) > 0) and all(len(r) < 80 for r in results if isinstance(r, list)):
+            batch_results = [r for r in results if isinstance(r, list)]
+            if batch_results and all(len(r) < 80 for r in batch_results):
                 break
 
         return all_stocks
@@ -135,68 +140,87 @@ async def _fetch_sina_stocks_fast() -> list[dict]:
 
 
 async def fetch_all_a_stocks_async() -> list[dict]:
-    global _all_a_stocks_cache, _all_a_stocks_ts
+    global _all_a_stocks_cache, _all_a_stocks_ts, _all_a_stocks_fetching
     now = time.time()
-    if _all_a_stocks_cache and (now - _all_a_stocks_ts) < _A_STOCKS_TTL:
-        return _all_a_stocks_cache
-
-    data = await _fetch_sina_stocks_fast()
-    if data:
-        _all_a_stocks_cache = data
-        _all_a_stocks_ts = now
-        logger.info(f"Fetched {len(data)} A-share stocks from Sina")
-        return data
-
-    if _all_a_stocks_cache:
-        return _all_a_stocks_cache
+    with _all_a_stocks_lock:
+        if _all_a_stocks_cache and (now - _all_a_stocks_ts) < _A_STOCKS_TTL:
+            return _all_a_stocks_cache
+        if _all_a_stocks_fetching:
+            if _all_a_stocks_cache:
+                return _all_a_stocks_cache
+            return []
+        _all_a_stocks_fetching = True
 
     try:
-        import akshare as ak
-        df = await asyncio.to_thread(ak.stock_zh_a_spot_em)
-        if df is not None and not df.empty:
-            col_map = {
-                "代码": "symbol", "名称": "name", "最新价": "price",
-                "涨跌幅": "change_pct", "涨跌额": "change", "成交量": "volume",
-                "成交额": "amount", "振幅": "amplitude", "换手率": "turnover_rate",
-                "市盈率-动态": "pe", "市净率": "pb",
-            }
-            rename = {k: v for k, v in col_map.items() if k in df.columns}
-            df = df.rename(columns=rename)
-            result = []
-            for _, row in df.iterrows():
-                result.append({
-                    "symbol": str(row.get("symbol", "")),
-                    "name": str(row.get("name", "")),
-                    "price": float(row.get("price", 0) or 0),
-                    "change_pct": float(row.get("change_pct", 0) or 0),
-                    "change": float(row.get("change", 0) or 0),
-                    "volume": float(row.get("volume", 0) or 0),
-                    "amount": float(row.get("amount", 0) or 0),
-                    "turnover_rate": float(row.get("turnover_rate", 0) or 0),
-                    "pe": float(row.get("pe", 0) or 0),
-                    "pb": float(row.get("pb", 0) or 0),
-                    "market": "A",
-                    "industry": str(row.get("行业", "")),
-                })
-            _all_a_stocks_cache = result
-            _all_a_stocks_ts = time.time()
-            return result
-    except Exception as e:
-        logger.debug(f"akshare fallback error: {e}")
+        data = await _fetch_sina_stocks_fast()
+        if data:
+            with _all_a_stocks_lock:
+                _all_a_stocks_cache = data
+                _all_a_stocks_ts = now
+            logger.info(f"Fetched {len(data)} A-share stocks from Sina")
+            return data
 
-    return _all_a_stocks_cache
+        try:
+            import akshare as ak
+            df = await asyncio.to_thread(ak.stock_zh_a_spot_em)
+            if df is not None and not df.empty:
+                col_map = {
+                    "代码": "symbol", "名称": "name", "最新价": "price",
+                    "涨跌幅": "change_pct", "涨跌额": "change", "成交量": "volume",
+                    "成交额": "amount", "振幅": "amplitude", "换手率": "turnover_rate",
+                    "市盈率-动态": "pe", "市净率": "pb",
+                }
+                rename = {k: v for k, v in col_map.items() if k in df.columns}
+                df = df.rename(columns=rename)
+                result = []
+                for _, row in df.iterrows():
+                    result.append({
+                        "symbol": str(row.get("symbol", "")),
+                        "name": str(row.get("name", "")),
+                        "price": float(row.get("price", 0) or 0),
+                        "change_pct": float(row.get("change_pct", 0) or 0),
+                        "change": float(row.get("change", 0) or 0),
+                        "volume": float(row.get("volume", 0) or 0),
+                        "amount": float(row.get("amount", 0) or 0),
+                        "turnover_rate": float(row.get("turnover_rate", 0) or 0),
+                        "pe": float(row.get("pe", 0) or 0),
+                        "pb": float(row.get("pb", 0) or 0),
+                        "market": "A",
+                        "industry": str(row.get("行业", "")),
+                    })
+                with _all_a_stocks_lock:
+                    _all_a_stocks_cache = result
+                    _all_a_stocks_ts = time.time()
+                return result
+        except Exception as e:
+            logger.debug(f"akshare fallback error: {e}")
+
+        with _all_a_stocks_lock:
+            return _all_a_stocks_cache if _all_a_stocks_cache else []
+    except Exception:
+        with _all_a_stocks_lock:
+            return _all_a_stocks_cache if _all_a_stocks_cache else []
+    finally:
+        with _all_a_stocks_lock:
+            _all_a_stocks_fetching = False
 
 
 def get_all_a_stocks_sync() -> list[dict]:
-    if _all_a_stocks_cache:
-        return _all_a_stocks_cache
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
+    with _all_a_stocks_lock:
+        if _all_a_stocks_cache:
             return _all_a_stocks_cache
-        return loop.run_until_complete(fetch_all_a_stocks_async())
+    try:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None and loop.is_running():
+            with _all_a_stocks_lock:
+                return _all_a_stocks_cache
+        return asyncio.run(fetch_all_a_stocks_async())
     except Exception:
-        return _all_a_stocks_cache
+        with _all_a_stocks_lock:
+            return _all_a_stocks_cache
 
 
 def get_stock_list(market: str) -> list[dict]:
@@ -243,9 +267,6 @@ def get_stock_list(market: str) -> list[dict]:
     except Exception as e:
         logger.debug(f"Get stock list fallback error for {market}: {e}")
     return []
-
-
-from core.data_fetcher import safe_float as _num
 
 
 def _refresh_loop() -> None:

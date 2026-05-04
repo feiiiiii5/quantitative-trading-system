@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Optional
 
@@ -25,19 +26,15 @@ class ThreadSafeLRU:
     def __init__(self, maxsize: int = 200, ttl: int = 60):
         self._maxsize = maxsize
         self._ttl = ttl
-        self._cache: dict[str, tuple[Any, float, int]] = {}
+        self._cache: OrderedDict[str, tuple[Any, float, int]] = OrderedDict()
         self._lock = threading.Lock()
 
     def get(self, key: str) -> Optional[Any]:
         with self._lock:
             if key in self._cache:
-                item = self._cache[key]
-                if len(item) == 2:
-                    value, ts = item
-                    ttl = self._ttl
-                else:
-                    value, ts, ttl = item
+                value, ts, ttl = self._cache[key]
                 if time.time() - ts < ttl:
+                    self._cache.move_to_end(key)
                     return value
                 del self._cache[key]
         return None
@@ -45,9 +42,10 @@ class ThreadSafeLRU:
     def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
         effective_ttl = ttl if ttl is not None else self._ttl
         with self._lock:
-            if len(self._cache) >= self._maxsize and key not in self._cache:
-                oldest_key = min(self._cache, key=lambda k: self._cache[k][1])
-                del self._cache[oldest_key]
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            elif len(self._cache) >= self._maxsize:
+                self._cache.popitem(last=False)
             self._cache[key] = (value, time.time(), int(effective_ttl))
 
     def delete(self, key: str) -> None:
@@ -114,11 +112,13 @@ class SQLiteStore:
         self._db_path = db_path or str(DB_PATH)
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
-        self._write_buffer: list[tuple[str, tuple]] = []
+        self._write_buffer: list[tuple[str, tuple, int]] = []
         self._buffer_lock = threading.Lock()
         self._buffer_max_size = 100
         self._buffer_abs_max = 1000
         self._last_flush = time.time()
+        self._buffer_max_retries = 5
+        self._dropped_writes = 0
         self._pool: list[sqlite3.Connection] = []
         self._pool_lock = threading.Lock()
         self._pool_max_size = 8
@@ -127,7 +127,7 @@ class SQLiteStore:
         self._flush_thread.start()
 
     def _create_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, timeout=10)
+        conn = sqlite3.connect(self._db_path, timeout=10, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
@@ -177,6 +177,16 @@ class SQLiteStore:
             conn.close()
         except Exception:
             pass
+
+    def get_pool_status(self) -> dict:
+        with self._pool_lock:
+            return {
+                "pool_size": len(self._pool),
+                "pool_max_size": self._pool_max_size,
+                "buffer_size": len(self._write_buffer),
+                "buffer_max_size": self._buffer_max_size,
+                "dropped_writes": self._dropped_writes,
+            }
 
     def _init_db(self) -> None:
         conn = self._get_conn()
@@ -288,22 +298,55 @@ class SQLiteStore:
             return
 
         try:
+            failed = []
             conn = self._get_conn()
             with conn:
-                for sql, params in buffer:
+                for item in buffer:
+                    if len(item) == 2:
+                        sql, params = item
+                        retries = 0
+                    else:
+                        sql, params, retries = item
                     try:
                         conn.execute(sql, params)
                     except Exception as e:
-                        logger.debug(f"Buffered write error: {e}")
+                        logger.warning(f"Buffered write error: {e} | sql={sql[:80]}")
+                        failed.append((sql, params, retries + 1))
                 conn.commit()
-        except Exception as e:
-            logger.debug(f"Flush buffer error: {e}")
+            if failed:
+                with self._buffer_lock:
+                    requeued = 0
+                    for sql, params, retries in failed:
+                        if retries < self._buffer_max_retries:
+                            self._write_buffer.append((sql, params, retries))
+                            requeued += 1
+                        else:
+                            logger.error(f"丢弃持久失败的缓冲写入（已重试{retries}次）: {sql[:80]}")
+                if requeued:
+                    logger.warning(f"Re-queued {requeued} failed buffered writes")
+        except Exception:
+            logger.exception("Flush buffer transaction-level error")
+            with self._buffer_lock:
+                for item in buffer:
+                    if len(item) == 2:
+                        sql, params = item[0], item[1]
+                        retries = 0
+                    else:
+                        sql, params, retries = item[0], item[1], item[2]
+                    if retries < self._buffer_max_retries:
+                        self._write_buffer.append((sql, params, retries + 1))
+                    else:
+                        logger.error(f"丢弃持久失败的缓冲写入（事务错误）: {sql[:80]}")
 
     def buffered_write(self, sql: str, params: tuple) -> None:
         with self._buffer_lock:
             if len(self._write_buffer) >= self._buffer_abs_max:
+                dropped = len(self._write_buffer) - self._buffer_max_size
+                self._dropped_writes += dropped
+                dropped_samples = [(b[0][:60], b[2]) for b in self._write_buffer[:min(3, dropped)]]
                 self._write_buffer = self._write_buffer[-self._buffer_max_size:]
-            self._write_buffer.append((sql, params))
+                logger.error(f"写缓冲区溢出，丢弃 {dropped} 条最旧记录（累计丢弃: {self._dropped_writes}），示例: {dropped_samples}")
+            self._write_buffer.append((sql, params, 0))
             should_flush = (
                 len(self._write_buffer) >= self._buffer_max_size
                 or (time.time() - self._last_flush) >= 2
@@ -361,7 +404,12 @@ class SQLiteStore:
 
         with self._buffer_lock:
             for p in params_list:
-                self._write_buffer.append((sql, p))
+                if len(self._write_buffer) >= self._buffer_abs_max:
+                    dropped = len(self._write_buffer) - self._buffer_max_size
+                    self._dropped_writes += dropped
+                    self._write_buffer = self._write_buffer[-self._buffer_max_size:]
+                    logger.error(f"写缓冲区溢出（K线写入），丢弃 {dropped} 条最旧记录（累计丢弃: {self._dropped_writes}）")
+                self._write_buffer.append((sql, p, 0))
             should_flush = (
                 len(self._write_buffer) >= self._buffer_max_size
                 or (time.time() - self._last_flush) >= 2
@@ -504,6 +552,13 @@ class SQLiteStore:
             ),
         )
         return result_id
+
+    def get_backtest_by_id(self, result_id: str) -> Optional[dict]:
+        row = self.fetchone(
+            "SELECT * FROM backtest_results WHERE id=?",
+            (result_id,),
+        )
+        return dict(row) if row else None
 
     def get_backtest_history(self, symbol=None, strategy_name=None, limit=20) -> list[dict]:
         sql = "SELECT * FROM backtest_results"

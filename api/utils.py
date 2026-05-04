@@ -18,7 +18,9 @@ def safe_error(exc: Exception) -> str:
     return msg
 
 
-def sanitize(obj):
+def sanitize(obj, _depth: int = 0):
+    if _depth > 10:
+        return str(type(obj).__name__)
     if isinstance(obj, (np.integer,)):
         return int(obj)
     if isinstance(obj, (np.floating,)):
@@ -28,9 +30,9 @@ def sanitize(obj):
     if isinstance(obj, np.ndarray):
         return obj.tolist()
     if isinstance(obj, dict):
-        return {k: sanitize(v) for k, v in obj.items()}
+        return {k: sanitize(v, _depth + 1) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
-        return [sanitize(v) for v in obj]
+        return [sanitize(v, _depth + 1) for v in obj]
     return obj
 
 

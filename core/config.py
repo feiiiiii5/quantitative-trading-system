@@ -1,6 +1,7 @@
 import json
 import os
 import logging
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -15,6 +16,7 @@ CONFIG_SCHEMA = {
             "port": {"type": "integer", "minimum": 1024, "maximum": 65535, "default": 8080},
             "workers": {"type": "integer", "minimum": 1, "maximum": 16, "default": 1},
             "log_level": {"type": "string", "enum": ["debug", "info", "warning", "error"], "default": "info"},
+            "cors_origins": {"type": "array", "items": {"type": "string"}, "default": []},
         },
     },
     "backtest": {
@@ -153,17 +155,21 @@ def _deep_merge(base: dict, override: dict) -> None:
 
 
 _config_instance: Optional[Dict[str, Any]] = None
+_config_lock = threading.Lock()
 
 
 def get_config() -> Dict[str, Any]:
     global _config_instance
     if _config_instance is None:
-        config_path = os.environ.get("QUANTCORE_CONFIG", str(Path(__file__).parent.parent / "config.json"))
-        _config_instance = load_config(config_path)
+        with _config_lock:
+            if _config_instance is None:
+                config_path = os.environ.get("QUANTCORE_CONFIG", str(Path(__file__).parent.parent / "config.json"))
+                _config_instance = load_config(config_path)
     return _config_instance
 
 
 def reload_config() -> Dict[str, Any]:
     global _config_instance
-    _config_instance = None
+    with _config_lock:
+        _config_instance = None
     return get_config()

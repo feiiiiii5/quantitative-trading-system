@@ -56,12 +56,17 @@ class EnhancedRiskMonitor:
         self._lookback = lookback_window
         self._equity_curve: List[float] = []
         self._position_history: List[Dict] = []
+        self._history_max = 252
 
     def update_equity(self, equity: float) -> None:
         self._equity_curve.append(equity)
+        if len(self._equity_curve) > self._history_max:
+            self._equity_curve = self._equity_curve[-self._history_max:]
 
     def update_positions(self, positions: Dict[str, float]) -> None:
         self._position_history.append(positions)
+        if len(self._position_history) > self._history_max:
+            self._position_history = self._position_history[-self._history_max:]
 
     def calc_volatility(self, returns: pd.Series = None) -> float:
         if returns is not None and len(returns) > 1:

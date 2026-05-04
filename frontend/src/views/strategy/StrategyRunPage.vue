@@ -221,7 +221,7 @@ import { api } from '@/api'
 import BaseChart from '@/components/chart/BaseChart.vue'
 import { strategyDisplayName } from '@/utils/format'
 import { chartTheme } from '@/lib/echarts'
-import type { StrategyInfo, BacktestResult } from '@/types'
+import type { StrategyInfo, BacktestResult, BacktestHistoryItem, MonteCarloResult, SensitivityItem, StrategyRecommendation } from '@/types'
 
 const route = useRoute()
 
@@ -234,13 +234,13 @@ const running = ref(false)
 const result = ref<BacktestResult | null>(null)
 const compareResults = ref<BacktestResult[]>([])
 const strategies = ref<Record<string, StrategyInfo>>({})
-const history = ref<any[]>([])
+const history = ref<BacktestHistoryItem[]>([])
 const activeResultTab = ref('overview')
-const mcResult = ref<any>(null)
+const mcResult = ref<MonteCarloResult | null>(null)
 const mcRunning = ref(false)
-const sensitivityResult = ref<any[] | null>(null)
+const sensitivityResult = ref<SensitivityItem[] | null>(null)
 const sensRunning = ref(false)
-const recommendation = ref<any>(null)
+const recommendation = ref<StrategyRecommendation | null>(null)
 const recLoading = ref(false)
 
 const resultTabs = [
@@ -259,12 +259,12 @@ const equityOption = computed(() => {
     animation: false,
     tooltip: { trigger: 'axis' },
     grid: { left: 60, right: 20, top: 20, bottom: 30 },
-    xAxis: { type: 'category', data: curve.map((p: any) => p.date?.slice(0, 10)), axisLabel: { fontSize: 10, color: '#7c8293' } },
+    xAxis: { type: 'category', data: curve.map((p: { date?: string }) => p.date?.slice(0, 10)), axisLabel: { fontSize: 10, color: '#7c8293' } },
     yAxis: { type: 'value', scale: true, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.03)' } }, axisLabel: { fontSize: 10, color: '#7c8293' } },
     dataZoom: [{ type: 'inside', start: 0, end: 100 }],
     series: [{
       type: 'line',
-      data: curve.map((p: any) => p.value),
+      data: curve.map((p: { value: number }) => p.value),
       smooth: true,
       lineStyle: { color: '#3b82f6', width: 1.5 },
       areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(59,130,246,0.15)' }, { offset: 1, color: 'rgba(59,130,246,0)' }] } },
@@ -276,7 +276,7 @@ const equityOption = computed(() => {
 const drawdownOption = computed(() => {
   if (!result.value?.equity_curve?.length) return null
   const curve = result.value.equity_curve
-  const values = curve.map((p: any) => p.value)
+  const values = curve.map((p: { value: number }) => p.value)
   const peak = values.reduce((acc: number[], v: number) => {
     acc.push(Math.max(acc.length ? acc[acc.length - 1] : v, v))
     return acc
@@ -285,9 +285,9 @@ const drawdownOption = computed(() => {
   return {
     ...chartTheme,
     animation: false,
-    tooltip: { trigger: 'axis', formatter: (p: any) => `${p[0].axisValue}<br/>回撤: ${p[0].value.toFixed(2)}%` },
+    tooltip: { trigger: 'axis', formatter: (p: { axisValue: string; value: number }[]) => `${p[0].axisValue}<br/>回撤: ${p[0].value.toFixed(2)}%` },
     grid: { left: 60, right: 20, top: 20, bottom: 30 },
-    xAxis: { type: 'category', data: curve.map((p: any) => p.date?.slice(0, 10)), axisLabel: { fontSize: 10, color: '#7c8293' } },
+    xAxis: { type: 'category', data: curve.map((p: { date?: string }) => p.date?.slice(0, 10)), axisLabel: { fontSize: 10, color: '#7c8293' } },
     yAxis: { type: 'value', axisLabel: { fontSize: 10, color: '#7c8293', formatter: '{value}%' }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.03)' } } },
     dataZoom: [{ type: 'inside', start: 0, end: 100 }],
     series: [{
@@ -305,7 +305,7 @@ const mcOption = computed(() => {
     animation: false,
     tooltip: { trigger: 'axis' },
     grid: { left: 60, right: 20, top: 20, bottom: 30 },
-    xAxis: { type: 'category', data: paths[0]?.map((_: any, i: number) => i) || [], axisLabel: { show: false } },
+    xAxis: { type: 'category', data: paths[0]?.map((_: number, i: number) => i) || [], axisLabel: { show: false } },
     yAxis: { type: 'value', scale: true, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.03)' } }, axisLabel: { fontSize: 10, color: '#7c8293' } },
     series: paths.map((path: number[]) => ({
       type: 'line', data: path, smooth: true, showSymbol: false,
@@ -407,7 +407,7 @@ function applyRecommendation(strategy: string) {
   strategyType.value = strategy
 }
 
-function loadHistory(h: any) {
+function loadHistory(h: { result: BacktestResult }) {
   result.value = h.result
   activeResultTab.value = 'overview'
 }

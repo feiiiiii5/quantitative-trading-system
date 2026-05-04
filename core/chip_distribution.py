@@ -4,6 +4,7 @@ QuantCore 筹码分布模块
 基于成交量分布模型计算筹码分布
 """
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Optional
 
@@ -219,10 +220,13 @@ class ChipDistributionAnalyzer:
 
 
 _analyzer: Optional[ChipDistributionAnalyzer] = None
+_analyzer_lock = threading.Lock()
 
 
 def get_chip_analyzer() -> ChipDistributionAnalyzer:
     global _analyzer
     if _analyzer is None:
-        _analyzer = ChipDistributionAnalyzer()
+        with _analyzer_lock:
+            if _analyzer is None:
+                _analyzer = ChipDistributionAnalyzer()
     return _analyzer

@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -20,9 +21,11 @@ logger = logging.getLogger(__name__)
 _SECTOR_CACHE: list[dict] = []
 _SECTOR_CACHE_TS: float = 0.0
 _SECTOR_CACHE_TTL = 300
+_SECTOR_CACHE_LOCK = threading.Lock()
 
 _ROTATION_HISTORY: list[dict] = []
 _ROTATION_HISTORY_MAX = 20
+_ROTATION_HISTORY_LOCK = threading.Lock()
 
 
 @dataclass
@@ -39,8 +42,9 @@ class SectorStrength:
 async def fetch_sector_list() -> list[dict]:
     global _SECTOR_CACHE, _SECTOR_CACHE_TS
     now = time.time()
-    if _SECTOR_CACHE and now - _SECTOR_CACHE_TS < _SECTOR_CACHE_TTL:
-        return _SECTOR_CACHE
+    with _SECTOR_CACHE_LOCK:
+        if _SECTOR_CACHE and now - _SECTOR_CACHE_TS < _SECTOR_CACHE_TTL:
+            return _SECTOR_CACHE
 
     try:
         import akshare as ak
@@ -61,8 +65,9 @@ async def fetch_sector_list() -> list[dict]:
                     "leading_stock": str(row.get("领涨股票", "")),
                     "leading_change": float(row.get("领涨股票涨跌幅", 0) or 0),
                 })
-            _SECTOR_CACHE = result
-            _SECTOR_CACHE_TS = now
+            with _SECTOR_CACHE_LOCK:
+                _SECTOR_CACHE = result
+                _SECTOR_CACHE_TS = now
             return result
     except Exception as e:
         logger.debug(f"AKShare sector list error: {e}")
@@ -98,8 +103,9 @@ async def fetch_sector_list() -> list[dict]:
                     "leading_stock": item.get("f128", ""),
                     "leading_change": float(item.get("f140", 0) or 0),
                 })
-            _SECTOR_CACHE = result
-            _SECTOR_CACHE_TS = now
+            with _SECTOR_CACHE_LOCK:
+                _SECTOR_CACHE = result
+                _SECTOR_CACHE_TS = now
             return result
     except Exception as e:
         logger.debug(f"Sector list fetch error: {e}")
@@ -135,8 +141,9 @@ async def fetch_sector_list() -> list[dict]:
                     "leading_stock": item.get("f128", ""),
                     "leading_change": float(item.get("f140", 0) or 0),
                 })
-            _SECTOR_CACHE = result
-            _SECTOR_CACHE_TS = now
+            with _SECTOR_CACHE_LOCK:
+                _SECTOR_CACHE = result
+                _SECTOR_CACHE_TS = now
             return result
     except Exception as e:
         logger.debug(f"Sector list fetch error (concept): {e}")
@@ -162,8 +169,9 @@ async def fetch_sector_list() -> list[dict]:
                     "leading_stock": "",
                     "leading_change": 0,
                 })
-            _SECTOR_CACHE = result
-            _SECTOR_CACHE_TS = now
+            with _SECTOR_CACHE_LOCK:
+                _SECTOR_CACHE = result
+                _SECTOR_CACHE_TS = now
             return result
     except Exception as e:
         logger.debug(f"Market overview sector fallback error: {e}")
@@ -202,13 +210,15 @@ async def fetch_sector_list() -> list[dict]:
                             "leading_change": 0,
                         })
                 if result:
-                    _SECTOR_CACHE = result
-                    _SECTOR_CACHE_TS = now
+                    with _SECTOR_CACHE_LOCK:
+                        _SECTOR_CACHE = result
+                        _SECTOR_CACHE_TS = now
                     return result
     except Exception as e:
         logger.debug(f"Sina sector fallback error: {e}")
 
-    return _SECTOR_CACHE
+    with _SECTOR_CACHE_LOCK:
+        return _SECTOR_CACHE
 
 
 async def fetch_sector_stocks(sector_code: str, count: int = 20) -> list[dict]:
@@ -346,14 +356,16 @@ class SectorRotationAnalyzer:
             "bottom_sectors": [{"name": s["name"], "change_pct": s["change_pct"], "momentum_score": s.get("momentum_score", 0)} for s in bottom_5],
         }
 
-        self._history.append(snapshot)
-        if len(self._history) > _ROTATION_HISTORY_MAX:
-            self._history = self._history[-_ROTATION_HISTORY_MAX:]
+        with _ROTATION_HISTORY_LOCK:
+            self._history.append(snapshot)
+            if len(self._history) > _ROTATION_HISTORY_MAX:
+                self._history = self._history[-_ROTATION_HISTORY_MAX:]
 
         return snapshot
 
     def get_rotation_trend(self) -> list[dict]:
-        return self._history
+        with _ROTATION_HISTORY_LOCK:
+            return list(self._history)
 
     async def get_sector_detail(self, sector_code: str) -> dict:
         sectors = await fetch_sector_list()
@@ -407,10 +419,13 @@ class SectorRotationAnalyzer:
 
 
 _analyzer: Optional[SectorRotationAnalyzer] = None
+_analyzer_lock = threading.Lock()
 
 
 def get_sector_rotation_analyzer() -> SectorRotationAnalyzer:
     global _analyzer
     if _analyzer is None:
-        _analyzer = SectorRotationAnalyzer()
+        with _analyzer_lock:
+            if _analyzer is None:
+                _analyzer = SectorRotationAnalyzer()
     return _analyzer

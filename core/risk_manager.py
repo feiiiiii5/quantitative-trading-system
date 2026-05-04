@@ -28,7 +28,9 @@ class ConcentrationFilter(RiskFilter):
         if total_assets <= 0:
             return False, "总资产为零或负值"
         current_value = context.get("current_positions", {}).get(order.symbol, {}).get("market_value", 0)
-        order_value = order.quantity * (order.price or 0)
+        if order.price is None or order.price <= 0:
+            return False, "委托价格无效，无法计算集中度"
+        order_value = order.quantity * order.price
         concentration = (current_value + order_value) / total_assets
         if concentration > self._max:
             return False, f"持仓集中度{concentration:.1%}超过上限{self._max:.1%}"
@@ -86,9 +88,12 @@ class CashSufficiencyFilter(RiskFilter):
         if order.side != OrderSide.BUY:
             return True, ""
         cash = context.get("cash", 0)
-        order_value = order.quantity * (order.price or 0)
+        price = order.price or 0
+        order_value = price * order.quantity
+        if price <= 0:
+            return True, ""
         if order_value > cash:
-            max_shares = int(cash / (order.price or 1))
+            max_shares = int(cash / price)
             return False, f"资金不足，需要{order_value:.0f}，可用{cash:.0f}，最多可买{max_shares}股"
         return True, ""
 
@@ -107,11 +112,14 @@ class TrailingStopManager:
         self._trailing_only_offset = trailing_only_offset_is_reached
         self._positions: Dict[str, dict] = {}
 
-    def register(self, symbol: str, entry_price: float):
+    def register(self, symbol: str, entry_price: float, side: str = "long"):
+        is_short = side == "short"
         self._positions[symbol] = {
             "entry_price": entry_price,
             "highest_price": entry_price,
-            "stop_price": entry_price * (1 + self._trailing_stop),
+            "lowest_price": entry_price,
+            "stop_price": entry_price * (1 - self._trailing_stop) if is_short else entry_price * (1 + self._trailing_stop),
+            "side": side,
         }
 
     def unregister(self, symbol: str):
@@ -122,20 +130,33 @@ class TrailingStopManager:
         if pos is None:
             return None
 
+        is_short = pos.get("side", "long") == "short"
+
         if current_price > pos["highest_price"]:
             pos["highest_price"] = current_price
+        if "lowest_price" not in pos:
+            pos["lowest_price"] = current_price
+        if current_price < pos["lowest_price"]:
+            pos["lowest_price"] = current_price
 
-        profit_pct = (current_price - pos["entry_price"]) / pos["entry_price"]
-
-        if self._trailing_only_offset and profit_pct < self._trailing_stop_positive_offset:
-            stop_price = pos["entry_price"] * (1 + self._trailing_stop)
+        if is_short:
+            profit_pct = (pos["entry_price"] - current_price) / pos["entry_price"]
+            if self._trailing_only_offset and profit_pct < self._trailing_stop_positive_offset:
+                stop_price = pos["entry_price"] * (1 - self._trailing_stop)
+            else:
+                stop_price = pos["lowest_price"] * (1 + self._trailing_stop_positive)
+            pos["stop_price"] = min(pos["stop_price"], stop_price)
+            if current_price >= pos["stop_price"]:
+                return "trailing_stop"
         else:
-            stop_price = pos["highest_price"] * (1 - self._trailing_stop_positive)
-
-        pos["stop_price"] = max(pos["stop_price"], stop_price)
-
-        if current_price <= pos["stop_price"]:
-            return "trailing_stop"
+            profit_pct = (current_price - pos["entry_price"]) / pos["entry_price"]
+            if self._trailing_only_offset and profit_pct < self._trailing_stop_positive_offset:
+                stop_price = pos["entry_price"] * (1 + self._trailing_stop)
+            else:
+                stop_price = pos["highest_price"] * (1 - self._trailing_stop_positive)
+            pos["stop_price"] = max(pos["stop_price"], stop_price)
+            if current_price <= pos["stop_price"]:
+                return "trailing_stop"
 
         return None
 
@@ -238,6 +259,7 @@ class EnhancedRiskManager:
 
     def unregister_position(self, symbol: str):
         self._trailing_stop.unregister(symbol)
+        self._position_returns.pop(symbol, None)
 
     def check_trailing_stop(self, symbol: str, current_price: float) -> Optional[str]:
         return self._trailing_stop.update(symbol, current_price)
@@ -283,13 +305,15 @@ class EnhancedRiskManager:
 
     def get_risk_report(self) -> Dict[str, object]:
         daily_loss_filter = None
+        conc_filter_max = 0.3
         for f in self._filters:
             if isinstance(f, DailyLossFilter):
                 daily_loss_filter = f
-                break
+            if isinstance(f, ConcentrationFilter):
+                conc_filter_max = f._max
 
         report = {
-            "max_concentration": 0.3,
+            "max_concentration": conc_filter_max,
             "current_daily_pnl": daily_loss_filter._daily_pnl if daily_loss_filter else 0.0,
             "daily_loss_limit": self._initial_capital * 0.05,
             "circuit_breaker_active": daily_loss_filter._circuit_breaker_time is not None if daily_loss_filter else False,

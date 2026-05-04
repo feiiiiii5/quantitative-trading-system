@@ -1,3 +1,5 @@
+from bisect import insort
+from collections import OrderedDict
 import json
 import logging
 import random
@@ -14,7 +16,8 @@ _AUDIT_LOG_PATH = Path(__file__).resolve().parent.parent / "data" / "audit.log"
 
 
 @dataclass
-class Position:
+class SimPosition:
+    """模拟交易持仓（与core.models.Position区分以避免导入冲突）"""
     symbol: str
     name: str
     market: str
@@ -86,12 +89,12 @@ class OrderBook:
         self._ask_orders: list[dict] = []
 
     def add_bid(self, price: float, shares: int):
-        self._bid_orders.append({"price": price, "shares": shares})
-        self._bid_orders.sort(key=lambda x: -x["price"])
+        entry = {"price": price, "shares": shares}
+        insort(self._bid_orders, entry, key=lambda x: -x["price"])
 
     def add_ask(self, price: float, shares: int):
-        self._ask_orders.append({"price": price, "shares": shares})
-        self._ask_orders.sort(key=lambda x: x["price"])
+        entry = {"price": price, "shares": shares}
+        insort(self._ask_orders, entry, key=lambda x: x["price"])
 
     def get_best_bid(self) -> Optional[float]:
         return self._bid_orders[0]["price"] if self._bid_orders else None
@@ -132,25 +135,22 @@ class SimulatedTrading:
     def __init__(self, initial_capital: float = 1000000):
         self._initial_capital = initial_capital
         self._cash = initial_capital
-        self._positions: dict[str, Position] = {}
+        self._positions: dict[str, SimPosition] = {}
         self._pending_orders: list[Order] = []
+        self._max_pending_orders = 1000
         self._trade_history: list[TradeRecord] = []
         self._max_trade_history = 10000
         self._commission_rate = 0.0003
         self._stamp_tax_rate = 0.001
         self._min_commission = 5.0
-        self._limit_up_pct = 0.10
-        self._limit_down_pct = 0.10
-        self._st_limit_up_pct = 0.05
-        self._st_limit_down_pct = 0.05
         self._prev_close_map: dict[str, float] = {}
         self._entry_price_map: dict[str, float] = {}
         self._order_books: dict[str, OrderBook] = {}
         self._slippage_rate = 0.001
         self._market_status_cache: dict[str, dict] = {}
         self._trade_lock = threading.RLock()
-        self._order_ids: set[str] = set()
-        self._max_order_ids = 100000
+        self._order_ids: OrderedDict[str, None] = OrderedDict()
+        self._max_order_ids = 10000
         self._audit_logger = self._init_audit_logger()
         from core.risk_manager import EnhancedRiskManager
         self._risk_manager = EnhancedRiskManager()
@@ -168,6 +168,14 @@ class SimulatedTrading:
             except Exception as e:
                 logger.warning(f"Audit logger init failed: {e}")
         return audit_logger
+
+    def _register_order_id(self, order_id: str) -> bool:
+        if order_id in self._order_ids:
+            return False
+        self._order_ids[order_id] = None
+        while len(self._order_ids) > self._max_order_ids:
+            self._order_ids.popitem(last=False)
+        return True
 
     def _write_audit(self, action: str, detail: dict) -> None:
         try:
@@ -249,14 +257,23 @@ class SimulatedTrading:
             stamp_tax = amount * self._stamp_tax_rate if is_sell else 0
         return commission, stamp_tax
 
-    def _is_st(self, name: str) -> bool:
+    @staticmethod
+    def _get_board_limit(symbol: str) -> float:
+        if symbol.startswith("8"):
+            return 0.30
+        if symbol.startswith(("3", "68")):
+            return 0.20
+        return 0.10
+
+    @staticmethod
+    def _is_st(name: str) -> bool:
         return name.startswith("ST") or name.startswith("*ST") or name.startswith("st")
 
     def _check_limit_up(self, symbol: str, name: str, price: float) -> bool:
         prev = self._prev_close_map.get(symbol)
         if not prev or prev <= 0:
             return False
-        pct = self._st_limit_up_pct if self._is_st(name) else self._limit_up_pct
+        pct = 0.05 if self._is_st(name) else self._get_board_limit(symbol)
         limit_price = prev * (1 + pct)
         return price >= limit_price * 0.995
 
@@ -264,12 +281,17 @@ class SimulatedTrading:
         prev = self._prev_close_map.get(symbol)
         if not prev or prev <= 0:
             return False
-        pct = self._st_limit_down_pct if self._is_st(name) else self._limit_down_pct
+        pct = 0.05 if self._is_st(name) else self._get_board_limit(symbol)
         limit_price = prev * (1 - pct)
         return price <= limit_price * 1.005
 
     def _today_str(self) -> str:
         return datetime.now().strftime("%Y-%m-%d")
+
+    def daily_settlement(self) -> None:
+        with self._trade_lock:
+            for pos in self._positions.values():
+                pos.available_shares = pos.shares
 
     def execute_buy(
         self,
@@ -285,12 +307,8 @@ class SimulatedTrading:
         order_id: str = "",
     ) -> dict:
         with self._trade_lock:
-            if order_id and order_id in self._order_ids:
+            if order_id and not self._register_order_id(order_id):
                 return {"success": False, "error": "重复订单"}
-            if order_id:
-                self._order_ids.add(order_id)
-                if len(self._order_ids) > self._max_order_ids:
-                    self._order_ids.clear()
 
             if price <= 0 or shares <= 0:
                 return {"success": False, "error": "无效的价格或数量"}
@@ -361,7 +379,7 @@ class SimulatedTrading:
                 pos.current_price = filled_price
                 self._entry_price_map[symbol] = pos.avg_cost
             else:
-                self._positions[symbol] = Position(
+                self._positions[symbol] = SimPosition(
                     symbol=symbol,
                     name=name,
                     market=market,
@@ -429,12 +447,8 @@ class SimulatedTrading:
         order_id: str = "",
     ) -> dict:
         with self._trade_lock:
-            if order_id and order_id in self._order_ids:
+            if order_id and not self._register_order_id(order_id):
                 return {"success": False, "error": "重复订单"}
-            if order_id:
-                self._order_ids.add(order_id)
-                if len(self._order_ids) > self._max_order_ids:
-                    self._order_ids.clear()
 
             if symbol not in self._positions:
                 return {"success": False, "error": f"未持有 {symbol}"}
@@ -474,7 +488,7 @@ class SimulatedTrading:
             pnl = (filled_price - pos.avg_cost) * sell_shares - total_fee
 
             pos.shares -= sell_shares
-            pos.available_shares = min(pos.available_shares, pos.shares)
+            pos.available_shares -= sell_shares
 
             if pos.shares <= 0:
                 del self._positions[symbol]
@@ -554,6 +568,9 @@ class SimulatedTrading:
                 total_cost = amount + commission + stamp_tax
                 if total_cost > self._cash:
                     return {"success": False, "error": f"资金不足：需要{total_cost:.2f}，可用{self._cash:.2f}"}
+
+            if len(self._pending_orders) >= self._max_pending_orders:
+                return {"success": False, "error": f"挂单队列已满（上限{self._max_pending_orders}）"}
 
             order = Order(
                 id=str(uuid.uuid4())[:8],
@@ -754,10 +771,10 @@ class SimulatedTrading:
                 elif pos.take_profit > 0 and pos.current_price >= pos.take_profit:
                     auto_sells.append((symbol, pos.current_price, "止盈"))
 
-        for symbol, price, reason in list(auto_sells):
-            result = self.execute_sell(symbol, price, reason=reason, market_price=price)
-            if result.get("success"):
-                logger.info(f"Auto {reason} executed for {symbol} at {price}")
+            for symbol, price, reason in auto_sells:
+                result = self.execute_sell(symbol, price, reason=reason, market_price=price)
+                if result.get("success"):
+                    logger.info(f"Auto {reason} executed for {symbol} at {price}")
 
     def get_account_info(self) -> dict:
         with self._trade_lock:
@@ -797,7 +814,8 @@ class SimulatedTrading:
             }
 
     def get_trade_history(self, limit: int = 100) -> dict:
-        trades = sorted(self._trade_history, key=lambda t: t.time, reverse=True)[:limit]
+        with self._trade_lock:
+            trades = sorted(self._trade_history, key=lambda t: t.time, reverse=True)[:limit]
         return {
             "trades": [
                 {

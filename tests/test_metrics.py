@@ -58,6 +58,12 @@ class TestCalcSortino:
         sortino = calc_sortino(returns)
         assert isinstance(sortino, float)
 
+    def test_no_downside_returns_finite(self):
+        returns = pd.Series([0.01, 0.02, 0.015, 0.03, 0.01])
+        sortino = calc_sortino(returns)
+        assert np.isfinite(sortino)
+        assert sortino > 0
+
 
 class TestCalcMaxDrawdown:
     def test_basic(self):

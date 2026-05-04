@@ -2,8 +2,8 @@ import logging
 import re
 from typing import Optional
 
-from fastapi import APIRouter, Query, Request
-from pydantic import BaseModel, field_validator
+from fastapi import APIRouter, Path, Query, Request
+from pydantic import BaseModel, Field, field_validator
 
 from api.utils import json_response as _json_response, safe_error
 
@@ -14,20 +14,12 @@ _SYMBOL_RE = re.compile(r"^[0-9]{6}\.[A-Z]{2}$|^[0-9]{6}$|^[A-Z]+$")
 
 
 class BacktestRunRequest(BaseModel):
-    symbol: str
-    strategy_type: str = "adaptive"
-    start_date: str = "2024-01-01"
-    end_date: str = "2025-12-31"
+    symbol: str = Field(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$")
+    strategy_type: str = Field("adaptive", max_length=30, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    start_date: str = Field("2024-01-01", pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Field("2025-12-31", pattern=r"^\d{4}-\d{2}-\d{2}$")
     initial_capital: float = 1000000
     commission: float = 0.0003
-
-    @field_validator("symbol")
-    @classmethod
-    def validate_symbol(cls, v: str) -> str:
-        v = v.strip()
-        if not v or len(v) > 20:
-            raise ValueError("股票代码格式无效")
-        return v
 
     @field_validator("initial_capital")
     @classmethod
@@ -45,11 +37,11 @@ class BacktestRunRequest(BaseModel):
 
 
 class BacktestAdvancedRequest(BaseModel):
-    symbol: str
-    strategy_type: str = "adaptive"
-    strategy_name: Optional[str] = None
-    start_date: str = "2022-01-01"
-    end_date: str = "2024-12-31"
+    symbol: str = Field(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$")
+    strategy_type: str = Field("adaptive", max_length=30, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    strategy_name: Optional[str] = Field(None, max_length=30, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    start_date: str = Field("2022-01-01", pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Field("2024-12-31", pattern=r"^\d{4}-\d{2}-\d{2}$")
     initial_capital: float = 1000000
     enable_short: bool = False
     leverage: float = 1.0
@@ -57,14 +49,6 @@ class BacktestAdvancedRequest(BaseModel):
     n_simulations: int = 500
     sensitivity: bool = False
     walk_forward: bool = False
-
-    @field_validator("symbol")
-    @classmethod
-    def validate_symbol(cls, v: str) -> str:
-        v = v.strip()
-        if not v or len(v) > 20:
-            raise ValueError("股票代码格式无效")
-        return v
 
     @field_validator("initial_capital")
     @classmethod
@@ -147,10 +131,10 @@ async def get_backtest_result(request: Request, task_id: str):
 @backtest_router.get("/backtest/compare")
 async def compare_strategies(
     request: Request,
-    symbol: str = Query(...),
-    start_date: str = Query("2024-01-01"),
-    end_date: str = Query("2025-12-31"),
-    period: str = Query("1y"),
+    symbol: str = Query(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
+    start_date: str = Query("2024-01-01", pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    end_date: str = Query("2025-12-31", pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    period: str = Query("1y", max_length=5),
 ):
     try:
         from core.strategies import STRATEGY_REGISTRY
@@ -200,9 +184,9 @@ async def compare_strategies(
 @backtest_router.get("/backtest/recommend")
 async def recommend_strategy(
     request: Request,
-    symbol: str = Query(...),
-    start_date: str = Query("2024-01-01"),
-    end_date: str = Query("2025-12-31"),
+    symbol: str = Query(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
+    start_date: str = Query("2024-01-01", pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    end_date: str = Query("2025-12-31", pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ):
     try:
         import numpy as np

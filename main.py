@@ -15,6 +15,7 @@ import time
 import traceback
 import webbrowser
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -27,10 +28,11 @@ except ImportError:
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import router, push_realtime_data
+from api.routes import router, push_realtime_data, _manager
 from api.auth import APIAuthMiddleware
 from core.logger import setup_logger
 from core.config import get_config
@@ -45,10 +47,14 @@ except RuntimeError:
 
 setup_logger(logging.INFO)
 logger = logging.getLogger(__name__)
-gc.set_threshold(700, 10, 10)
 
 BASE_DIR = Path(__file__).parent
-PORT = 8080
+try:
+    from core.config import load_config
+    cfg = load_config()
+    PORT = int(cfg.get("server", {}).get("port", 8080))
+except Exception:
+    PORT = 8080
 _preload_done = threading.Event()
 _PID_FILE = BASE_DIR / "data" / ".quantcore.pid"
 
@@ -61,8 +67,18 @@ def _kill_existing_process():
         result = sock.connect_ex(("127.0.0.1", PORT))
         sock.close()
         if result != 0:
+            try:
+                _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+                _PID_FILE.write_text(str(os.getpid()))
+            except Exception:
+                pass
             return
     except Exception:
+        try:
+            _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _PID_FILE.write_text(str(os.getpid()))
+        except Exception:
+            pass
         return
 
     try:
@@ -70,19 +86,35 @@ def _kill_existing_process():
             old_pid = int(_PID_FILE.read_text().strip())
             if old_pid != os.getpid():
                 try:
-                    os.kill(old_pid, signal.SIGTERM)
-                    logger.info(f"已发送 SIGTERM 到旧进程 PID={old_pid}")
-                    time.sleep(1)
-                    try:
-                        os.kill(old_pid, 0)
-                        os.kill(old_pid, signal.SIGKILL)
-                        logger.info(f"旧进程未退出，已发送 SIGKILL PID={old_pid}")
-                    except ProcessLookupError:
-                        pass
+                    os.kill(old_pid, 0)
                 except ProcessLookupError:
-                    pass
-                except PermissionError:
-                    pass
+                    _PID_FILE.unlink(missing_ok=True)
+                    logger.debug(f"Stale PID file (process {old_pid} gone), removing")
+                else:
+                    try:
+                        cmdline_path = Path(f"/proc/{old_pid}/cmdline")
+                        if cmdline_path.exists():
+                            cmdline = cmdline_path.read_text()
+                            if "quantitative-trading" not in cmdline and "uvicorn" not in cmdline:
+                                logger.warning(f"PID {old_pid} is not our process, not killing")
+                                _PID_FILE.unlink(missing_ok=True)
+                                raise RuntimeError("PID mismatch")
+                        try:
+                            os.kill(old_pid, signal.SIGTERM)
+                            logger.info(f"已发送 SIGTERM 到旧进程 PID={old_pid}")
+                            time.sleep(1)
+                            try:
+                                os.kill(old_pid, 0)
+                                os.kill(old_pid, signal.SIGKILL)
+                                logger.info(f"旧进程未退出，已发送 SIGKILL PID={old_pid}")
+                            except ProcessLookupError:
+                                pass
+                        except ProcessLookupError:
+                            pass
+                        except PermissionError:
+                            pass
+                    except RuntimeError:
+                        pass
     except Exception as e:
         logger.debug(f"PID file cleanup error: {e}")
 
@@ -146,6 +178,12 @@ async def lifespan(app: FastAPI):
     app.state.start_time = time.time()
     app.state._request_count = 0
     app.state._total_response_time = 0.0
+    app.state._latency_buckets = {
+        "<10ms": 0, "10-50ms": 0, "50-100ms": 0, "100-500ms": 0,
+        "500ms-1s": 0, "1s-5s": 0, ">5s": 0,
+    }
+    app.state._error_count = 0
+    app.state._bg_tasks = []
 
     try:
         from core.data_fetcher import get_aiohttp_session
@@ -165,22 +203,40 @@ async def lifespan(app: FastAPI):
         count = await build_search_index_async()
         logger.info(f"搜索倒排索引构建完成: {count} 只股票")
     except Exception as e:
-        logger.debug(f"搜索索引构建失败: {e}")
+        logger.warning(f"搜索索引构建失败: {e}")
 
     try:
-        asyncio.create_task(_preload_data(app.state.fetcher))
+        task = asyncio.create_task(_preload_data(app.state.fetcher))
+        app.state._bg_tasks.append(task)
     except Exception as e:
-        logger.debug(f"Preload task start failed: {e}")
+        logger.warning(f"Preload task start failed: {e}")
 
     try:
-        asyncio.create_task(push_realtime_data(app.state.fetcher))
+        task = asyncio.create_task(push_realtime_data(app.state.fetcher))
+        app.state._bg_tasks.append(task)
+
+        async def _stale_ws_sweeper():
+            while True:
+                await asyncio.sleep(60)
+                try:
+                    swept = await _manager.sweep_stale_connections()
+                    if swept:
+                        logger.info(f"Swept {swept} stale WebSocket connections")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning(f"Stale WS sweep error: {e}")
+
+        task2 = asyncio.create_task(_stale_ws_sweeper())
+        app.state._bg_tasks.append(task2)
     except Exception as e:
-        logger.debug(f"WS push task start failed: {e}")
+        logger.warning(f"WS push task start failed: {e}")
 
     try:
-        asyncio.create_task(_scheduler_loop(app))
+        task = asyncio.create_task(_scheduler_loop(app))
+        app.state._bg_tasks.append(task)
     except Exception as e:
-        logger.debug(f"Scheduler task start failed: {e}")
+        logger.warning(f"Scheduler task start failed: {e}")
 
     try:
         from core.market_data import start_background_refresh
@@ -197,12 +253,28 @@ async def lifespan(app: FastAPI):
     logger.info("QuantCore 正在关闭...")
 
     try:
-        from core.data_fetcher import _aiohttp_session
-        if _aiohttp_session is not None and not _aiohttp_session.closed:
-            await _aiohttp_session.close()
-            logger.info("aiohttp session 已关闭")
+        for task in app.state._bg_tasks:
+            if not task.done():
+                task.cancel()
+        if app.state._bg_tasks:
+            await asyncio.gather(*app.state._bg_tasks, return_exceptions=True)
+        logger.info("后台异步任务已取消")
     except Exception as e:
-        logger.debug(f"aiohttp session close failed: {e}")
+        logger.warning(f"Task cancellation failed: {e}")
+
+    try:
+        from core.data_fetcher import close_aiohttp_session
+        await close_aiohttp_session()
+        logger.info("aiohttp session 已关闭")
+    except Exception as e:
+        logger.warning(f"aiohttp session close failed: {e}")
+
+    try:
+        db = get_db()
+        db._flush_buffer()
+        logger.info("数据库写缓冲已刷入磁盘")
+    except Exception as e:
+        logger.warning(f"DB buffer flush on shutdown failed: {e}")
 
     try:
         from core.market_data import stop_background_refresh
@@ -214,7 +286,7 @@ async def lifespan(app: FastAPI):
         cm = get_cache_manager()
         cm.flush()
     except Exception as e:
-        logger.debug(f"Cache flush on shutdown failed: {e}")
+        logger.warning(f"Cache flush on shutdown failed: {e}")
 
     try:
         trading: SimulatedTrading = app.state.trading
@@ -222,7 +294,7 @@ async def lifespan(app: FastAPI):
         db.set_config("portfolio_snapshot", trading.get_account_info())
         logger.info("Portfolio snapshot saved")
     except Exception as e:
-        logger.debug(f"Portfolio snapshot failed: {e}")
+        logger.warning(f"Portfolio snapshot failed: {e}")
 
     logger.info("QuantCore 已关闭")
 
@@ -240,27 +312,31 @@ async def _preload_data(fetcher):
 
 async def _scheduler_loop(app):
     await asyncio.sleep(5)
+    from api.routes import _manager, _is_trading_hours
+    from core.database import get_db
+    from core.market_detector import MarketDetector
+
     ws_rt_interval = 5
     hot_refresh_interval = 60
     temperature_interval = 300
     fundamental_interval = 3600
+    alert_check_interval = 30
     cleanup_hour = 2
 
     last_ws_rt = 0
     last_hot = 0
     last_temp = 0
     last_fundamental = 0
+    last_alert_check = 0
     last_cleanup_date = ""
 
     while True:
         try:
             now = time.time()
-            from core.data_fetcher import SmartDataFetcher
-            fetcher: SmartDataFetcher = app.state.fetcher
+            fetcher = app.state.fetcher
 
             if now - last_ws_rt >= ws_rt_interval:
                 try:
-                    from api.routes import _manager, _is_trading_hours
                     if _is_trading_hours() and _manager.connections:
                         subscribed = _manager.get_all_subscribed_symbols()
                         for symbol in list(subscribed)[:30]:
@@ -288,13 +364,11 @@ async def _scheduler_loop(app):
 
             if now - last_fundamental >= fundamental_interval:
                 try:
-                    from core.database import get_db
                     db = get_db()
                     watchlist = db.get_config("watchlist", [])
                     if isinstance(watchlist, list):
                         for symbol in watchlist[:10]:
                             try:
-                                from core.market_detector import MarketDetector
                                 market = MarketDetector.detect(symbol)
                                 await fetcher.get_fundamentals(symbol, market)
                             except Exception:
@@ -303,13 +377,46 @@ async def _scheduler_loop(app):
                 except Exception as e:
                     logger.warning("Fundamental refresh error: %s", e, exc_info=True)
 
+            if now - last_alert_check >= alert_check_interval:
+                try:
+                    if _is_trading_hours() and _manager.connections:
+                        from api.routes import push_alert_event
+                        db = get_db()
+                        alerts = db.get_config("price_alerts", [])
+                        if isinstance(alerts, list):
+                            for alert in alerts[:20]:
+                                if not alert.get("active", True):
+                                    continue
+                                symbol = alert.get("symbol", "")
+                                threshold = float(alert.get("threshold", 0))
+                                direction = alert.get("direction", "above")
+                                if not symbol or threshold <= 0:
+                                    continue
+                                try:
+                                    rt = await asyncio.wait_for(fetcher.get_realtime(symbol), timeout=3)
+                                    if rt and rt.get("price", 0) > 0:
+                                        price = float(rt["price"])
+                                        triggered = (direction == "above" and price >= threshold) or \
+                                                    (direction == "below" and price <= threshold)
+                                        if triggered:
+                                            await push_alert_event(
+                                                symbol, f"price_{direction}", threshold, price
+                                            )
+                                            alert["active"] = False
+                                            alert["triggered_at"] = datetime.now().isoformat()
+                                            alert["triggered_price"] = price
+                                            db.set_config("price_alerts", alerts)
+                                except (asyncio.TimeoutError, Exception):
+                                    pass
+                    last_alert_check = now
+                except Exception as e:
+                    logger.warning("Alert check error: %s", e, exc_info=True)
+
             try:
-                from datetime import datetime
                 current_hour = datetime.now().hour
                 current_date = datetime.now().strftime("%Y-%m-%d")
                 if current_hour == cleanup_hour and current_date != last_cleanup_date:
                     try:
-                        from core.database import get_db
                         db = get_db()
                         result = db.cleanup_stale_data(days=30)
                         logger.info(f"DB cleanup: {result}")
@@ -320,12 +427,24 @@ async def _scheduler_loop(app):
                 logger.warning("Cleanup check error: %s", e, exc_info=True)
 
             await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            logger.info("Scheduler loop cancelled, exiting")
+            raise
         except Exception as e:
             logger.error(f"Scheduler loop error: {e}")
             await asyncio.sleep(10)
 
 
-app = FastAPI(title="QuantCore", version="3.0.0", lifespan=lifespan)
+try:
+    from fastapi.responses import ORJSONResponse
+    _default_response_class = ORJSONResponse
+except ImportError:
+    _default_response_class = None
+
+app = FastAPI(
+    title="QuantCore", version="3.0.0", lifespan=lifespan,
+    **({"default_response_class": _default_response_class} if _default_response_class else {}),
+)
 
 
 @app.exception_handler(ValueError)
@@ -341,26 +460,27 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={"success": False, "error": "服务器内部错误，请稍后重试"},
     )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:3000",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-    ],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 _config = get_config()
 _api_config = _config.get("api", {})
-app.add_middleware(
-    APIAuthMiddleware,
+_cors_origins = _config.get("server", {}).get("cors_origins", [])
+_default_origins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+]
+app.add_middleware(APIAuthMiddleware,
     api_key=_api_config.get("api_key", ""),
     enabled=_api_config.get("auth_enabled", False),
+)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins if _cors_origins else _default_origins,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
 
 
@@ -382,6 +502,24 @@ async def unified_metrics_middleware(request: Request, call_next):
     try:
         app.state._request_count = getattr(app.state, "_request_count", 0) + 1
         app.state._total_response_time = getattr(app.state, "_total_response_time", 0.0) + elapsed_ms
+        buckets = getattr(app.state, "_latency_buckets", None)
+        if buckets is not None:
+            if elapsed_ms < 10:
+                buckets["<10ms"] += 1
+            elif elapsed_ms < 50:
+                buckets["10-50ms"] += 1
+            elif elapsed_ms < 100:
+                buckets["50-100ms"] += 1
+            elif elapsed_ms < 500:
+                buckets["100-500ms"] += 1
+            elif elapsed_ms < 1000:
+                buckets["500ms-1s"] += 1
+            elif elapsed_ms < 5000:
+                buckets["1s-5s"] += 1
+            else:
+                buckets[">5s"] += 1
+        if response.status_code >= 400:
+            app.state._error_count = getattr(app.state, "_error_count", 0) + 1
     except Exception:
         pass
     path = request.url.path

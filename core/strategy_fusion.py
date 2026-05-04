@@ -99,6 +99,7 @@ class StrategyFusion:
     def __init__(self, config: FusionConfig = None):
         self._config = config or FusionConfig()
         self._weight_history: List[Dict[str, float]] = []
+        self._weight_history_max = 120
 
     def fuse(
         self,
@@ -142,6 +143,8 @@ class StrategyFusion:
             weights = ic_vol_weight(filtered)
 
         self._weight_history.append(weights)
+        if len(self._weight_history) > self._weight_history_max:
+            self._weight_history = self._weight_history[-self._weight_history_max:]
 
         combined = pd.Series(0.0, index=next(iter(filtered.values())).values.index)
         contribution = {}

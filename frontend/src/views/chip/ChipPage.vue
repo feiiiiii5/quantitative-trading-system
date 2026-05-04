@@ -141,11 +141,11 @@ async function fetchChip() {
   loading.value = true
   try {
     chipData.value = await api.chip.distribution(symbol)
+    loading.value = false
     await nextTick()
     drawChart()
   } catch {
     chipData.value = null
-  } finally {
     loading.value = false
   }
 }
@@ -243,7 +243,11 @@ onMounted(() => {
   }
 })
 
-watch(() => chipData.value, () => nextTick(drawChart))
+watch([() => chipData.value, () => loading.value], () => {
+  if (chipData.value && !loading.value) {
+    nextTick(drawChart)
+  }
+})
 </script>
 
 <style scoped>

@@ -5,6 +5,7 @@ QuantCore 智能选股器模块
 """
 import asyncio
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -162,6 +163,9 @@ def _apply_condition(stock: dict, cond: FilterCondition) -> bool:
     return False
 
 
+_ENRICHED_FIELDS = {"pct_5d", "pct_20d", "high_60d_ratio", "volume_ratio", "roe", "dividend_yield", "revenue_yoy"}
+
+
 class StockScreener:
     """智能选股器 - 多条件筛选A股"""
 
@@ -216,6 +220,18 @@ class StockScreener:
                 results.append(stock)
         return results
 
+    def _screen_raw_only(self, stocks: list[dict], conditions: list[FilterCondition]) -> list[dict]:
+        if not conditions:
+            return stocks[:500]
+        raw_conditions = [c for c in conditions if c.field not in _ENRICHED_FIELDS]
+        if not raw_conditions:
+            return stocks[:500]
+        results = []
+        for stock in stocks:
+            if all(_apply_condition(stock, c) for c in raw_conditions):
+                results.append(stock)
+        return results
+
     async def screen_with_enrichment(
         self,
         stocks: list[dict],
@@ -226,29 +242,43 @@ class StockScreener:
         limit: int = 50,
     ) -> list[dict]:
         if preset_id:
-            filtered = self.screen_by_preset(stocks, preset_id)
+            preset = self._presets.get(preset_id)
+            conditions = preset.conditions if preset else []
         elif custom_conditions:
-            filtered = self.screen_by_conditions(stocks, custom_conditions)
+            parsed = []
+            for c in custom_conditions:
+                try:
+                    op = FilterOperator(c.get("operator", "gt"))
+                    parsed.append(FilterCondition(
+                        field=c["field"],
+                        operator=op,
+                        value=c.get("value", 0),
+                        label=c.get("label", ""),
+                    ))
+                except (ValueError, KeyError):
+                    continue
+            conditions = parsed
+        else:
+            conditions = []
+
+        needs_enrichment = any(c.field in _ENRICHED_FIELDS for c in conditions)
+
+        if needs_enrichment and conditions:
+            filtered = self._screen_raw_only(stocks, conditions)
+            if filtered and needs_enrichment:
+                filtered = await self._enrich_with_history(filtered)
+            for stock in filtered:
+                stock.setdefault("pct_5d", 0)
+                stock.setdefault("pct_20d", 0)
+                stock.setdefault("high_60d_ratio", 0)
+                stock.setdefault("volume_ratio", 0)
+            enriched_conditions = [c for c in conditions if c.field in _ENRICHED_FIELDS]
+            if enriched_conditions:
+                filtered = [s for s in filtered if all(_apply_condition(s, c) for c in enriched_conditions)]
+        elif conditions:
+            filtered = self._screen(stocks, conditions)
         else:
             filtered = stocks
-
-        needs_history = any(
-            c.field in ("pct_5d", "pct_20d", "high_60d_ratio", "volume_ratio")
-            for c in (self._presets[preset_id].conditions if preset_id and preset_id in self._presets else [])
-        )
-        if not needs_history and preset_id:
-            for c in self._presets[preset_id].conditions:
-                if c.field in ("pct_5d", "pct_20d", "high_60d_ratio", "volume_ratio"):
-                    needs_history = True
-                    break
-        if custom_conditions:
-            for c in custom_conditions:
-                if c.get("field") in ("pct_5d", "pct_20d", "high_60d_ratio", "volume_ratio"):
-                    needs_history = True
-                    break
-
-        if needs_history and filtered:
-            filtered = await self._enrich_with_history(filtered)
 
         for stock in filtered:
             stock.setdefault("pct_5d", 0)
@@ -257,7 +287,7 @@ class StockScreener:
             stock.setdefault("volume_ratio", 0)
 
         reverse = sort_desc
-        filtered.sort(key=lambda x: float(x.get(sort_by, 0) or 0), reverse=reverse)
+        filtered.sort(key=lambda x: float(x.get(sort_by) if x.get(sort_by) is not None else 0), reverse=reverse)
         return filtered[:limit]
 
     async def _enrich_with_history(self, stocks: list[dict]) -> list[dict]:
@@ -322,10 +352,13 @@ class StockScreener:
 
 
 _screener: Optional[StockScreener] = None
+_screener_lock = threading.Lock()
 
 
 def get_stock_screener() -> StockScreener:
     global _screener
     if _screener is None:
-        _screener = StockScreener()
+        with _screener_lock:
+            if _screener is None:
+                _screener = StockScreener()
     return _screener

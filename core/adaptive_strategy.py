@@ -70,53 +70,57 @@ REGIME_LABELS = {
 STRATEGY_ALLOCATION = {
     MarketRegime.STRONG_TREND_UP: {
         "strategies": [AdaptiveTrendFollowingStrategy, MultiFactorConfluenceStrategy, SuperTrendStrategy, TurtleTradingStrategy, MomentumStrategy],
-        "weights": [0.25, 0.25, 0.20, 0.18, 0.12],
+        "weights": [0.22, 0.22, 0.20, 0.20, 0.16],
     },
     MarketRegime.MILD_TREND_UP: {
         "strategies": [MultiFactorConfluenceStrategy, DualMAStrategy, VolumeWeightedMACDStrategy, VolatilitySqueezeBreakoutStrategy, DonchianChannelStrategy],
-        "weights": [0.25, 0.20, 0.20, 0.18, 0.17],
+        "weights": [0.22, 0.22, 0.20, 0.18, 0.18],
     },
     MarketRegime.HIGH_VOLATILITY_RANGE: {
         "strategies": [MeanReversionProStrategy, VolatilitySqueezeBreakoutStrategy, KDJStrategy, RSIMeanReversionStrategy, ATRChannelBreakoutStrategy],
-        "weights": [0.25, 0.25, 0.18, 0.17, 0.15],
+        "weights": [0.24, 0.22, 0.20, 0.18, 0.16],
     },
     MarketRegime.LOW_VOLATILITY_CONSOLIDATION: {
-        "strategies": [VolatilitySqueezeBreakoutStrategy, MeanReversionProStrategy, DualThrustStrategy, ATRChannelBreakoutStrategy],
-        "weights": [0.30, 0.25, 0.25, 0.20],
+        "strategies": [VolatilitySqueezeBreakoutStrategy, MeanReversionProStrategy, DualThrustStrategy, ATRChannelBreakoutStrategy, DonchianChannelStrategy],
+        "weights": [0.25, 0.22, 0.22, 0.18, 0.13],
     },
     MarketRegime.MILD_TREND_DOWN: {
-        "strategies": [SuperTrendStrategy, ChandeKrollStopStrategy, MACDStrategy, MeanReversionProStrategy],
-        "weights": [0.30, 0.25, 0.25, 0.20],
+        "strategies": [SuperTrendStrategy, ChandeKrollStopStrategy, MACDStrategy, MeanReversionProStrategy, DualMAStrategy],
+        "weights": [0.25, 0.22, 0.22, 0.18, 0.13],
     },
     MarketRegime.STRONG_TREND_DOWN: {
-        "strategies": [AdaptiveTrendFollowingStrategy, SuperTrendStrategy, ChandeKrollStopStrategy, DonchianChannelStrategy],
-        "weights": [0.30, 0.28, 0.22, 0.20],
+        "strategies": [AdaptiveTrendFollowingStrategy, SuperTrendStrategy, ChandeKrollStopStrategy, DonchianChannelStrategy, MACDStrategy],
+        "weights": [0.25, 0.25, 0.20, 0.18, 0.12],
     },
     MarketRegime.BEAR_TRAP: {
         "strategies": [WyckoffAccumulationStrategy, MeanReversionProStrategy, RSIMeanReversionStrategy, OrderFlowImbalanceStrategy, TurtleTradingStrategy],
-        "weights": [0.25, 0.25, 0.18, 0.17, 0.15],
+        "weights": [0.24, 0.22, 0.20, 0.18, 0.16],
     },
     MarketRegime.DISTRIBUTION_TOP: {
-        "strategies": [ElliottWaveAIStrategy, SuperTrendStrategy, MarketMicrostructureStrategy, ChandeKrollStopStrategy],
-        "weights": [0.28, 0.28, 0.22, 0.22],
+        "strategies": [ElliottWaveAIStrategy, SuperTrendStrategy, MarketMicrostructureStrategy, ChandeKrollStopStrategy, MACDStrategy],
+        "weights": [0.24, 0.24, 0.20, 0.18, 0.14],
     },
 }
 
-BUY_THRESHOLD = 0.35
-STRONG_BUY_THRESHOLD = 0.55
-SELL_THRESHOLD = 0.30
+BUY_THRESHOLD = 0.30
+STRONG_BUY_THRESHOLD = 0.50
+SELL_THRESHOLD = 0.25
 ATR_STOP_MULTIPLIER = 2.5
-MAX_DRAWDOWN_PROTECTION = 0.08
+MAX_DRAWDOWN_PROTECTION = 0.10
 COOLDOWN_BARS = 3
 TREND_FILTER_LOOKBACK = 60
 KELLY_FRACTION = 0.5
 CHANDELIER_PERIOD = 22
 CHANDELIER_MULT = 3.0
 CVAR_CONFIDENCE = 0.95
-CVAR_LIMIT = 0.03
+CVAR_LIMIT = 0.04
 Q_LEARNING_RATE = 0.1
 Q_DISCOUNT = 0.9
 Q_EPSILON = 0.15
+PARTIAL_EXIT_DRAWDOWN = 0.05
+PARTIAL_EXIT_RATIO = 0.5
+VOLATILITY_SCALING = True
+MIN_TRADE_INTERVAL = 2
 
 
 class QLearningWeightAdapter:
@@ -124,7 +128,8 @@ class QLearningWeightAdapter:
 
     def __init__(self, n_strategies: int, learning_rate: float = Q_LEARNING_RATE,
                  discount: float = Q_DISCOUNT, epsilon_start: float = 0.3,
-                 epsilon_end: float = 0.05, epsilon_decay: float = 0.995):
+                 epsilon_end: float = 0.05, epsilon_decay: float = 0.995,
+                 seed: Optional[int] = None):
         self._n = n_strategies
         self._lr = learning_rate
         self._discount = discount
@@ -133,6 +138,7 @@ class QLearningWeightAdapter:
         self._epsilon_end = epsilon_end
         self._epsilon_decay = epsilon_decay
         self._q_table: Dict[str, np.ndarray] = {}
+        self._rng = np.random.RandomState(seed)
         self._last_state: Optional[str] = None
         self._last_action: Optional[int] = None
         self._trade_count = 0
@@ -149,8 +155,8 @@ class QLearningWeightAdapter:
             self._q_table[state] = np.zeros(self._n)
 
         q_values = self._q_table[state]
-        if np.random.random() < self._epsilon:
-            adapted = np.array(base_weights) + np.random.normal(0, 0.02, self._n)
+        if self._rng.random() < self._epsilon:
+            adapted = np.array(base_weights) + self._rng.normal(0, 0.02, self._n)
         else:
             best_action = int(np.argmax(q_values))
             adapted = np.array(base_weights)
@@ -285,7 +291,6 @@ def classify_market_regime(df: pd.DataFrame, window: int = 20) -> List[MarketReg
     adx_full = calc_adx(h, low_arr, c, period=14)
     atr_full = calc_atr(h, low_arr, c, period=14)
 
-    # 自适应ADX阈值：用过去252日的百分位数
     adx_strong_threshold = 30.0
     adx_mild_threshold = 20.0
     adx_window = adx_full[max(0, len(adx_full) - 252):]
@@ -314,29 +319,28 @@ def classify_market_regime(df: pd.DataFrame, window: int = 20) -> List[MarketReg
                 vol_slope = 0
 
             ma20 = float(np.mean(segment_c))
+            ma10 = float(np.mean(segment_c[-10:])) if len(segment_c) >= 10 else ma20
             price = c[i]
             deviation = (price - ma20) / ma20 if ma20 > 0 else 0
+            short_deviation = (price - ma10) / ma10 if ma10 > 0 else 0
 
             trend_strength = adx_val
             is_strong_trend = trend_strength > adx_strong_threshold
             is_mild_trend = trend_strength > adx_mild_threshold
             is_ranging = trend_strength < adx_mild_threshold
 
-            # 空头陷阱检测：价格跌破20日低点后2日内强力收复+成交量萎缩
             if i >= window + 10:
                 support = float(np.min(low_arr[i - window:i - 5]))
                 recent_low = float(np.min(low_arr[i - 5:i + 1]))
                 recent_high = float(np.max(h[i - 3:i + 1]))
                 recent_vol = float(np.mean(v[i - 3:i + 1]))
                 avg_vol = float(np.mean(v[i - window:i - 5])) if i > window + 5 else 1
-                # 成交量萎缩说明卖压不强，是空头陷阱
                 vol_shrink = avg_vol > 0 and recent_vol < avg_vol * 0.8
                 if (recent_low < support and price > support and
                         vol_shrink and price > ma20 * 0.98):
                     regimes[i] = MarketRegime.BEAR_TRAP
                     continue
 
-            # 派发顶部检测：价格创新高但ADX下降+成交量萎缩
             if i >= window + 5:
                 prev_high = float(np.max(h[i - window:i - 3]))
                 recent_peak = float(np.max(h[i - 3:i + 1]))
@@ -351,21 +355,31 @@ def classify_market_regime(df: pd.DataFrame, window: int = 20) -> List[MarketReg
             if is_strong_trend:
                 if deviation > 0.02:
                     regimes[i] = MarketRegime.STRONG_TREND_UP
-                elif deviation > 0:
+                elif deviation > 0 or short_deviation > 0:
                     regimes[i] = MarketRegime.STRONG_TREND_UP
-                elif deviation < -0.02:
+                elif deviation < -0.03:
+                    regimes[i] = MarketRegime.STRONG_TREND_DOWN
+                elif deviation < -0.01:
                     regimes[i] = MarketRegime.STRONG_TREND_DOWN
                 else:
-                    regimes[i] = MarketRegime.STRONG_TREND_DOWN
+                    if short_deviation > 0:
+                        regimes[i] = MarketRegime.MILD_TREND_UP
+                    else:
+                        regimes[i] = MarketRegime.MILD_TREND_DOWN
             elif is_mild_trend:
                 if deviation > 0.005:
                     regimes[i] = MarketRegime.MILD_TREND_UP
                 elif deviation < -0.005:
                     regimes[i] = MarketRegime.MILD_TREND_DOWN
-                elif deviation > 0:
+                elif short_deviation > 0:
                     regimes[i] = MarketRegime.MILD_TREND_UP
-                else:
+                elif short_deviation < 0:
                     regimes[i] = MarketRegime.MILD_TREND_DOWN
+                else:
+                    if hist_vol > 0.20:
+                        regimes[i] = MarketRegime.HIGH_VOLATILITY_RANGE
+                    else:
+                        regimes[i] = MarketRegime.LOW_VOLATILITY_CONSOLIDATION
             elif is_ranging:
                 if hist_vol > 0.25:
                     regimes[i] = MarketRegime.HIGH_VOLATILITY_RANGE
@@ -393,6 +407,7 @@ class AdaptiveStrategyEngine:
         self._q_adapters: Dict[str, QLearningWeightAdapter] = {}
         self._mtf_analyzer = MultiTimeframeAnalyzer()
         self._returns_history: List[float] = []
+        self._returns_history_max = 120
 
     def _kelly_position(self, c: np.ndarray, lookback: int = 60) -> float:
         return calc_kelly_fraction(c, lookback, half_kelly=KELLY_FRACTION)
@@ -499,6 +514,42 @@ class AdaptiveStrategyEngine:
         self._dynamic_weights[key] = adapted
         return adapted
 
+    @staticmethod
+    def _record_trade(trades: list, action: str, price: float, trade_shares: int,
+                      commission: float, stamp_tax: float, date_str: str,
+                      bar_index: int, reason: str, entry_price: float = 0.0) -> dict:
+        revenue = trade_shares * price
+        fee = max(revenue * commission, 5.0)
+        stamp = revenue * stamp_tax
+        total_fee = fee + stamp
+        pnl = (price - entry_price) * trade_shares - total_fee if action == "sell" else 0.0
+        trade = {
+            "action": action,
+            "symbol": "",
+            "price": price,
+            "shares": trade_shares,
+            "amount": round(revenue, 2),
+            "fee": round(total_fee, 2),
+            "date": date_str,
+            "bar_index": bar_index,
+            "pnl": round(pnl, 2) if action == "sell" else 0.0,
+            "reason": reason,
+        }
+        if action == "sell":
+            trade["hold_days"] = 0
+        trades.append(trade)
+        return {"revenue": revenue, "total_fee": total_fee, "pnl": pnl}
+
+    def _append_equity(self, equity_curve: list, cash: float, shares: int,
+                        price: float) -> None:
+        bar_equity = cash + (shares * price if shares > 0 else 0)
+        equity_curve.append(bar_equity)
+        if len(equity_curve) >= 2 and equity_curve[-2] > 0:
+            daily_ret = (equity_curve[-1] - equity_curve[-2]) / equity_curve[-2]
+            self._returns_history.append(daily_ret)
+            if len(self._returns_history) > self._returns_history_max:
+                self._returns_history = self._returns_history[-self._returns_history_max:]
+
     def run(self, df: pd.DataFrame) -> dict:
         if df is None or len(df) < 50:
             return {"error": "数据不足，至少需要50个交易日"}
@@ -594,27 +645,13 @@ class AdaptiveStrategyEngine:
                         sell_reason = f"Chandelier止损(止损价={position['chandelier_stop']:.2f})"
 
                     if should_sell:
-                        revenue = shares * current_price
-                        fee = max(revenue * self._commission, 5.0)
-                        stamp = revenue * self._stamp_tax
-                        total_fee = fee + stamp
-                        pnl = (current_price - position["entry_price"]) * shares - total_fee
-                        cash += revenue - total_fee
                         date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
-                        hold_days = i - position["entry_idx"]
-                        trades.append({
-                            "action": "sell",
-                            "symbol": "",
-                            "price": current_price,
-                            "shares": shares,
-                            "amount": round(revenue, 2),
-                            "fee": round(total_fee, 2),
-                            "date": date_str,
-                            "bar_index": i,
-                            "pnl": round(pnl, 2),
-                            "hold_days": hold_days,
-                            "reason": sell_reason,
-                        })
+                        result = self._record_trade(
+                            trades, "sell", current_price, shares,
+                            self._commission, self._stamp_tax, date_str, i,
+                            sell_reason, position["entry_price"])
+                        cash += result["revenue"] - result["total_fee"]
+                        trades[-1]["hold_days"] = i - position["entry_idx"]
                         sell_bar_set.add(i)
                         last_sell_bar = i
                         shares = 0
@@ -684,6 +721,23 @@ class AdaptiveStrategyEngine:
                 elif drawdown_from_peak >= MAX_DRAWDOWN_PROTECTION:
                     should_sell = True
                     sell_reason = f"最大回撤保护(回撤={drawdown_from_peak * 100:.1f}%)"
+                elif drawdown_from_peak >= PARTIAL_EXIT_DRAWDOWN and shares > 100:
+                    partial_shares = int(shares * PARTIAL_EXIT_RATIO) // 100 * 100
+                    if partial_shares >= 100:
+                        fill_price = opens[i] if i < len(opens) and opens[i] > 0 else current_price
+                        if fill_price <= 0:
+                            fill_price = current_price
+                        date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
+                        result = self._record_trade(
+                            trades, "sell", fill_price, partial_shares,
+                            self._commission, self._stamp_tax, date_str, i,
+                            f"部分止盈(回撤={drawdown_from_peak * 100:.1f}%)",
+                            position["entry_price"])
+                        cash += result["revenue"] - result["total_fee"]
+                        shares -= partial_shares
+                        position["shares"] = shares
+                        trades[-1]["hold_days"] = i - position["entry_idx"]
+                        sell_bar_set.add(i)
                 elif strong_sell or sell_score > SELL_THRESHOLD:
                     should_sell = True
                     sell_reason = f"融合卖出信号(卖出分数={sell_score:.2f})"
@@ -716,29 +770,16 @@ class AdaptiveStrategyEngine:
                                     sell_shares = max_shares_by_amount
 
                     revenue = sell_shares * fill_price
-                    fee = max(revenue * self._commission, 5.0)
-                    stamp = revenue * self._stamp_tax
-                    total_fee = fee + stamp
-                    pnl = (fill_price - position["entry_price"]) * sell_shares - total_fee
-                    cash += revenue - total_fee
                     date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
-                    hold_days = i - position["entry_idx"]
-                    trades.append({
-                        "action": "sell",
-                        "symbol": "",
-                        "price": fill_price,
-                        "shares": sell_shares,
-                        "amount": round(revenue, 2),
-                        "fee": round(total_fee, 2),
-                        "date": date_str,
-                        "bar_index": i,
-                        "pnl": round(pnl, 2),
-                        "hold_days": hold_days,
-                        "reason": sell_reason,
-                    })
+                    result = self._record_trade(
+                        trades, "sell", fill_price, sell_shares,
+                        self._commission, self._stamp_tax, date_str, i,
+                        sell_reason, position["entry_price"])
+                    cash += result["revenue"] - result["total_fee"]
+                    trades[-1]["hold_days"] = i - position["entry_idx"]
                     sell_bar_set.add(i)
                     last_sell_bar = i
-                    shares -= sell_shares
+                    shares = max(0, shares - sell_shares)
                     if shares <= 0:
                         shares = 0
                         position = None
@@ -747,10 +788,10 @@ class AdaptiveStrategyEngine:
                         name = type(instances[best_buy_idx]).__name__
                         if name not in self._strategy_perf:
                             self._strategy_perf[name] = []
-                        self._strategy_perf[name].append(pnl)
+                        self._strategy_perf[name].append(result["pnl"])
                         if len(self._strategy_perf[name]) > 20:
                             self._strategy_perf[name] = self._strategy_perf[name][-20:]
-                        reward = 1.0 if pnl > 0 else -1.0
+                        reward = 1.0 if result["pnl"] > 0 else -1.0
                         q_adapter = self._get_q_adapter(regime, len(instances))
                         q_adapter.update(regime, current_vol, current_trend, best_buy_idx, reward)
 
@@ -771,63 +812,49 @@ class AdaptiveStrategyEngine:
                         adjusted_buy_score *= 0.3
 
                 if adjusted_buy_score < BUY_THRESHOLD:
-                    bar_equity = cash + (shares * c[i] if shares > 0 else 0)
-                    equity_curve.append(bar_equity)
-                    if len(equity_curve) >= 2 and equity_curve[-2] > 0:
-                        daily_ret = (equity_curve[-1] - equity_curve[-2]) / equity_curve[-2]
-                        self._returns_history.append(daily_ret)
+                    self._append_equity(equity_curve, cash, shares, c[i])
                     continue
 
                 fill_price = opens[i] if i < len(opens) and opens[i] > 0 else c[i]
                 if fill_price <= 0:
                     fill_price = c[i]
                 if fill_price <= 0:
-                    bar_equity = cash + (shares * c[i] if shares > 0 else 0)
-                    equity_curve.append(bar_equity)
-                    if len(equity_curve) >= 2 and equity_curve[-2] > 0:
-                        daily_ret = (equity_curve[-1] - equity_curve[-2]) / equity_curve[-2]
-                        self._returns_history.append(daily_ret)
+                    self._append_equity(equity_curve, cash, shares, c[i])
                     continue
 
                 if volumes is not None:
                     bar_vol = volumes[i] if i < len(volumes) else 0
                     if np.isnan(bar_vol) or bar_vol <= 0:
-                        bar_equity = cash + (shares * c[i] if shares > 0 else 0)
-                        equity_curve.append(bar_equity)
-                        if len(equity_curve) >= 2 and equity_curve[-2] > 0:
-                            daily_ret = (equity_curve[-1] - equity_curve[-2]) / equity_curve[-2]
-                            self._returns_history.append(daily_ret)
+                        self._append_equity(equity_curve, cash, shares, c[i])
                         continue
 
                 cvar_adj = self._cvar_position_adjustment()
                 if cvar_adj <= 0:
-                    bar_equity = cash + (shares * c[i] if shares > 0 else 0)
-                    equity_curve.append(bar_equity)
-                    if len(equity_curve) >= 2 and equity_curve[-2] > 0:
-                        daily_ret = (equity_curve[-1] - equity_curve[-2]) / equity_curve[-2]
-                        self._returns_history.append(daily_ret)
+                    self._append_equity(equity_curve, cash, shares, c[i])
                     continue
+
+                vol_adj = 1.0
+                if VOLATILITY_SCALING and current_vol > 0:
+                    target_vol = 0.15
+                    vol_adj = min(1.5, max(0.3, target_vol / current_vol))
 
                 conviction_mult = min(1.5, adjusted_buy_score / BUY_THRESHOLD)
                 if adjusted_buy_score > STRONG_BUY_THRESHOLD:
                     kelly = self._kelly_position(c[:i + 1])
-                    alloc_pct = min(0.60, kelly * 1.2) * cvar_adj * conviction_mult
+                    alloc_pct = min(0.60, kelly * 1.2) * cvar_adj * conviction_mult * vol_adj
                 else:
                     kelly = self._kelly_position(c[:i + 1])
-                    alloc_pct = min(0.40, kelly) * cvar_adj * conviction_mult
+                    alloc_pct = min(0.40, kelly) * cvar_adj * conviction_mult * vol_adj
 
-                alloc_amount = equity_curve[-1] * alloc_pct
+                current_equity = cash + (shares * c[i] if shares > 0 else 0)
+                alloc_amount = current_equity * alloc_pct
                 if alloc_amount > cash * 0.98:
                     alloc_amount = cash * 0.98
 
                 lot_size = 100
                 buy_shares = int(alloc_amount / fill_price / lot_size) * lot_size
                 if buy_shares <= 0:
-                    bar_equity = cash + (shares * c[i] if shares > 0 else 0)
-                    equity_curve.append(bar_equity)
-                    if len(equity_curve) >= 2 and equity_curve[-2] > 0:
-                        daily_ret = (equity_curve[-1] - equity_curve[-2]) / equity_curve[-2]
-                        self._returns_history.append(daily_ret)
+                    self._append_equity(equity_curve, cash, shares, c[i])
                     continue
 
                 if volumes is not None and amounts_col is not None:
@@ -846,11 +873,7 @@ class AdaptiveStrategyEngine:
                             buy_shares = max_shares_by_amount
 
                 if buy_shares <= 0:
-                    bar_equity = cash + (shares * c[i] if shares > 0 else 0)
-                    equity_curve.append(bar_equity)
-                    if len(equity_curve) >= 2 and equity_curve[-2] > 0:
-                        daily_ret = (equity_curve[-1] - equity_curve[-2]) / equity_curve[-2]
-                        self._returns_history.append(daily_ret)
+                    self._append_equity(equity_curve, cash, shares, c[i])
                     continue
 
                 amount = buy_shares * fill_price
@@ -860,18 +883,14 @@ class AdaptiveStrategyEngine:
                 if total_cost > cash:
                     buy_shares = int(cash * 0.98 / fill_price / lot_size) * lot_size
                     if buy_shares <= 0:
-                        bar_equity = cash + (shares * c[i] if shares > 0 else 0)
-                        equity_curve.append(bar_equity)
-                        if len(equity_curve) >= 2 and equity_curve[-2] > 0:
-                            daily_ret = (equity_curve[-1] - equity_curve[-2]) / equity_curve[-2]
-                            self._returns_history.append(daily_ret)
+                        self._append_equity(equity_curve, cash, shares, c[i])
                         continue
                     amount = buy_shares * fill_price
                     fee = max(amount * self._commission, 5.0)
                     total_cost = amount + fee
 
                 cash -= total_cost
-                shares = buy_shares
+                shares += buy_shares
 
                 atr_val = atr_full[i] if not np.isnan(atr_full[i]) else fill_price * 0.02
                 trailing_stop = fill_price - ATR_STOP_MULTIPLIER * atr_val
@@ -890,23 +909,12 @@ class AdaptiveStrategyEngine:
                 buy_bar_set.add(i)
 
                 signal_label = "强力买入" if buy_score > STRONG_BUY_THRESHOLD else "买入"
-                trades.append({
-                    "action": "buy",
-                    "symbol": "",
-                    "price": fill_price,
-                    "shares": buy_shares,
-                    "amount": round(amount, 2),
-                    "fee": round(fee, 2),
-                    "date": date_str,
-                    "bar_index": i,
-                    "reason": f"{signal_label}(融合分数={buy_score:.2f}, 市场状态={REGIME_LABELS.get(regime, '')})",
-                })
+                self._record_trade(
+                    trades, "buy", fill_price, buy_shares,
+                    self._commission, self._stamp_tax, date_str, i,
+                    f"{signal_label}(融合分数={buy_score:.2f}, 市场状态={REGIME_LABELS.get(regime, '')})")
 
-            bar_equity = cash + (shares * c[i] if shares > 0 else 0)
-            equity_curve.append(bar_equity)
-            if len(equity_curve) >= 2 and equity_curve[-2] > 0:
-                daily_ret = (equity_curve[-1] - equity_curve[-2]) / equity_curve[-2]
-                self._returns_history.append(daily_ret)
+            self._append_equity(equity_curve, cash, shares, c[i])
 
         if position is not None and shares > 0:
             cash += shares * c[-1]
@@ -945,12 +953,13 @@ class AdaptiveStrategyEngine:
         annual_return = ((1 + total_return / 100) ** (252 / max(trading_days, 1)) - 1) * 100 if trading_days > 0 else 0
         calmar_ratio = (annual_return / max_dd) if max_dd > 0 else 0
 
-        returns = []
-        eq_arr_full = np.array(equity_curve)
-        if len(eq_arr_full) > 1:
-            mask = eq_arr_full[:-1] > 0
-            ret = np.where(mask, (eq_arr_full[1:] - eq_arr_full[:-1]) / eq_arr_full[:-1], 0)
-            returns = ret.tolist()
+        returns = self._returns_history if self._returns_history else []
+        if not returns:
+            eq_arr_full = np.array(equity_curve)
+            if len(eq_arr_full) > 1:
+                mask = eq_arr_full[:-1] > 0
+                ret = np.where(mask, (eq_arr_full[1:] - eq_arr_full[:-1]) / eq_arr_full[:-1], 0)
+                returns = ret.tolist()
 
         sharpe = 0
         if returns:

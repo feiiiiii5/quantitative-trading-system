@@ -541,3 +541,33 @@ export interface SectorDetail {
   sector: SectorStrengthItem | null
   stocks: { symbol: string; name: string; price: number; change_pct: number; change: number; turnover_rate: number; high: number; low: number; main_net_inflow: number }[]
 }
+
+export interface BacktestHistoryItem {
+  id?: string
+  symbol: string
+  strategy_type: string
+  result: BacktestResult
+  created_at?: string
+}
+
+export interface MonteCarloResult {
+  ruin_prob: number
+  paths: number[][]
+  percentiles?: { p5: number[]; p50: number[]; p95: number[] }
+  avg_final_value?: number
+}
+
+export interface SensitivityItem {
+  param: string
+  value: number
+  sharpe_ratio: number
+  total_return: number
+  max_drawdown: number
+}
+
+export interface StrategyRecommendation {
+  strategy: string
+  strategy_class: string
+  score: number
+  reasons: string[]
+}

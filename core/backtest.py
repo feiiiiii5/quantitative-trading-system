@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -6,7 +7,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from core.strategies import BaseStrategy, CompositeStrategy, StrategyResult, SignalType
+from core.strategies import BaseStrategy, CompositeStrategy, StrategyResult, SignalType, STRATEGY_REGISTRY
 from core.events import EventBus, Event, EventType
 from core.risk_manager import EnhancedRiskManager
 
@@ -87,11 +88,12 @@ def _simulate_twap_fill(price: float, shares: int, daily_amount: float,
     return total_fill / shares
 
 
-def _check_limit_price(prev_close: float, price: float, is_buy: bool) -> tuple[bool, float]:
+def _check_limit_price(prev_close: float, price: float, is_buy: bool,
+                       limit_pct: float = 0.10) -> tuple[bool, float]:
     if prev_close <= 0:
         return True, 1.0
-    upper = prev_close * 1.1
-    lower = prev_close * 0.9
+    upper = prev_close * (1 + limit_pct)
+    lower = prev_close * (1 - limit_pct)
     if is_buy and price >= upper:
         fill_prob = max(0.1, 1.0 - (price - upper) / (upper * 0.01 + 1e-9))
         return False, min(fill_prob, 0.9)
@@ -99,6 +101,14 @@ def _check_limit_price(prev_close: float, price: float, is_buy: bool) -> tuple[b
         fill_prob = max(0.1, 1.0 - (lower - price) / (lower * 0.01 + 1e-9))
         return False, min(fill_prob, 0.9)
     return True, 1.0
+
+
+def _get_limit_pct(symbol: str) -> float:
+    if symbol.startswith(("3", "68")):
+        return 0.20
+    if symbol.startswith("8"):
+        return 0.30
+    return 0.10
 
 
 @dataclass
@@ -172,7 +182,7 @@ class BacktestEngine:
         self._event_bus = event_bus or EventBus()
         self._risk_manager = risk_manager or EnhancedRiskManager(initial_capital=initial_capital)
 
-    def run(self, strategy: BaseStrategy, df: pd.DataFrame) -> BacktestResult:
+    def run(self, strategy: BaseStrategy, df: pd.DataFrame, symbol: str = "") -> BacktestResult:
         if df is None or len(df) < 10:
             return BacktestResult(strategy_name=strategy.name)
 
@@ -223,7 +233,7 @@ class BacktestEngine:
                 f"Signal priority: removed {len(conflicting_bars)} conflicting buy signal(s) on bars {conflicting_bars}"
             )
 
-        return self._build_result(strategy.name, df, buy_signals, sell_signals, result)
+        return self._build_result(strategy.name, df, buy_signals, sell_signals, result, symbol)
 
     def run_multi(self, strategies: list[BaseStrategy], df: pd.DataFrame) -> dict[str, BacktestResult]:
         results = {}
@@ -258,7 +268,7 @@ class BacktestEngine:
             max_dds.append(float(np.max(dd)))
             trade_ret = sampled / max(self._initial_capital, 1)
             std = np.std(trade_ret)
-            sharpes.append(float(np.mean(trade_ret) / std * np.sqrt(252)) if std > 0 else 0.0)
+            sharpes.append(float(np.mean(trade_ret) / std) if std > 0 else 0.0)
             all_curves.append(curve)
 
         n_sample_paths = min(30, n_simulations)
@@ -313,9 +323,9 @@ class BacktestEngine:
                     sharpe = 0.0
                 sharpes.append(sharpe)
                 points.append({"value": params[name], "sharpe_ratio": round(sharpe, 4)})
-            denom = abs(base_val) if abs(float(base_val)) > 1e-9 else 1.0
-            elasticity = (max(sharpes) - min(sharpes)) / denom if sharpes else 0.0
-            output[name] = {"points": points, "elasticity": round(float(elasticity), 4)}
+            param_range = high - low
+            elasticity = (max(sharpes) - min(sharpes)) / param_range if sharpes and param_range > 1e-9 else 0.0
+            output[name] = {"points": points, "elasticity": round(float(elasticity), 6)}
 
         heatmap = []
         names = list(output.keys())[:2]
@@ -350,6 +360,7 @@ class BacktestEngine:
         buy_signals: list,
         sell_signals: list,
         strategy_result: StrategyResult,
+        symbol: str = "",
     ) -> BacktestResult:
         closes = df["close"].values.astype(float) if "close" in df.columns else np.array([])
         opens = df["open"].values.astype(float) if "open" in df.columns else closes
@@ -381,6 +392,8 @@ class BacktestEngine:
             entry_idx = int(position_data.get("entry_idx", exit_idx))
             if entry_price <= 0:
                 return 0.0, 0.0
+            if entry_idx < 0 or exit_idx < 0 or entry_idx >= n or exit_idx >= n:
+                return 0.0, 0.0
             start = max(0, min(entry_idx, exit_idx))
             end = max(start, min(exit_idx, n - 1)) + 1
             low_window = lows[start:end] if len(lows) >= end else closes[start:end]
@@ -411,7 +424,8 @@ class BacktestEngine:
 
                 if self._enable_limit_check and i > 0:
                     prev_close = prev_closes[i] if i < len(prev_closes) else closes[i - 1]
-                    is_normal, fill_prob = _check_limit_price(float(prev_close), fill_price, is_buy=True)
+                    limit_pct = _get_limit_pct(symbol)
+                    is_normal, fill_prob = _check_limit_price(float(prev_close), fill_price, is_buy=True, limit_pct=limit_pct)
                     if not is_normal:
                         if self._rng.random() > fill_prob:
                             continue
@@ -509,7 +523,8 @@ class BacktestEngine:
 
                 if self._enable_limit_check and i > 0:
                     prev_close = prev_closes[i] if i < len(prev_closes) else closes[i - 1]
-                    is_normal, fill_prob = _check_limit_price(float(prev_close), fill_price, is_buy=False)
+                    limit_pct = _get_limit_pct(symbol)
+                    is_normal, fill_prob = _check_limit_price(float(prev_close), fill_price, is_buy=False, limit_pct=limit_pct)
                     if not is_normal:
                         if self._rng.random() > fill_prob:
                             continue
@@ -631,6 +646,11 @@ class BacktestEngine:
             bar_equity = cash + (shares * closes[i] if shares > 0 else 0)
             equity_curve.append(bar_equity)
 
+        dates_list = []
+        for d in dates_col:
+            ds = str(d)[:10] if hasattr(d, "__str__") else str(d)[:10]
+            dates_list.append(ds)
+
         if position is not None and shares > 0:
             close_price = closes[-1] * (1 - self._slippage_pct)
             close_cost_detail = self._cost_model.calc_sell_cost(close_price, shares, shares * close_price)
@@ -648,12 +668,6 @@ class BacktestEngine:
             shares = 0
             position = None
 
-        dates_list = []
-        for d in dates_col:
-            ds = str(d)[:10] if hasattr(d, "__str__") else str(d)[:10]
-            dates_list.append(ds)
-
-        peak = equity_curve[0]
         eq_arr = np.array(equity_curve)
         peak_arr = np.maximum.accumulate(eq_arr)
         drawdown_curve = ((peak_arr - eq_arr) / np.where(peak_arr > 0, peak_arr, 1) * 100).tolist()
@@ -661,18 +675,30 @@ class BacktestEngine:
 
         sell_trades = [t for t in trades if t["action"] == "sell"]
         total_trades = len(sell_trades)
-        win_trades = sum(1 for t in sell_trades if t.get("pnl", 0) > 0)
-        loss_trades = sum(1 for t in sell_trades if t.get("pnl", 0) <= 0)
+        win_trades = 0
+        loss_trades = 0
+        total_win = 0.0
+        total_loss = 0.0
+        win_pnls = []
+        loss_pnls = []
+        hold_days_list = []
+        for t in sell_trades:
+            pnl = t.get("pnl", 0)
+            if pnl > 0:
+                win_trades += 1
+                total_win += pnl
+                win_pnls.append(pnl)
+            elif pnl < 0:
+                loss_trades += 1
+                total_loss += abs(pnl)
+                loss_pnls.append(abs(pnl))
+            hd = t.get("hold_days", 0)
+            if hd:
+                hold_days_list.append(hd)
         win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0
-
-        total_win = sum(t.get("pnl", 0) for t in sell_trades if t.get("pnl", 0) > 0)
-        total_loss = sum(abs(t.get("pnl", 0)) for t in sell_trades if t.get("pnl", 0) <= 0)
         profit_factor = (total_win / total_loss) if total_loss > 0 else 999 if total_win > 0 else 0
-
-        avg_profit = np.mean([t["pnl"] for t in sell_trades if t.get("pnl", 0) > 0]) if win_trades > 0 else 0
-        avg_loss = np.mean([abs(t["pnl"]) for t in sell_trades if t.get("pnl", 0) <= 0]) if loss_trades > 0 else 0
-
-        hold_days_list = [t.get("hold_days", 0) for t in sell_trades if t.get("hold_days")]
+        avg_profit = np.mean(win_pnls) if win_pnls else 0
+        avg_loss = np.mean(loss_pnls) if loss_pnls else 0
         avg_hold_days = np.mean(hold_days_list) if hold_days_list else 0
 
         total_return = (equity_curve[-1] - equity_curve[0]) / equity_curve[0] * 100 if equity_curve[0] > 0 else 0
@@ -752,6 +778,8 @@ class BacktestEngine:
                 q95 = float(np.percentile(ret_arr, 95))
                 q05 = float(np.percentile(ret_arr, 5))
                 if q05 < 0:
+                    tail_ratio = abs(q95 / q05)
+                elif abs(q05) > 1e-12:
                     tail_ratio = abs(q95 / q05)
 
         recovery_factor = (total_return / max_dd) if max_dd > 0 else 0.0
@@ -904,7 +932,6 @@ def run_backtest(
     _df=None,
 ) -> dict:
     from core.data_fetcher import get_fetcher
-    from core.strategies import STRATEGY_REGISTRY
 
     if strategy_name == "adaptive":
         return _run_adaptive_backtest(symbol, start_date, end_date, initial_capital, params, _df)
@@ -937,8 +964,6 @@ def run_backtest(
     if _df is not None:
         df = _df.copy()
     else:
-        import asyncio
-
         async def _fetch():
             return await fetcher.get_history(symbol, period=hist_period, kline_type="daily", adjust="qfq")
 
@@ -1330,3 +1355,56 @@ def run_walk_forward(
         "avg_test_return": round(float(np.mean(test_returns)), 4) if test_returns else 0,
         "consistency_rate": round(profitable_count / len(windows), 4) if windows else 0,
     }
+
+
+def _run_single_backtest(args: tuple) -> dict:
+    strategy_name, strategy_cls_name, params, df_dict, symbol, initial_capital = args
+    strategy_cls = STRATEGY_REGISTRY.get(strategy_cls_name)
+    if strategy_cls is None:
+        return {"strategy": strategy_name, "error": f"Unknown strategy: {strategy_cls_name}"}
+    try:
+        strat = strategy_cls(**(params or {}))
+        df = pd.DataFrame(df_dict)
+        engine = BacktestEngine(initial_capital=initial_capital)
+        result = engine.run(strat, df, symbol=symbol)
+        sell_trades = [t for t in result.trades if t.get("action") == "sell"]
+        total_trades = len(sell_trades)
+        win_trades = sum(1 for t in sell_trades if t.get("pnl", 0) > 0)
+        return {
+            "strategy": strategy_name,
+            "total_return": round(result.total_return, 4),
+            "sharpe_ratio": round(result.sharpe_ratio, 4),
+            "max_drawdown": round(result.max_drawdown, 4),
+            "win_rate": round(win_trades / total_trades, 4) if total_trades > 0 else 0.0,
+            "total_trades": total_trades,
+        }
+    except Exception as e:
+        return {"strategy": strategy_name, "error": str(e)}
+
+
+def run_parallel_backtest(
+    strategies: list[dict],
+    df: pd.DataFrame,
+    symbol: str = "",
+    initial_capital: float = 1000000,
+    max_workers: int = 0,
+) -> list[dict]:
+    import multiprocessing as mp
+    if max_workers <= 0:
+        max_workers = min(mp.cpu_count() or 4, 6)
+    df_dict = df.to_dict("list")
+    args_list = []
+    for s in strategies:
+        name = s.get("name", "")
+        cls_name = s.get("class_name", name)
+        params = s.get("params", {})
+        args_list.append((name, cls_name, params, df_dict, symbol, initial_capital))
+    if len(args_list) <= 2 or max_workers <= 1:
+        return [_run_single_backtest(a) for a in args_list]
+    try:
+        with mp.Pool(processes=max_workers) as pool:
+            results = pool.map(_run_single_backtest, args_list)
+        return results
+    except Exception as e:
+        logger.warning(f"Parallel backtest failed, falling back to sequential: {e}")
+        return [_run_single_backtest(a) for a in args_list]

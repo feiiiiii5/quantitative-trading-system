@@ -270,7 +270,7 @@ const infoTabs = [
 
 const maxQty = computed(() => {
   if (!depth.value) return 1
-  const all = [...depth.value.bids, ...depth.value.asks].map((x: any) => x.quantity)
+  const all = [...depth.value.bids, ...depth.value.asks].map((x: { quantity: number }) => x.quantity)
   return Math.max(...all, 1)
 })
 

@@ -5,6 +5,7 @@ QuantCore 资金流向分析模块
 """
 import asyncio
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -17,14 +18,17 @@ logger = logging.getLogger(__name__)
 
 _FLOW_CACHE: dict[str, tuple[list[dict], float]] = {}
 _FLOW_CACHE_TTL = 120
+_FLOW_CACHE_LOCK = threading.Lock()
 
 _SECTOR_FLOW_CACHE: list[dict] = []
 _SECTOR_FLOW_CACHE_TS: float = 0.0
 _SECTOR_FLOW_CACHE_TTL = 300
+_SECTOR_FLOW_LOCK = threading.Lock()
 
 _RANKING_CACHE: list[dict] = []
 _RANKING_CACHE_TS: float = 0.0
 _RANKING_CACHE_TTL = 120
+_RANKING_CACHE_LOCK = threading.Lock()
 
 async def _try_akshare(func_name: str, **kwargs):
     try:
@@ -40,10 +44,11 @@ async def _try_akshare(func_name: str, **kwargs):
 async def fetch_stock_capital_flow(symbol: str, days: int = 10) -> list[dict]:
     cache_key = f"stock_flow_{symbol}_{days}"
     now = time.time()
-    if cache_key in _FLOW_CACHE:
-        cached, ts = _FLOW_CACHE[cache_key]
-        if now - ts < _FLOW_CACHE_TTL:
-            return cached
+    with _FLOW_CACHE_LOCK:
+        if cache_key in _FLOW_CACHE:
+            cached, ts = _FLOW_CACHE[cache_key]
+            if now - ts < _FLOW_CACHE_TTL:
+                return cached
 
     try:
         secid = f"0.{symbol}" if symbol.startswith(("0", "3")) else f"1.{symbol}"
@@ -77,7 +82,8 @@ async def fetch_stock_capital_flow(symbol: str, days: int = 10) -> list[dict]:
                         })
                     except (ValueError, IndexError):
                         continue
-                _FLOW_CACHE[cache_key] = (result, now)
+                with _FLOW_CACHE_LOCK:
+                    _FLOW_CACHE[cache_key] = (result, now)
                 return result
     except Exception as e:
         logger.debug(f"EastMoney stock flow error for {symbol}: {e}")
@@ -102,12 +108,14 @@ async def fetch_stock_capital_flow(symbol: str, days: int = 10) -> list[dict]:
                     "medium_net": 0,
                     "small_net": 0,
                 })
-            _FLOW_CACHE[cache_key] = (result, now)
+            with _FLOW_CACHE_LOCK:
+                _FLOW_CACHE[cache_key] = (result, now)
             return result
     except Exception as e:
         logger.debug(f"K-line fallback flow error for {symbol}: {e}")
 
-    return _FLOW_CACHE.get(cache_key, ([], 0))[0]
+    with _FLOW_CACHE_LOCK:
+        return _FLOW_CACHE.get(cache_key, ([], 0))[0]
 
 
 async def fetch_realtime_capital_flow(symbol: str) -> Optional[dict]:
@@ -173,8 +181,9 @@ async def fetch_capital_flow_ranking(
 ) -> list[dict]:
     global _RANKING_CACHE, _RANKING_CACHE_TS
     now = time.time()
-    if _RANKING_CACHE and now - _RANKING_CACHE_TS < _RANKING_CACHE_TTL:
-        return _RANKING_CACHE
+    with _RANKING_CACHE_LOCK:
+        if _RANKING_CACHE and now - _RANKING_CACHE_TS < _RANKING_CACHE_TTL:
+            return _RANKING_CACHE
 
     try:
         url = "https://push2.eastmoney.com/api/qt/clist/get"
@@ -208,8 +217,9 @@ async def fetch_capital_flow_ranking(
                     "small_net": float(item.get("f81", 0) or 0),
                     "main_pct": float(item.get("f184", 0) or 0),
                 })
-            _RANKING_CACHE = result
-            _RANKING_CACHE_TS = now
+            with _RANKING_CACHE_LOCK:
+                _RANKING_CACHE = result
+                _RANKING_CACHE_TS = now
             return result
     except Exception as e:
         logger.debug(f"EastMoney ranking error: {e}")
@@ -237,19 +247,123 @@ async def fetch_capital_flow_ranking(
                 "small_net": round(-estimated_main_net * 0.3, 2),
                 "main_pct": round(estimated_main_net / amt * 100, 2) if amt > 0 else 0,
             })
-        _RANKING_CACHE = result
-        _RANKING_CACHE_TS = now
+        with _RANKING_CACHE_LOCK:
+            _RANKING_CACHE = result
+            _RANKING_CACHE_TS = now
         return result
     except Exception as e2:
         logger.debug(f"Fallback ranking error: {e2}")
-    return _RANKING_CACHE
+    with _RANKING_CACHE_LOCK:
+        return _RANKING_CACHE
 
 
 async def fetch_sector_capital_flow() -> list[dict]:
     global _SECTOR_FLOW_CACHE, _SECTOR_FLOW_CACHE_TS
     now = time.time()
-    if _SECTOR_FLOW_CACHE and now - _SECTOR_FLOW_CACHE_TS < _SECTOR_FLOW_CACHE_TTL:
-        return _SECTOR_FLOW_CACHE
+    with _SECTOR_FLOW_LOCK:
+        if _SECTOR_FLOW_CACHE and now - _SECTOR_FLOW_CACHE_TS < _SECTOR_FLOW_CACHE_TTL:
+            return _SECTOR_FLOW_CACHE
+
+    try:
+        import akshare as ak
+        df = await asyncio.to_thread(ak.stock_fund_flow_industry, symbol="即时")
+        if df is not None and not df.empty:
+            result = []
+            for _, row in df.iterrows():
+                name = str(row.get("行业", ""))
+                change_pct = float(row.get("行业-涨跌幅", 0) or 0)
+                net_amount = float(row.get("净额", 0) or 0)
+                inflow = float(row.get("流入资金", 0) or 0)
+                outflow = float(row.get("流出资金", 0) or 0)
+                main_net = net_amount * 1e8
+                main_in = inflow * 1e8
+                main_out = outflow * 1e8
+                result.append({
+                    "name": name,
+                    "change_pct": change_pct,
+                    "main_net_inflow": main_net,
+                    "main_inflow": main_in,
+                    "main_outflow": main_out,
+                    "code": "",
+                })
+            result.sort(key=lambda x: x["main_net_inflow"], reverse=True)
+            with _SECTOR_FLOW_LOCK:
+                _SECTOR_FLOW_CACHE = result
+                _SECTOR_FLOW_CACHE_TS = now
+            return result
+    except Exception as e:
+        logger.debug(f"AKShare sector fund flow error: {e}")
+
+    try:
+        url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+        params = {
+            "reportName": "RPT_SECTOR_CAPITAL_FLOW",
+            "columns": "ALL",
+            "pageNumber": "1",
+            "pageSize": "100",
+            "sortTypes": "-1",
+            "sortColumns": "MAIN_NET_INFLOW",
+            "source": "WEB",
+            "client": "WEB",
+        }
+        data = await http_get_json(url, params, referer="https://data.eastmoney.com/")
+        if data and data.get("result") and data["result"].get("data"):
+            items = data["result"]["data"]
+            result = []
+            for item in items:
+                main_net = float(item.get("MAIN_NET_INFLOW", 0) or 0)
+                result.append({
+                    "name": item.get("SECTOR_NAME", ""),
+                    "change_pct": float(item.get("CHANGE_RATE", 0) or 0),
+                    "main_net_inflow": main_net,
+                    "main_inflow": float(item.get("MAIN_INFLOW", 0) or 0),
+                    "main_outflow": float(item.get("MAIN_OUTFLOW", 0) or 0),
+                    "code": item.get("SECTOR_CODE", ""),
+                })
+            result.sort(key=lambda x: x["main_net_inflow"], reverse=True)
+            with _SECTOR_FLOW_LOCK:
+                _SECTOR_FLOW_CACHE = result
+                _SECTOR_FLOW_CACHE_TS = now
+            return result
+    except Exception as e:
+        logger.debug(f"Datacenter sector capital flow error: {e}")
+
+    try:
+        url = "https://push2.eastmoney.com/api/qt/clist/get"
+        params = {
+            "pn": "1",
+            "pz": "100",
+            "po": "1",
+            "np": "1",
+            "fltt": "2",
+            "invt": "2",
+            "fid": "f62",
+            "fs": "m:90+t:2+f:!50",
+            "fields": "f2,f3,f4,f6,f8,f12,f14,f62,f66,f69,f104,f105,f128,f140",
+        }
+        data = await http_get_json(url, params, use_jsonp=True)
+        if data and data.get("data", {}).get("diff"):
+            diff = data["data"]["diff"]
+            result = []
+            for item in diff:
+                main_net = float(item.get("f62", 0) or 0)
+                main_in = float(item.get("f66", 0) or 0)
+                main_out = float(item.get("f69", 0) or 0)
+                result.append({
+                    "name": item.get("f14", ""),
+                    "change_pct": float(item.get("f3", 0) or 0),
+                    "main_net_inflow": main_net,
+                    "main_inflow": main_in,
+                    "main_outflow": main_out,
+                    "code": item.get("f12", ""),
+                })
+            result.sort(key=lambda x: x["main_net_inflow"], reverse=True)
+            with _SECTOR_FLOW_LOCK:
+                _SECTOR_FLOW_CACHE = result
+                _SECTOR_FLOW_CACHE_TS = now
+            return result
+    except Exception as e:
+        logger.debug(f"Push2 sector capital flow error: {e}")
 
     try:
         from core.sector_rotation import fetch_sector_list
@@ -266,12 +380,14 @@ async def fetch_sector_capital_flow() -> list[dict]:
                     "code": s.get("code", ""),
                 })
             result.sort(key=lambda x: x["main_net_inflow"], reverse=True)
-            _SECTOR_FLOW_CACHE = result
-            _SECTOR_FLOW_CACHE_TS = now
+            with _SECTOR_FLOW_LOCK:
+                _SECTOR_FLOW_CACHE = result
+                _SECTOR_FLOW_CACHE_TS = now
             return result
     except Exception as e2:
         logger.debug(f"Sector flow from sector_rotation error: {e2}")
-    return _SECTOR_FLOW_CACHE
+    with _SECTOR_FLOW_LOCK:
+        return _SECTOR_FLOW_CACHE
 
 
 class MoneyFlowAnalyzer:
@@ -329,10 +445,13 @@ class MoneyFlowAnalyzer:
 
 
 _analyzer: Optional[MoneyFlowAnalyzer] = None
+_analyzer_lock = threading.Lock()
 
 
 def get_money_flow_analyzer() -> MoneyFlowAnalyzer:
     global _analyzer
     if _analyzer is None:
-        _analyzer = MoneyFlowAnalyzer()
+        with _analyzer_lock:
+            if _analyzer is None:
+                _analyzer = MoneyFlowAnalyzer()
     return _analyzer

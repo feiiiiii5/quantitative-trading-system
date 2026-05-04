@@ -30,9 +30,18 @@
           <span class="sc-difficulty" :class="s.difficulty">{{ difficultyLabel(s.difficulty) }}</span>
         </div>
         <p class="sc-desc">{{ s.description }}</p>
-        <div class="sc-tags">
-          <span class="sc-tag">{{ s.category }}</span>
-          <span v-if="s.paramCount" class="sc-tag">{{ s.paramCount }}个参数</span>
+        <div class="sc-footer">
+          <div class="sc-tags">
+            <span class="sc-tag">{{ s.category }}</span>
+            <span v-if="s.paramCount" class="sc-tag">{{ s.paramCount }}个参数</span>
+          </div>
+          <router-link
+            :to="`/strategy/run?strategy=${s.name}`"
+            class="sc-backtest-btn"
+            @click.stop
+          >
+            回测
+          </router-link>
         </div>
       </div>
     </div>
@@ -506,6 +515,31 @@ onMounted(async () => {
   background: var(--bg-elevated);
   border-radius: 3px;
   color: var(--text-tertiary);
+}
+
+.sc-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sc-backtest-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  background: var(--accent);
+  color: white;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  text-decoration: none;
+  transition: background var(--duration-fast);
+  white-space: nowrap;
+}
+
+.sc-backtest-btn:hover {
+  background: var(--accent-hover);
 }
 
 .detail-overlay {

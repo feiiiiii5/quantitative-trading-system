@@ -267,7 +267,7 @@ import { usePortfolioStore } from '@/stores/portfolio'
 import { useWatchlistStore } from '@/stores/watchlist'
 import { formatNumber, formatPrice } from '@/utils/format'
 import { api } from '@/api'
-import type { StockQuote } from '@/types'
+import type { StockQuote, SignalItem } from '@/types'
 
 const router = useRouter()
 const marketStore = useMarketStore()
@@ -280,7 +280,7 @@ const anomalies = computed(() => marketStore.anomalies)
 const northbound = computed(() => marketStore.northbound)
 const account = computed(() => portfolioStore.account)
 
-const signals = ref<any[]>([])
+const signals = ref<SignalItem[]>([])
 
 const watchlistQuotes = computed(() => {
   return Object.values(watchlistStore.quotes) as StockQuote[]
@@ -294,7 +294,7 @@ async function fetchSignals() {
   try {
     const res = await api.stock.signals('sh000300')
     if (res?.signals) {
-      signals.value = res.signals.slice(0, 10).map((s: any, i: number) => ({
+      signals.value = res.signals.slice(0, 10).map((s: { symbol?: string; signal?: string; price?: number; date?: string; name?: string; signal_type?: string; strategy?: string }, i: number) => ({
         id: i,
         symbol: s.symbol || 'sh000300',
         name: s.name || '沪深300',

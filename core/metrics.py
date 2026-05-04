@@ -63,7 +63,7 @@ def calc_sortino(returns: pd.Series, risk_free: float = 0.03) -> float:
     excess = returns - risk_free / 252
     downside = excess[excess < 0]
     if len(downside) == 0:
-        return float("inf") if excess.mean() > 0 else 0.0
+        return float(excess.mean() / excess.std() * np.sqrt(252)) if excess.std() > 1e-12 and excess.mean() > 0 else 0.0
     downside_std = np.sqrt(np.mean(downside ** 2))
     if downside_std < 1e-12:
         return 0.0

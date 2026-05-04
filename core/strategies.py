@@ -13,6 +13,18 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
+def _safe_divide(numerator, denominator, default=0.0):
+    if isinstance(denominator, (np.ndarray, pd.Series)):
+        safe_den = np.where(np.abs(denominator) > 1e-12, denominator, 1.0)
+        result = np.where(np.abs(denominator) > 1e-12, numerator / safe_den, default)
+        if isinstance(denominator, pd.Series):
+            return pd.Series(result, index=denominator.index)
+        return result
+    if abs(denominator) > 1e-12:
+        return numerator / denominator
+    return default
+
+
 class SignalType(Enum):
     BUY = "buy"
     SELL = "sell"
@@ -122,9 +134,12 @@ class BaseStrategy:
 
         min_bars = int(getattr(self, "min_bars", 2))
         start = max(1, min(min_bars - 1, len(df) - 1))
+        max_window = int(getattr(self, "_long", 0) or getattr(self, "_period", 0) or 60)
+        max_window = max(max_window, min_bars) + 5
         for i in range(start, len(df)):
             try:
-                signal = self.generate_signal(df.iloc[:i + 1])
+                slice_start = max(0, i + 1 - max_window)
+                signal = self.generate_signal(df.iloc[slice_start:i + 1])
             except Exception as e:
                 logger.debug(f"{self.name} generate_signal failed at {i}: {e}")
                 continue
@@ -208,9 +223,7 @@ class DualMAStrategy(BaseStrategy):
             return TradeSignal(SignalType.BUY, 0.7, f"MA{self._short}上穿MA{self._long}")
         if ma_short.iloc[-1] < ma_long.iloc[-1] and ma_short.iloc[-2] >= ma_long.iloc[-2]:
             return TradeSignal(SignalType.SELL, 0.7, f"MA{self._short}下穿MA{self._long}")
-        if ma_short.iloc[-1] > ma_long.iloc[-1]:
-            return TradeSignal(SignalType.BUY, 0.3, f"MA{self._short}>MA{self._long}")
-        return TradeSignal(SignalType.SELL, 0.3, f"MA{self._short}<MA{self._long}")
+        return TradeSignal(SignalType.HOLD)
 
 
 class MACDStrategy(BaseStrategy):
@@ -267,8 +280,9 @@ class KDJStrategy(BaseStrategy):
         n = 9
         hh = h.rolling(n).max()
         ll = l.rolling(n).min()
-        rsv = (c - ll) / (hh - ll) * 100
-        rsv = rsv.fillna(50)
+        denom = hh - ll
+        rsv = np.where(denom != 0, (c - ll) / denom * 100, 50.0)
+        rsv = pd.Series(rsv, index=df.index).fillna(50)
         df["k"] = rsv.ewm(alpha=1/3, adjust=False).mean()
         df["d"] = df["k"].ewm(alpha=1/3, adjust=False).mean()
         df["j"] = 3 * df["k"] - 2 * df["d"]
@@ -295,8 +309,9 @@ class KDJStrategy(BaseStrategy):
         n = 9
         hh = h.rolling(n).max()
         ll = l.rolling(n).min()
-        rsv = (c - ll) / (hh - ll) * 100
-        rsv = rsv.fillna(50)
+        denom = hh - ll
+        rsv = np.where(denom != 0, (c - ll) / denom * 100, 50.0)
+        rsv = pd.Series(rsv, index=df.index).fillna(50)
         k = rsv.ewm(alpha=1/3, adjust=False).mean()
         d = k.ewm(alpha=1/3, adjust=False).mean()
         j = 3 * k - 2 * d
@@ -357,8 +372,10 @@ class MomentumStrategy(BaseStrategy):
         c = df["close"].astype(float)
         v = df["volume"].astype(float) if "volume" in df.columns else pd.Series(1, index=df.index)
 
-        m1 = (c.iloc[-1] / c.iloc[-self._period] - 1) * 100
-        m2 = (c.iloc[-1] / c.iloc[-self._accel_period] - 1) * 100
+        m1 = _safe_divide(c.iloc[-1], c.iloc[-self._period], 1.0) - 1
+        m1 = m1 * 100 if isinstance(m1, (int, float)) else m1
+        m2 = _safe_divide(c.iloc[-1], c.iloc[-self._accel_period], 1.0) - 1
+        m2 = m2 * 100 if isinstance(m2, (int, float)) else m2
         accel = m1 - m2 if self._accel_period < self._period else 0
 
         realized_vol = c.pct_change().rolling(20).std().replace(0, np.nan).iloc[-1]
@@ -1228,10 +1245,9 @@ class CopulaCorrelationStrategy(BaseStrategy):
             corr, _ = spearmanr(stock_recent, bench_recent)
             if not np.isfinite(corr):
                 corr = 0.0
-        except Exception:
+        except Exception as e:
+            logger.debug(f"CopulaCorrelation correlation error: {e}")
             corr = 0.0
-
-        # 历史相关性均值
         hist_corrs = []
         step = max(20, self._window // 3)
         for i in range(step, n, step):
@@ -1239,8 +1255,8 @@ class CopulaCorrelationStrategy(BaseStrategy):
                 seg_corr, _ = spearmanr(stock_recent[:i], bench_recent[:i])
                 if np.isfinite(seg_corr):
                     hist_corrs.append(seg_corr)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"CopulaCorrelation hist_corr error: {e}")
         hist_mean = np.mean(hist_corrs) if hist_corrs else 0.0
 
         # 个股相对强弱
@@ -1666,7 +1682,7 @@ class OrnsteinUhlenbeckStrategy(BaseStrategy):
         if kappa <= 0:
             return TradeSignal(SignalType.HOLD)
 
-        mu = alpha_hat / (1 - beta_hat)
+        mu = _safe_divide(alpha_hat, 1 - beta_hat, 0.0)
         half_life = np.log(2) / kappa
 
         if half_life < self._min_hl or half_life > self._max_hl:
@@ -1826,7 +1842,7 @@ class GARCHVolatilityStrategy(BaseStrategy):
             return TradeSignal(SignalType.HOLD)
 
         vol_ratio = forecast_vol / current_vol
-        trend = _safe_float(c.iloc[-1] / c.iloc[-20] - 1) if len(c) > 20 else 0
+        trend = _safe_float(_safe_divide(c.iloc[-1], c.iloc[-20], 1.0) - 1) if len(c) > 20 else 0
 
         if vol_ratio > self._surge_threshold:
             if trend > 0:
@@ -1869,9 +1885,9 @@ class MultiTimeframeMomentumStrategy(BaseStrategy):
         c = df["close"].astype(float)
         v = df["volume"].astype(float) if "volume" in df.columns else pd.Series(1, index=df.index)
 
-        ret_short = _safe_float(c.iloc[-1] / c.iloc[-self._short] - 1)
-        ret_mid = _safe_float(c.iloc[-1] / c.iloc[-self._mid] - 1)
-        ret_long = _safe_float(c.iloc[-1] / c.iloc[-self._long] - 1)
+        ret_short = _safe_float(_safe_divide(c.iloc[-1], c.iloc[-self._short], 1.0) - 1)
+        ret_mid = _safe_float(_safe_divide(c.iloc[-1], c.iloc[-self._mid], 1.0) - 1)
+        ret_long = _safe_float(_safe_divide(c.iloc[-1], c.iloc[-self._long], 1.0) - 1)
 
         score = 0.0
         reasons = []
@@ -2028,7 +2044,7 @@ class ChaikinMoneyFlowStrategy(BaseStrategy):
         spread = h - l
         clv = np.where(spread > 0, ((c - l) - (h - c)) / spread, 0.0)
         mfv = clv * v
-        cmf = pd.Series(mfv).rolling(self._period).sum() / v.rolling(self._period).sum()
+        cmf = _safe_divide(pd.Series(mfv).rolling(self._period).sum(), v.rolling(self._period).sum(), 0.0)
         cmf = cmf.fillna(0)
 
         cmf_val = _safe_float(cmf.iloc[-1])
@@ -2206,8 +2222,8 @@ class HurstExponentStrategy(BaseStrategy):
         prices = c.iloc[-self._window:].values
         hurst = self._calc_hurst(prices)
 
-        ret_5 = _safe_float(c.iloc[-1] / c.iloc[-6] - 1) if len(c) >= 6 else 0
-        ret_20 = _safe_float(c.iloc[-1] / c.iloc[-21] - 1) if len(c) >= 21 else 0
+        ret_5 = _safe_float(_safe_divide(c.iloc[-1], c.iloc[-6], 1.0) - 1) if len(c) >= 6 else 0
+        ret_20 = _safe_float(_safe_divide(c.iloc[-1], c.iloc[-21], 1.0) - 1) if len(c) >= 21 else 0
         vol_ma = _safe_float(v.rolling(20).mean().iloc[-1])
         vol_confirm = vol_ma > 0 and _safe_float(v.iloc[-1]) > vol_ma * 1.2
 
@@ -2369,8 +2385,17 @@ class CompositeStrategy:
             HurstExponentStrategy(),
             PairsTradingStrategy(),
         ]
+        self._cache_key: Optional[tuple] = None
+        self._cache_result: Optional[TradeSignal] = None
 
     def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if len(df) > 0:
+            cache_key = (len(df), float(df["close"].iloc[-1]), str(df.index[-1]) if hasattr(df.index[-1], '__str__') else len(df))
+            if cache_key == self._cache_key and self._cache_result is not None:
+                return self._cache_result
+        else:
+            cache_key = None
+
         buy_count = 0
         sell_count = 0
         total_strength = 0.0
@@ -2383,14 +2408,20 @@ class CompositeStrategy:
                 elif sig.signal_type == SignalType.SELL:
                     sell_count += 1
                     total_strength -= sig.strength
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"CompositeStrategy {type(s).__name__} error: {e}")
         n = len(self.strategies) or 1
         if buy_count >= 2 and buy_count > sell_count:
-            return TradeSignal(signal_type=SignalType.BUY, strength=round(buy_count / n, 2), reason=f"{buy_count}个策略看多")
+            result = TradeSignal(signal_type=SignalType.BUY, strength=round(buy_count / n, 2), reason=f"{buy_count}个策略看多")
         elif sell_count >= 2 and sell_count > buy_count:
-            return TradeSignal(signal_type=SignalType.SELL, strength=round(sell_count / n, 2), reason=f"{sell_count}个策略看空")
-        return TradeSignal(signal_type=SignalType.HOLD, strength=0.0, reason="多空分歧")
+            result = TradeSignal(signal_type=SignalType.SELL, strength=round(sell_count / n, 2), reason=f"{sell_count}个策略看空")
+        else:
+            result = TradeSignal(signal_type=SignalType.HOLD, strength=0.0, reason="多空分歧")
+
+        if cache_key is not None:
+            self._cache_key = cache_key
+            self._cache_result = result
+        return result
 
     def get_strategy_info(self) -> list[dict]:
         return [s.get_info() for s in self.strategies]

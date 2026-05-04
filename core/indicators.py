@@ -4,6 +4,7 @@ import pandas as pd
 from core.database import ThreadSafeLRU
 
 _indicator_cache = ThreadSafeLRU(maxsize=200)
+_MAX_CHART_POINTS = 500
 
 
 class TechnicalIndicators:
@@ -95,7 +96,7 @@ class TechnicalIndicators:
         std = s.rolling(period).std()
         upper = mid + nbdev * std
         lower = mid - nbdev * std
-        width = ((upper - lower) / mid * 100).values
+        width = np.where(np.abs(mid.values) > 1e-12, (upper.values - lower.values) / mid.values * 100, 0)
         return {
             "upper": _to_list(upper.values),
             "mid": _to_list(mid.values),
@@ -193,7 +194,8 @@ class TechnicalIndicators:
             loss = np.where(delta < 0, -delta, 0)
             avg_gain = pd.Series(gain).ewm(alpha=1 / p, min_periods=p).mean().values
             avg_loss = pd.Series(loss).ewm(alpha=1 / p, min_periods=p).mean().values
-            rs = np.where(avg_loss != 0, avg_gain / avg_loss, 100)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                rs = np.where(avg_loss != 0, avg_gain / avg_loss, 100)
             rsi_vals = 100 - 100 / (1 + rs)
             result[p] = _to_list(rsi_vals)
         return result
@@ -211,8 +213,8 @@ class TechnicalIndicators:
         k = np.full(len(c), 50.0)
         d = np.full(len(c), 50.0)
         for i in range(1, len(c)):
-            k[i] = (2 / m1) * k[i - 1] + (1 / m1) * rsv[i]
-            d[i] = (2 / m2) * d[i - 1] + (1 / m2) * k[i]
+            k[i] = ((m1 - 1) / m1) * k[i - 1] + (1 / m1) * rsv[i]
+            d[i] = ((m2 - 1) / m2) * d[i - 1] + (1 / m2) * k[i]
         j = 3 * k - 2 * d
         return {"k": _to_list(k), "d": _to_list(d), "j": _to_list(j)}
 
@@ -243,7 +245,8 @@ class TechnicalIndicators:
         result = {}
         for p in [3, 5, 10, 20]:
             vals = np.zeros(len(c))
-            vals[p:] = (c[p:] - c[:-p]) / c[:-p] * 100
+            denom = c[:-p]
+            vals[p:] = np.where(np.abs(denom) > 1e-12, (c[p:] - denom) / denom * 100, 0)
             result[p] = _to_list(vals)
         return result
 
@@ -270,8 +273,10 @@ class TechnicalIndicators:
              period: int = 20) -> np.ndarray:
         clv = np.where((h - low_arr) != 0, ((c - low_arr) - (h - c)) / (h - low_arr), 0)
         mfv = clv * v
-        cmf = pd.Series(mfv).rolling(period).sum() / pd.Series(v).rolling(period).sum()
-        return cmf.values
+        mfv_s = pd.Series(mfv).rolling(period).sum()
+        v_s = pd.Series(v).rolling(period).sum()
+        cmf = np.where(v_s.values > 1e-12, mfv_s.values / v_s.values, 0)
+        return cmf
 
     @staticmethod
     def _atr(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, period: int = 14) -> np.ndarray:
@@ -282,7 +287,9 @@ class TechnicalIndicators:
 
     @staticmethod
     def _hist_vol(c: np.ndarray) -> dict:
-        log_ret = np.log(c[1:] / c[:-1])
+        safe_prev = np.where(np.abs(c[:-1]) > 1e-12, c[:-1], 1e-12)
+        log_ret = np.log(c[1:] / safe_prev)
+        log_ret = np.where(np.isfinite(log_ret), log_ret, 0)
         log_ret = np.insert(log_ret, 0, 0)
         result = {}
         for p in [10, 20, 60]:
@@ -377,11 +384,17 @@ class TechnicalIndicators:
         return "neutral"
 
 
-def _to_list(arr) -> list:
+def _to_list(arr, max_points: int = _MAX_CHART_POINTS) -> list:
     if isinstance(arr, np.ndarray):
-        return np.nan_to_num(arr, nan=0).round(4).tolist()
+        src = arr[-max_points:] if max_points > 0 else arr
+        cleaned = np.nan_to_num(src, nan=0, posinf=0, neginf=0)
+        cleaned.round(4, out=cleaned)
+        return cleaned.tolist()
     if isinstance(arr, pd.Series):
-        return np.nan_to_num(arr.values, nan=0).round(4).tolist()
+        src = arr.iloc[-max_points:] if max_points > 0 else arr
+        cleaned = np.nan_to_num(src.values, nan=0, posinf=0, neginf=0)
+        cleaned.round(4, out=cleaned)
+        return cleaned.tolist()
     return []
 
 
@@ -616,8 +629,10 @@ class IndicatorAnalysis:
         merged = left.merge(right, on="date", how="inner")
         if merged.empty:
             return {"series": []}
-        merged["asset_norm"] = merged["asset_close"] / merged["asset_close"].iloc[0] * 100
-        merged["benchmark_norm"] = merged["benchmark_close"] / merged["benchmark_close"].iloc[0] * 100
+        a0 = merged["asset_close"].iloc[0]
+        b0 = merged["benchmark_close"].iloc[0]
+        merged["asset_norm"] = merged["asset_close"] / a0 * 100 if abs(a0) > 1e-12 else 100
+        merged["benchmark_norm"] = merged["benchmark_close"] / b0 * 100 if abs(b0) > 1e-12 else 100
         merged["relative"] = merged["asset_norm"] - merged["benchmark_norm"]
         return {
             "series": merged[["date", "asset_norm", "benchmark_norm", "relative"]].assign(date=lambda x: x["date"].astype(str)).to_dict("records"),
@@ -680,37 +695,37 @@ def calc_all_indicators(kline_data: list) -> dict:
         if computed:
             result.update(computed)
     except Exception as e:
-        logger.debug(f"compute_all failed: {e}")
+        logger.warning(f"compute_all failed: {e}")
 
     try:
         result["ma_alignment"] = IndicatorAnalysis.ma_alignment(df)
     except Exception as e:
-        logger.debug(f"ma_alignment failed: {e}")
+        logger.warning(f"ma_alignment failed: {e}")
 
     try:
         result["support_resistance"] = IndicatorAnalysis.support_resistance(df)
     except Exception as e:
-        logger.debug(f"support_resistance failed: {e}")
+        logger.warning(f"support_resistance failed: {e}")
 
     try:
         result["volatility"] = IndicatorAnalysis.volatility_range(df)
     except Exception as e:
-        logger.debug(f"volatility_range failed: {e}")
+        logger.warning(f"volatility_range failed: {e}")
 
     try:
         result["volume_price"] = IndicatorAnalysis.volume_price_analysis(df)
     except Exception as e:
-        logger.debug(f"volume_price_analysis failed: {e}")
+        logger.warning(f"volume_price_analysis failed: {e}")
 
     try:
         result["rsi_divergence"] = IndicatorAnalysis.rsi_divergence(df)
     except Exception as e:
-        logger.debug(f"rsi_divergence failed: {e}")
+        logger.warning(f"rsi_divergence failed: {e}")
 
     try:
         result["kline_patterns"] = KLinePatternRecognizer.recognize(df)
     except Exception as e:
-        logger.debug(f"kline_patterns failed: {e}")
+        logger.warning(f"kline_patterns failed: {e}")
 
     return _sanitize_for_json(result)
 
@@ -801,12 +816,7 @@ def calc_factor_turnover(factor_values_series) -> float:
 
 
 def calc_atr(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, period: int = 14) -> np.ndarray:
-    n = len(c)
-    tr = np.empty(n)
-    tr[0] = h[0] - low_arr[0]
-    for i in range(1, n):
-        tr[i] = max(h[i] - low_arr[i], abs(h[i] - c[i - 1]), abs(low_arr[i] - c[i - 1]))
-    return pd.Series(tr).ewm(alpha=1 / period, min_periods=period).mean().values
+    return TechnicalIndicators._atr(h, low_arr, c, period)
 
 
 def calc_adx(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, period: int = 14) -> np.ndarray:
@@ -856,7 +866,8 @@ def calc_chandelier_exit(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray,
 def calc_kelly_fraction(c: np.ndarray, lookback: int = 60, half_kelly: float = 0.5) -> float:
     if len(c) < lookback + 1:
         return 0.25
-    returns = np.diff(c[-lookback - 1:]) / c[-lookback - 1:-1]
+    safe_prev = np.where(np.abs(c[-lookback - 1:-1]) > 1e-12, c[-lookback - 1:-1], 1e-12)
+    returns = np.diff(c[-lookback - 1:]) / safe_prev
     returns = returns[np.isfinite(returns)]
     if len(returns) < 10:
         return 0.25
@@ -911,16 +922,15 @@ def _ema_np(values: np.ndarray, period: int) -> np.ndarray:
     out = np.full(len(arr), np.nan)
     if len(arr) == 0 or period <= 0:
         return out
-    alpha = 2 / (period + 1)
     finite = np.isfinite(arr)
     if not finite.any():
         return out
-    start = int(np.argmax(finite))
-    out[start] = arr[start]
-    for i in range(start + 1, len(arr)):
-        val = arr[i] if np.isfinite(arr[i]) else out[i - 1]
-        out[i] = alpha * val + (1 - alpha) * out[i - 1]
-    return out
+    s = pd.Series(arr)
+    ema = s.ewm(span=period, adjust=False).mean().values
+    ema[~finite] = np.nan
+    first_valid = int(np.argmax(finite))
+    ema[:first_valid] = np.nan
+    return ema
 
 
 def _wma_np(values: np.ndarray, period: int) -> np.ndarray:

@@ -24,15 +24,14 @@ class APIAuthMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self._api_key = api_key
         self._enabled = enabled
+        if not enabled:
+            logger.warning("API认证已禁用，所有接口公开可访问。生产环境请启用认证。")
         self._rate_limits: dict[str, list[float]] = {}
         self._rate_limit_per_minute = 120
         self._max_clients = 10000
         self._last_cleanup = time.time()
 
     async def dispatch(self, request: Request, call_next):
-        if not self._enabled:
-            return await call_next(request)
-
         path = request.url.path
 
         if path in _PUBLIC_PATHS:
@@ -42,22 +41,19 @@ class APIAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if path.startswith("/api"):
-            if self._api_key:
+            if self._enabled and self._api_key:
                 auth_header = request.headers.get("Authorization", "")
                 api_key = request.headers.get("X-API-Key", "")
-                query_key = request.query_params.get("api_key", "")
 
                 if auth_header.startswith("Bearer "):
                     provided_key = auth_header[7:]
                 elif api_key:
                     provided_key = api_key
-                elif query_key:
-                    provided_key = query_key
                 else:
                     provided_key = ""
 
                 if not self._verify_key(provided_key):
-                    logger.warning(f"API认证失败: {request.client_host} -> {path}")
+                    logger.warning(f"API认证失败: {request.client.host if request.client else 'unknown'} -> {path}")
                     return JSONResponse(
                         status_code=401,
                         content={"success": False, "error": "未授权访问，请提供有效的API密钥"},

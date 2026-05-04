@@ -30,6 +30,22 @@ class TestConcentrationFilter:
         ok, _ = f.check(order, ctx)
         assert ok
 
+    def test_none_price_rejected(self):
+        f = ConcentrationFilter(max_concentration=0.3)
+        order = Order(order_id="t", symbol="000001", side=OrderSide.BUY, order_type=OrderType.MARKET, quantity=100, price=None)
+        ctx = {"total_assets": 100000, "current_positions": {}}
+        ok, reason = f.check(order, ctx)
+        assert not ok
+        assert "价格无效" in reason
+
+    def test_zero_price_rejected(self):
+        f = ConcentrationFilter(max_concentration=0.3)
+        order = Order(order_id="t", symbol="000001", side=OrderSide.BUY, order_type=OrderType.MARKET, quantity=100, price=0)
+        ctx = {"total_assets": 100000, "current_positions": {}}
+        ok, reason = f.check(order, ctx)
+        assert not ok
+        assert "价格无效" in reason
+
 
 class TestDailyLossFilter:
     def test_normal_trading(self):
@@ -118,6 +134,27 @@ class TestTrailingStopManager:
         mgr.update("000001", 10.8)
         sp2 = mgr.get_stop_price("000001")
         assert sp2 >= sp1
+
+    def test_short_position_stop_price_only_goes_down(self):
+        mgr = TrailingStopManager(trailing_stop=-0.05, trailing_stop_positive=0.02, trailing_stop_positive_offset=0.05)
+        mgr.register("000001", 10.0, side="short")
+        mgr.update("000001", 9.0)
+        sp1 = mgr.get_stop_price("000001")
+        mgr.update("000001", 9.2)
+        sp2 = mgr.get_stop_price("000001")
+        assert sp2 <= sp1
+
+    def test_short_position_trailing_stop_triggered(self):
+        mgr = TrailingStopManager(trailing_stop=-0.05, trailing_stop_positive=0.02, trailing_stop_positive_offset=0.05)
+        mgr.register("000001", 10.0, side="short")
+        result = mgr.update("000001", 11.0)
+        assert result == "trailing_stop"
+
+    def test_short_position_no_stop_when_profit_small(self):
+        mgr = TrailingStopManager(trailing_stop=-0.05, trailing_stop_positive=0.02, trailing_stop_positive_offset=0.05)
+        mgr.register("000001", 10.0, side="short")
+        result = mgr.update("000001", 9.7)
+        assert result is None
 
 
 class TestROITable:
