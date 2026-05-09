@@ -9,6 +9,8 @@ from decimal import Decimal
 from functools import wraps
 
 import numpy as np
+import orjson
+from fastapi.responses import Response
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +101,30 @@ def sanitize(obj, _depth: int = 0):
 
 def json_response(success: bool, data=None, error: str = ""):
     return {"success": success, "data": sanitize(data), "error": error}
+
+
+def orjson_response(success: bool, data=None, error: str = "", status_code: int = 200) -> Response:
+    payload = {"success": success, "data": sanitize(data), "error": error}
+    body = orjson.dumps(payload, default=_orjson_default)
+    return Response(content=body, status_code=status_code, media_type="application/json")
+
+
+def _orjson_default(obj):
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, set):
+        return list(obj)
+    raise TypeError(f"Type {type(obj)} not serializable")
 
 
 def api_error_handler(

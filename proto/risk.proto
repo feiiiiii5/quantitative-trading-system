@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package quantcore.risk.v1;
+
+service RiskService {
+  rpc PreTradeCheck(PreTradeCheckRequest) returns (PreTradeCheckResponse);
+  rpc GetRiskMetrics(RiskMetricsRequest) returns (RiskMetricsResponse);
+  rpc StreamRiskAlerts(StreamRiskAlertsRequest) returns (stream RiskAlert);
+  rpc SetRiskLimits(SetRiskLimitsRequest) returns (SetRiskLimitsResponse);
+}
+
+message PreTradeCheckRequest {
+  string account_id = 1;
+  string symbol = 2;
+  int32 side = 3;
+  int64 quantity = 4;
+  double price = 5;
+  string strategy_id = 6;
+}
+
+message PreTradeCheckResponse {
+  bool approved = 1;
+  repeated string rejection_reasons = 2;
+  double current_exposure = 3;
+  double max_exposure = 4;
+  double current_drawdown = 5;
+  double max_drawdown = 6;
+  double concentration_pct = 7;
+  double max_concentration_pct = 8;
+}
+
+message RiskMetricsRequest {
+  string account_id = 1;
+  string portfolio_id = 2;
+}
+
+message RiskMetricsResponse {
+  double var_95 = 1;
+  double var_99 = 2;
+  double cvar_95 = 3;
+  double max_drawdown = 4;
+  double sharpe_ratio = 5;
+  double sortino_ratio = 6;
+  double beta = 7;
+  double correlation = 8;
+  double leverage = 9;
+  double gross_exposure = 10;
+  double net_exposure = 11;
+  int64 timestamp_ns = 12;
+}
+
+message StreamRiskAlertsRequest {
+  string account_id = 1;
+  repeated string alert_types = 2;
+}
+
+message RiskAlert {
+  string alert_id = 1;
+  string alert_type = 2;
+  string severity = 3;
+  string message = 4;
+  double current_value = 5;
+  double threshold = 6;
+  int64 timestamp_ns = 7;
+}
+
+message SetRiskLimitsRequest {
+  string account_id = 1;
+  double max_position_pct = 2;
+  double max_drawdown_pct = 3;
+  double max_daily_loss_pct = 4;
+  double max_concentration_pct = 5;
+  double max_leverage = 6;
+  int32 max_open_trades = 7;
+}
+
+message SetRiskLimitsResponse {
+  bool success = 1;
+  string message = 2;
+}

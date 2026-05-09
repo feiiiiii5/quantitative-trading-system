@@ -1,6 +1,3 @@
-"""
-Tests for event_bus module — Typed Event Bus System
-"""
 import pytest
 
 from core.event_bus import Event, EventBus, EventType, get_event_bus, reset_event_bus
@@ -9,9 +6,9 @@ from core.event_bus import Event, EventBus, EventType, get_event_bus, reset_even
 class TestEvent:
 
     def test_event_creation(self):
-        event = Event(event_type=EventType.ORDER_FILLED, payload={"symbol": "AAPL"})
+        event = Event(event_type=EventType.ORDER_FILLED, data={"symbol": "AAPL"})
         assert event.event_type == EventType.ORDER_FILLED
-        assert event.payload["symbol"] == "AAPL"
+        assert event.data["symbol"] == "AAPL"
         assert event.timestamp > 0
         assert len(event.event_id) == 12
 
@@ -24,9 +21,15 @@ class TestEvent:
         event = Event(event_type=EventType.STRATEGY_SIGNAL, source="MACDStrategy")
         assert event.source == "MACDStrategy"
 
-    def test_event_default_payload(self):
+    def test_event_default_data(self):
         event = Event(event_type=EventType.CACHE_INVALIDATED)
-        assert event.payload == {}
+        assert event.data == {}
+
+    def test_event_payload_alias(self):
+        event = Event(event_type=EventType.ORDER_FILLED, data={"price": 10.0})
+        assert event.payload["price"] == 10.0
+        event.payload = {"price": 11.0}
+        assert event.data["price"] == 11.0
 
 
 class TestEventBus:
@@ -36,11 +39,11 @@ class TestEventBus:
         received = []
         bus.subscribe(EventType.ORDER_FILLED, lambda e: received.append(e))
 
-        event = Event(event_type=EventType.ORDER_FILLED, payload={"price": 150.0})
+        event = Event(event_type=EventType.ORDER_FILLED, data={"price": 150.0})
         bus.publish(event)
 
         assert len(received) == 1
-        assert received[0].payload["price"] == 150.0
+        assert received[0].data["price"] == 150.0
 
     def test_multiple_sync_handlers(self):
         bus = EventBus()
@@ -52,6 +55,22 @@ class TestEventBus:
         bus.publish(Event(event_type=EventType.POSITION_OPENED))
         assert len(results_a) == 1
         assert len(results_b) == 1
+
+    def test_handler_priority(self):
+        bus = EventBus()
+        order = []
+        bus.subscribe(EventType.ON_BAR, lambda e: order.append("low"), priority=10)
+        bus.subscribe(EventType.ON_BAR, lambda e: order.append("high"), priority=1)
+        bus.publish(Event(event_type=EventType.ON_BAR))
+        assert order == ["high", "low"]
+
+    def test_subscribe_once(self):
+        bus = EventBus()
+        count = [0]
+        bus.subscribe_once(EventType.ON_TICK, lambda e: count.__setitem__(0, count[0] + 1))
+        bus.publish(Event(event_type=EventType.ON_TICK))
+        bus.publish(Event(event_type=EventType.ON_TICK))
+        assert count[0] == 1
 
     def test_unsubscribe(self):
         bus = EventBus()
@@ -121,7 +140,7 @@ class TestEventBus:
     def test_history_limit(self):
         bus = EventBus()
         for i in range(200):
-            bus.publish(Event(event_type=EventType.ORDER_FILLED, payload={"i": i}))
+            bus.publish(Event(event_type=EventType.ORDER_FILLED, data={"i": i}))
 
         history = bus.get_history(limit=10)
         assert len(history) == 10
@@ -129,7 +148,7 @@ class TestEventBus:
     def test_history_max(self):
         bus = EventBus(max_history=50)
         for i in range(100):
-            bus.publish(Event(event_type=EventType.ORDER_FILLED, payload={"i": i}))
+            bus.publish(Event(event_type=EventType.ORDER_FILLED, data={"i": i}))
 
         history = bus.get_history()
         assert len(history) == 50
@@ -156,8 +175,8 @@ class TestEventBus:
 
     def test_replay(self):
         bus = EventBus()
-        bus.publish(Event(event_type=EventType.ORDER_FILLED, payload={"a": 1}))
-        bus.publish(Event(event_type=EventType.ORDER_FILLED, payload={"a": 2}))
+        bus.publish(Event(event_type=EventType.ORDER_FILLED, data={"a": 1}))
+        bus.publish(Event(event_type=EventType.ORDER_FILLED, data={"a": 2}))
 
         replayed = []
         count = bus.replay(handler=lambda e: replayed.append(e))
@@ -185,7 +204,7 @@ class TestEventBusAsync:
             received.append(e)
 
         bus.subscribe(EventType.ORDER_FILLED, async_handler)
-        await bus.publish_async(Event(event_type=EventType.ORDER_FILLED, payload={"x": 1}))
+        await bus.publish_async(Event(event_type=EventType.ORDER_FILLED, data={"x": 1}))
         assert len(received) == 1
 
     @pytest.mark.asyncio

@@ -17,6 +17,7 @@ from itertools import combinations
 from typing import Any
 
 import numpy as np
+import orjson
 import pandas as pd
 from fastapi import APIRouter, Form, Path, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -44,6 +45,62 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _start_time = time.time()
+
+
+class _TTLCache:
+    __slots__ = ("_cache", "_ttl", "_maxsize", "_freq")
+
+    def __init__(self, ttl: float = 3.0, maxsize: int = 5000) -> None:
+        self._cache: dict[str, tuple[float, Any]] = {}
+        self._freq: dict[str, int] = {}
+        self._ttl = ttl
+        self._maxsize = maxsize
+
+    def get(self, key: str) -> Any:
+        entry = self._cache.get(key)
+        if entry is not None:
+            ts, val = entry
+            if time.monotonic() - ts < self._ttl:
+                self._freq[key] = self._freq.get(key, 0) + 1
+                return val
+            del self._cache[key]
+            self._freq.pop(key, None)
+        return None
+
+    def set(self, key: str, val: Any) -> None:
+        if len(self._cache) >= self._maxsize:
+            self._evict()
+        self._cache[key] = (time.monotonic(), val)
+        self._freq[key] = 1
+
+    def _evict(self) -> None:
+        if not self._cache:
+            return
+        stale = [k for k in self._freq if k not in self._cache]
+        for k in stale:
+            del self._freq[k]
+        if not self._freq:
+            return
+        min_freq = min(self._freq.values())
+        candidates = [k for k, f in self._freq.items() if f == min_freq]
+        oldest_key = min(candidates, key=lambda k: self._cache[k][0])
+        del self._cache[oldest_key]
+        del self._freq[oldest_key]
+
+    def clear(self) -> None:
+        self._cache.clear()
+        self._freq.clear()
+
+    def __len__(self) -> int:
+        return len(self._cache)
+
+    def stats(self) -> dict[str, int]:
+        return {"size": len(self._cache), "freq_entries": len(self._freq), "maxsize": self._maxsize}
+
+
+_rt_cache = _TTLCache(ttl=8.0, maxsize=15000)
+_kline_cache = _TTLCache(ttl=60.0, maxsize=6000)
+_strategy_list_cache = _TTLCache(ttl=120.0, maxsize=200)
 
 
 class LoginRequest(BaseModel):
@@ -357,6 +414,59 @@ async def system_status(request: Request):
         "database": pool_status,
     }
 
+
+@router.get("/data/quality/{symbol}")
+async def get_data_quality(symbol: str, request: Request):
+    try:
+        _validate_symbol(symbol)
+        fetcher: SmartDataFetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, period="1y", kline_type="daily", adjust="qfq")
+        if df is None or df.empty:
+            return _json_response(False, error="无法获取数据")
+
+        from core.data_governance import AnomalyDetector, DataQualityPipeline
+        pipeline = DataQualityPipeline()
+        processed_df = pipeline.process(df, symbol)
+
+        detector = AnomalyDetector()
+        anomalies = detector.detect_all(df, symbol)
+
+        total_cells = len(df) * len(df.columns)
+        null_count = int(df.isnull().sum().sum())
+        completeness = round(1 - null_count / max(total_cells, 1), 4)
+
+        suspension_days = 0
+        if "is_suspended" in processed_df.columns:
+            suspension_days = int(processed_df["is_suspended"].sum())
+
+        anomaly_days = 0
+        if "is_anomaly" in processed_df.columns:
+            anomaly_days = int(processed_df["is_anomaly"].sum())
+
+        anomaly_list = [
+            {
+                "date": a.date,
+                "type": a.anomaly_type,
+                "severity": a.severity,
+                "detail": a.details if hasattr(a, "details") else "",
+            }
+            for a in anomalies[:20]
+        ]
+
+        return _json_response(True, data={
+            "symbol": symbol,
+            "total_bars": len(df),
+            "suspension_days": suspension_days,
+            "anomaly_days": anomaly_days,
+            "anomalies": anomaly_list,
+            "data_completeness": completeness,
+        })
+    except ValueError as e:
+        return _json_response(False, error=str(e))
+    except Exception as e:
+        logger.error("data quality check error: %s", e, exc_info=True)
+        return _json_response(False, error=safe_error(e))
+
 def _validate_symbol(symbol: str) -> str:
     if not validate_symbol(symbol):
         raise ValueError("股票代码格式无效")
@@ -560,7 +670,7 @@ class ConnectionManager:
 
 _manager = ConnectionManager()
 
-_api_response_cache = ThreadSafeLRU(maxsize=2000, ttl=30)
+_api_response_cache = ThreadSafeLRU(maxsize=10000, ttl=90)
 
 _MAX_PUSH_SYMBOLS = 30
 
@@ -657,7 +767,7 @@ def cache_response(ttl_seconds: int):
 
 
 @router.get("/market/overview")
-@cache_response(5)
+@cache_response(15)
 async def get_market_overview(request: Request):
     try:
         fetcher: SmartDataFetcher = request.app.state.fetcher
@@ -1153,11 +1263,11 @@ async def stream_portfolio_metrics(request: Request):
                     else:
                         empty_count = 0
 
-                    payload = json.dumps(push_data, ensure_ascii=False)
+                    payload = orjson.dumps(push_data).decode()
                     yield f"data: {payload}\n\n"
 
                     if empty_count >= max_empty:
-                        yield f"data: {json.dumps({'event': 'market_closed', 'timestamp': now.isoformat()})}\n\n"
+                        yield f"data: {orjson.dumps({'event': 'market_closed', 'timestamp': now.isoformat()}).decode()}\n\n"
                         break
 
                     await asyncio.sleep(interval)
@@ -1166,12 +1276,12 @@ async def stream_portfolio_metrics(request: Request):
                     break
                 except Exception as e:
                     logger.debug("SSE stream error: %s", e)
-                    yield f"data: {json.dumps({'event': 'error', 'message': safe_error(e)})}\n\n"
+                    yield f"data: {orjson.dumps({'event': 'error', 'message': safe_error(e)}).decode()}\n\n"
                     await asyncio.sleep(reconnect_delay)
         except asyncio.CancelledError:
             pass
         finally:
-            yield f"data: {json.dumps({'event': 'disconnect', 'timestamp': datetime.now().isoformat()})}\n\n"
+            yield f"data: {orjson.dumps({'event': 'disconnect', 'timestamp': datetime.now().isoformat()}).decode()}\n\n"
 
     return StreamingResponse(
         event_stream(),
@@ -1226,9 +1336,13 @@ async def export_backtest_results(
 @router.get("/stock/realtime/{symbol}")
 async def get_stock_realtime(request: Request, symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$")):
     try:
+        cached = _rt_cache.get(symbol)
+        if cached is not None:
+            return _json_response(True, data=cached, cached=True)
         fetcher: SmartDataFetcher = request.app.state.fetcher
         data = await fetcher.get_realtime(symbol)
         if data:
+            _rt_cache.set(symbol, data)
             return _json_response(True, data=data)
         return _json_response(False, error="未获取到数据")
     except Exception as e:
@@ -1244,11 +1358,16 @@ async def get_stock_history(
     adjust: str = Query("", max_length=5),
 ):
     try:
+        cache_key = "%s:%s:%s:%s" % (symbol, period, kline_type, adjust)
+        cached = _kline_cache.get(cache_key)
+        if cached is not None:
+            return _json_response(True, data=cached, cached=True)
         fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period, kline_type, adjust)
         if df.empty:
             return _json_response(False, error="无历史数据")
         result = df.to_dict("records")
+        _kline_cache.set(cache_key, result)
         return _json_response(True, data=result)
     except Exception as e:
         return _json_response(False, error=safe_error(e))
@@ -1309,6 +1428,9 @@ async def get_stock_fundamentals(request: Request, symbol: str = Path(..., min_l
         return _json_response(False, error=safe_error(e))
 
 
+_indicator_api_cache = _TTLCache(ttl=60.0, maxsize=3000)
+
+
 @router.get("/stock/indicators/{symbol}")
 async def get_stock_indicators(
     request: Request,
@@ -1317,12 +1439,17 @@ async def get_stock_indicators(
     kline_type: str = Query("daily"),
 ):
     try:
+        cache_key = "ind:%s:%s:%s" % (symbol, period, kline_type)
+        cached = _indicator_api_cache.get(cache_key)
+        if cached is not None:
+            return _json_response(True, data=cached, cached=True)
         fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period, kline_type)
         if df.empty or len(df) < 30:
             return _json_response(False, error="数据不足")
         kline_data = df.to_dict("records")
         result = calc_all_indicators(kline_data)
+        _indicator_api_cache.set(cache_key, result)
         return _json_response(True, data=result)
     except Exception as e:
         logger.error("Indicators error: %s", e)
@@ -1338,9 +1465,16 @@ def _period_to_history(period: str) -> str:
     return "1y"
 
 
+_analysis_cache = _TTLCache(ttl=60.0, maxsize=4000)
+
+
 @router.get("/stock/analysis/{symbol}")
 async def get_deep_analysis(request: Request, symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"), period: str = Query("1y", max_length=5)):
     try:
+        cache_key = "analysis:%s:%s" % (symbol, period)
+        cached = _analysis_cache.get(cache_key)
+        if cached is not None:
+            return _json_response(True, data=cached, cached=True)
         fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
         if df.empty or len(df) < 60:
@@ -1411,6 +1545,7 @@ async def get_deep_analysis(request: Request, symbol: str = Path(..., min_length
             "signal_confidence": round(float(confidence), 2),
             "last_price": round(last_close, 4),
         }
+        _analysis_cache.set(cache_key, result)
         return _json_response(True, data=result)
     except Exception as e:
         logger.error("Deep analysis error for %s: %s", symbol, e, exc_info=True)
@@ -3875,6 +4010,24 @@ async def trading_buy(
         return _json_response(False, error=safe_error(e))
 
 
+@router.post("/trading/reset")
+async def trading_reset(request: Request):
+    try:
+        trading = get_trading(request)
+        if trading is None:
+            return _json_response(False, error="交易引擎未初始化")
+        if hasattr(trading, "reset_account"):
+            trading.reset_account()
+        elif hasattr(trading, "reset"):
+            trading.reset()
+        risk_manager = getattr(request.app.state, "risk_manager", None)
+        if risk_manager is not None and hasattr(risk_manager, "reset"):
+            risk_manager.reset()
+        return _json_response(True, data={"message": "交易账户已重置"})
+    except Exception as e:
+        return _json_response(False, error=safe_error(e))
+
+
 @router.post("/trading/sell")
 async def trading_sell(
     request: Request,
@@ -4590,6 +4743,14 @@ async def get_system_metrics(request: Request):
             "ws_connections": await _manager.connection_count(),
             "cache_size": request.app.state.db.cache_size if hasattr(request.app.state.db, 'cache_size') else 0,
             "database": db_metrics,
+            "api_caches": {
+                "rt": _rt_cache.stats(),
+                "kline": _kline_cache.stats(),
+                "strategy_list": _strategy_list_cache.stats(),
+                "indicator_api": _indicator_api_cache.stats(),
+                "analysis": _analysis_cache.stats(),
+                "api_response": {"size": len(_api_response_cache), "maxsize": _api_response_cache._maxsize},
+            },
         }
         return _json_response(True, data=metrics)
     except ImportError:
@@ -7413,4 +7574,163 @@ async def register_feature_flag(request: Request, body: FeatureFlagRegisterReque
         )
         return _json_response(True, data={"name": body.name, "enabled": body.enabled})
     except Exception as e:
+        return _json_response(False, error=safe_error(e))
+
+
+_SSE_MAX_SYMBOLS = 10
+_SSE_KEEPALIVE_INTERVAL = 15
+
+
+@router.get("/sse/realtime")
+async def sse_realtime(request: Request, symbols: str = Query("", max_length=500)):
+    if not symbols:
+        return _json_response(False, error="symbols参数不能为空，逗号分隔")
+
+    symbol_list = [s.strip() for s in symbols.split(",") if s.strip()][:_SSE_MAX_SYMBOLS]
+    if not symbol_list:
+        return _json_response(False, error="无效的股票代码")
+
+    async def _event_stream():
+        fetcher = getattr(request.app.state, "fetcher", None)
+        if fetcher is None:
+            yield f"data: {json.dumps({'error': '数据源未初始化'})}\n\n"
+            return
+
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                results = await fetcher.get_realtime_batch(symbol_list)
+                for sym, data in results.items():
+                    event_data = {"symbol": sym, **data}
+                    yield f"data: {json.dumps(event_data, default=str)}\n\n"
+            except Exception as e:
+                logger.debug("SSE realtime error: %s", e)
+                yield f"data: {json.dumps({'error': safe_error(e)})}\n\n"
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.create_task(asyncio.sleep(_SSE_KEEPALIVE_INTERVAL)),
+                    timeout=_SSE_KEEPALIVE_INTERVAL + 1,
+                )
+            except asyncio.CancelledError:
+                break
+            yield ": keepalive\n\n"
+
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/strategy/dashboard")
+async def get_strategy_dashboard(
+    request: Request,
+    symbol: str = Query(..., description="股票代码"),
+    period: int = Query(120, description="回测天数", ge=30, le=500),
+):
+    """综合策略性能仪表盘：回测结果 + IC监控 + 市场状态权重 + 风险平价"""
+    try:
+        from core.backtest import run_parallel_backtest
+        from core.backtest.validation import walk_forward_ic_validation
+        from core.factor_validity import FactorValidityMonitor
+        from core.regime_weight_tracker import RegimeWeightTracker
+        from core.risk_parity_portfolio import RiskParityPortfolio
+        from core.strategies import CompositeStrategy
+
+        fetcher: SmartDataFetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
+        if df is None or len(df) < 50:
+            return _json_response(False, error="数据不足")
+
+        df = df.tail(period + 60)
+        if len(df) < 50:
+            return _json_response(False, error="数据不足")
+
+        composite = CompositeStrategy()
+        strategy_specs = [
+            {"name": s.name, "class_name": type(s).__name__}
+            for s in composite.strategies
+        ]
+        strategy_names = [s["name"] for s in strategy_specs]
+
+        parallel_results = await asyncio.to_thread(
+            run_parallel_backtest, strategy_specs, df, symbol, 1000000
+        )
+
+        strategy_results = []
+        for r in parallel_results:
+            if "error" in r:
+                strategy_results.append({
+                    "name": r["strategy"],
+                    "total_return": 0.0, "sharpe_ratio": 0.0, "max_drawdown": 0.0,
+                    "win_rate": 0.0, "total_trades": 0,
+                })
+            else:
+                strategy_results.append({
+                    "name": r["strategy"],
+                    "total_return": r.get("total_return", 0.0),
+                    "sharpe_ratio": r.get("sharpe_ratio", 0.0),
+                    "max_drawdown": r.get("max_drawdown", 0.0),
+                    "win_rate": r.get("win_rate", 0.0),
+                    "total_trades": r.get("total_trades", 0),
+                })
+
+        strategy_results.sort(key=lambda x: x["total_return"], reverse=True)
+
+        regime_tracker = RegimeWeightTracker(strategy_names=strategy_names)
+        regime_snap = regime_tracker.update(df)
+        regime_data = {
+            "current_regime": regime_snap.regime,
+            "confidence": regime_snap.regime_confidence,
+            "strategy_weights": regime_snap.strategy_weights,
+            "indicators": regime_snap.indicators,
+        }
+
+        ic_data = {}
+        factor_monitor = FactorValidityMonitor(lookback=60, ic_threshold=0.03)
+        for sr in strategy_results[:5]:
+            name = sr["name"]
+            ic_data[name] = {
+                "ic_mean": factor_monitor.get_ic_mean(name),
+                "ic_ir": factor_monitor.get_ic_ir(name),
+                "is_valid": factor_monitor.is_valid(name),
+                "weight_adjustment": factor_monitor.get_weight_adjustment(name),
+            }
+
+        risk_data = {}
+        try:
+            if len(strategy_names) >= 2:
+                portfolio = RiskParityPortfolio(symbols=strategy_names[:5])
+                rng = np.random.default_rng(42)
+                n_assets = min(5, len(strategy_names))
+                for _ in range(30):
+                    portfolio.update_returns(rng.normal(0.001, 0.02, n_assets))
+                state = portfolio.compute_target_weights()
+                risk_data = {
+                    "weights": state.weights,
+                    "risk_contributions": state.risk_contributions,
+                    "portfolio_volatility": state.portfolio_volatility,
+                    "ic_adjustments": state.ic_adjustments,
+                }
+        except Exception as e:
+            logger.debug("Risk parity computation skipped: %s", e)
+
+        return _json_response(True, data={
+            "symbol": symbol,
+            "period": period,
+            "strategies": strategy_results,
+            "best_strategy": strategy_results[0] if strategy_results else None,
+            "regime": regime_data,
+            "factor_validity": ic_data,
+            "risk_parity": risk_data,
+            "timestamp": time.time(),
+        })
+    except Exception as e:
+        logger.error("Strategy dashboard error: %s", e)
         return _json_response(False, error=safe_error(e))

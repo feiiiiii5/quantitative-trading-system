@@ -7,6 +7,18 @@ import pandas as pd
 from core.database import ThreadSafeLRU
 from core.memory_guard import register_cleanup
 
+try:
+    from core.indicators_numba import (
+        NUMBA_AVAILABLE,
+        atr_numba,
+        bbands_numba,
+        ema_numba,
+        rsi_numba,
+        sma_numba,
+    )
+except ImportError:
+    NUMBA_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -15,7 +27,7 @@ __all__ = [
     '_sanitize_for_json',
 ]
 
-_indicator_cache = ThreadSafeLRU(maxsize=200)
+_indicator_cache = ThreadSafeLRU(maxsize=2000, ttl=180)
 _MAX_CHART_POINTS = 500
 
 register_cleanup(_indicator_cache.clear)
@@ -88,34 +100,50 @@ class TechnicalIndicators:
     @staticmethod
     def _ma(c: np.ndarray) -> dict:
         result = {}
-        s = pd.Series(c)
-        for p in [5, 10, 20, 60, 120]:
-            if len(c) >= p:
-                vals = s.rolling(p).mean().values
-                result[p] = _to_list(vals)
+        if NUMBA_AVAILABLE:
+            for p in [5, 10, 20, 60, 120]:
+                if len(c) >= p:
+                    vals = sma_numba(c, p)
+                    result[p] = _to_list(vals)
+        else:
+            s = pd.Series(c)
+            for p in [5, 10, 20, 60, 120]:
+                if len(c) >= p:
+                    vals = s.rolling(p).mean().values
+                    result[p] = _to_list(vals)
         return result
 
     @staticmethod
     def _ema(c: np.ndarray) -> dict:
         result = {}
-        s = pd.Series(c)
-        for p in [12, 26]:
-            vals = s.ewm(span=p, adjust=False).mean().values
-            result[p] = _to_list(vals)
+        if NUMBA_AVAILABLE:
+            for p in [12, 26]:
+                vals = ema_numba(c, p)
+                result[p] = _to_list(vals)
+        else:
+            s = pd.Series(c)
+            for p in [12, 26]:
+                vals = s.ewm(span=p, adjust=False).mean().values
+                result[p] = _to_list(vals)
         return result
 
     @staticmethod
     def _boll(c: np.ndarray, period: int = 20, nbdev: float = 2.0) -> dict:
-        s = pd.Series(c)
-        mid = s.rolling(period).mean()
-        std = s.rolling(period).std()
-        upper = mid + nbdev * std
-        lower = mid - nbdev * std
-        width = np.where(np.abs(mid.values) > 1e-12, (upper.values - lower.values) / mid.values * 100, 0)
+        if NUMBA_AVAILABLE:
+            upper, mid, lower = bbands_numba(c, period, nbdev)
+            width = np.where(np.abs(mid) > 1e-12, (upper - lower) / mid * 100, 0)
+        else:
+            s = pd.Series(c)
+            mid_s = s.rolling(period).mean()
+            std_s = s.rolling(period).std()
+            upper = (mid_s + nbdev * std_s).values
+            lower = (mid_s - nbdev * std_s).values
+            mid = mid_s.values
+            width = np.where(np.abs(mid) > 1e-12, (upper - lower) / mid * 100, 0)
         return {
-            "upper": _to_list(upper.values),
-            "mid": _to_list(mid.values),
-            "lower": _to_list(lower.values),
+            "upper": _to_list(upper if isinstance(upper, np.ndarray) else upper.values),
+            "mid": _to_list(mid if isinstance(mid, np.ndarray) else mid.values),
+            "lower": _to_list(lower if isinstance(lower, np.ndarray) else lower.values),
             "width": _to_list(width),
         }
 
@@ -204,18 +232,23 @@ class TechnicalIndicators:
     @staticmethod
     def _rsi(c: np.ndarray) -> dict:
         result = {}
-        delta = np.diff(c, prepend=c[0])
-        gain = np.where(delta > 0, delta, 0.0)
-        loss = np.where(delta < 0, -delta, 0.0)
-        gain_s = pd.Series(gain)
-        loss_s = pd.Series(loss)
-        for p in [6, 12, 24]:
-            avg_gain = gain_s.ewm(alpha=1 / p, min_periods=p).mean().values
-            avg_loss = loss_s.ewm(alpha=1 / p, min_periods=p).mean().values
-            with np.errstate(divide='ignore', invalid='ignore'):
-                rs = np.where(avg_loss != 0, avg_gain / avg_loss, 100)
-            rsi_vals = 100 - 100 / (1 + rs)
-            result[p] = _to_list(rsi_vals)
+        if NUMBA_AVAILABLE:
+            for p in [6, 12, 24]:
+                vals = rsi_numba(c, p)
+                result[p] = _to_list(vals)
+        else:
+            delta = np.diff(c, prepend=c[0])
+            gain = np.where(delta > 0, delta, 0.0)
+            loss = np.where(delta < 0, -delta, 0.0)
+            gain_s = pd.Series(gain)
+            loss_s = pd.Series(loss)
+            for p in [6, 12, 24]:
+                avg_gain = gain_s.ewm(alpha=1 / p, min_periods=p).mean().values
+                avg_loss = loss_s.ewm(alpha=1 / p, min_periods=p).mean().values
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    rs = np.where(avg_loss != 0, avg_gain / avg_loss, 100)
+                rsi_vals = 100 - 100 / (1 + rs)
+                result[p] = _to_list(rsi_vals)
         return result
 
     @staticmethod
@@ -297,8 +330,10 @@ class TechnicalIndicators:
 
     @staticmethod
     def _atr(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, period: int = 14) -> np.ndarray:
+        if NUMBA_AVAILABLE:
+            return atr_numba(h, low_arr, c, period)
         tr = np.maximum(h - low_arr, np.maximum(np.abs(h - np.roll(c, 1)),
-                                           np.abs(low_arr - np.roll(c, 1))))
+                                               np.abs(low_arr - np.roll(c, 1))))
         tr[0] = h[0] - low_arr[0]
         return pd.Series(tr).ewm(alpha=1 / period, min_periods=period).mean().values
 

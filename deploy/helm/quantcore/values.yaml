@@ -1,0 +1,89 @@
+replicaCount:
+  apiGateway: 2
+  marketData: 1
+  strategyEngine: 2
+
+image:
+  apiGateway:
+    repository: quantcore/api-gateway
+    tag: latest
+    pullPolicy: IfNotPresent
+  marketData:
+    repository: quantcore/market-data
+    tag: latest
+    pullPolicy: IfNotPresent
+  strategyEngine:
+    repository: quantcore/strategy-engine
+    tag: latest
+    pullPolicy: IfNotPresent
+
+service:
+  apiGateway:
+    port: 8080
+    type: ClusterIP
+  marketData:
+    port: 50051
+    type: ClusterIP
+  strategyEngine:
+    port: 8000
+    type: ClusterIP
+
+resources:
+  apiGateway:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  marketData:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  strategyEngine:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+autoscaling:
+  apiGateway:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilization: 70
+  strategyEngine:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilization: 70
+
+ingress:
+  enabled: true
+  className: nginx
+  host: quantcore.example.com
+  tls: true
+
+redis:
+  enabled: true
+  image: redis:7-alpine
+
+clickhouse:
+  enabled: true
+  image: clickhouse/clickhouse-server:24.8-alpine
+
+redpanda:
+  enabled: true
+  image: docker.redpanda.com/redpandadata/redpanda:v24.2.1
+
+monitoring:
+  prometheus:
+    enabled: true
+  grafana:
+    enabled: true
+    adminPassword: admin

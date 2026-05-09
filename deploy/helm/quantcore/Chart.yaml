@@ -1,0 +1,13 @@
+apiVersion: v2
+name: quantcore
+description: QuantCore Institutional-Grade Quantitative Trading Platform
+type: application
+version: 0.1.0
+appVersion: "4.0.0"
+keywords:
+  - quantitative-trading
+  - market-data
+  - algorithmic-trading
+home: https://github.com/quantcore
+maintainers:
+  - name: QuantCore Team

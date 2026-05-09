@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-data
+  labels:
+    app: quantcore
+    service: market-data
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      service: market-data
+  template:
+    metadata:
+      labels:
+        app: quantcore
+        service: market-data
+    spec:
+      containers:
+        - name: market-data
+          image: quantcore/market-data:latest
+          ports:
+            - containerPort: 50051
+          env:
+            - name: MARKET_DATA_ADDR
+              value: "0.0.0.0:50051"
+            - name: ORDERBOOK_DEPTH
+              value: "10"
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          livenessProbe:
+            tcpSocket:
+              port: 50051
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: market-data
+spec:
+  selector:
+    service: market-data
+  ports:
+    - port: 50051
+      targetPort: 50051
+  type: ClusterIP

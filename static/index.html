@@ -1,22 +1,23 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#080810" />
-  <meta name="description" content="QuantCore - 量化交易系统" />
-  <title>QuantCore - 量化交易系统</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%232997ff'/><text x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' fill='white' font-size='18' font-weight='bold'>Q</text></svg>" />
+  <title>QuantCore Terminal</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="preload" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" as="style" />
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <script type="module" crossorigin src="/assets/index-BJBlkInu.js"></script>
-  <link rel="modulepreload" crossorigin href="/assets/vendor-B6g8CjcP.js">
-  <link rel="modulepreload" crossorigin href="/assets/vue-vendor-D10A0r_v.js">
-  <link rel="stylesheet" crossorigin href="/assets/index-Dytzp6Sf.css">
-<link rel="manifest" href="/manifest.webmanifest"><script id="vite-plugin-pwa:register-sw" src="/registerSW.js"></script></head>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <script>
+    // Zero-flash theme: apply before React hydrates
+    const theme = localStorage.getItem('qc-theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', theme);
+  </script>
+  <script type="module" crossorigin src="/assets/index-1rgySfhe.js"></script>
+  <link rel="modulepreload" crossorigin href="/assets/vendor-motion-Dg0v_hf5.js">
+  <link rel="modulepreload" crossorigin href="/assets/vendor-react-C8HP7ZND.js">
+  <link rel="stylesheet" crossorigin href="/assets/index-DonDCfso.css">
+</head>
 <body>
-  <div id="app"></div>
+  <div id="root"></div>
 </body>
 </html>

@@ -1,0 +1,110 @@
+syntax = "proto3";
+
+package quantcore.backtest.v1;
+
+import "common.proto";
+
+service BacktestService {
+  rpc RunTickBacktest(TickBacktestRequest) returns (TickBacktestResponse);
+  rpc StreamBacktestProgress(BacktestProgressRequest) returns (stream BacktestProgress);
+  rpc RunBatchBacktest(BatchBacktestRequest) returns (BatchBacktestResponse);
+  rpc RunParamSweep(ParamSweepRequest) returns (ParamSweepResponse);
+}
+
+message TickData {
+  int64 timestamp_ns = 1;
+  string symbol = 2;
+  double price = 3;
+  int64 size = 4;
+  double bid_price = 5;
+  double ask_price = 6;
+  int64 bid_size = 7;
+  int64 ask_size = 8;
+  string side = 9;
+}
+
+message TickBacktestRequest {
+  string strategy_id = 1;
+  string strategy_code = 2;
+  repeated string symbols = 3;
+  double initial_capital = 4;
+  double commission = 5;
+  double slippage = 6;
+  string slippage_model = 7;
+  double slippage_base_bps = 8;
+  double slippage_impact_coeff = 9;
+  map<string, string> parameters = 10;
+  int64 start_timestamp_ns = 11;
+  int64 end_timestamp_ns = 12;
+}
+
+message TickBacktestResponse {
+  string backtest_id = 1;
+  double total_return = 2;
+  double annual_return = 3;
+  double sharpe_ratio = 4;
+  double sortino_ratio = 5;
+  double max_drawdown = 6;
+  double win_rate = 7;
+  double profit_factor = 8;
+  int32 total_trades = 9;
+  double avg_trade_return = 10;
+  double calmar_ratio = 11;
+  repeated EquityPoint equity_curve = 12;
+  bool gpu_accelerated = 13;
+}
+
+message EquityPoint {
+  int64 timestamp_ns = 1;
+  double equity = 2;
+  double drawdown = 3;
+}
+
+message BacktestProgressRequest {
+  string backtest_id = 1;
+}
+
+message BacktestProgress {
+  string backtest_id = 1;
+  double progress_pct = 2;
+  string current_phase = 3;
+  int64 ticks_processed = 4;
+  int64 total_ticks = 5;
+}
+
+message StrategyConfig {
+  string strategy_id = 1;
+  string strategy_code = 2;
+  map<string, string> parameters = 3;
+}
+
+message BatchBacktestRequest {
+  repeated StrategyConfig strategies = 1;
+  double initial_capital = 2;
+  double commission = 3;
+  double slippage = 4;
+}
+
+message BatchBacktestResponse {
+  repeated TickBacktestResponse results = 1;
+}
+
+message ParamRange {
+  string name = 1;
+  double min_value = 2;
+  double max_value = 3;
+  double step = 4;
+}
+
+message ParamSweepRequest {
+  StrategyConfig base_strategy = 1;
+  repeated ParamRange param_ranges = 2;
+  double initial_capital = 3;
+  double commission = 4;
+  double slippage = 5;
+}
+
+message ParamSweepResponse {
+  repeated TickBacktestResponse results = 1;
+  repeated string param_combinations = 2;
+}

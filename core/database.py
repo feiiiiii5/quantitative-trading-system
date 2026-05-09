@@ -4,6 +4,7 @@ QuantCore 数据库模块
 """
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import sqlite3
@@ -23,6 +24,7 @@ __all__ = [
     'CacheManager',
     'SQLiteStore',
     'AsyncDatabaseSession',
+    'AsyncWriteQueue',
     'get_db',
     'get_cache_manager',
 ]
@@ -36,12 +38,13 @@ DB_PATH = DATA_DIR / "quantcore.db"
 
 
 class ThreadSafeLRU:
-    """线程安全的LRU缓存，支持TTL和前缀删除"""
+    """线程安全的LRU缓存，支持TTL、LFU淘汰和前缀删除"""
 
     def __init__(self, maxsize: int = 200, ttl: int = 60):
         self._maxsize = maxsize
         self._ttl = ttl
         self._cache: OrderedDict[str, tuple[Any, float, int]] = OrderedDict()
+        self._freq: dict[str, int] = {}
         self._lock = threading.Lock()
 
     def get(self, key: str) -> Any | None:
@@ -50,8 +53,10 @@ class ThreadSafeLRU:
                 value, ts, ttl = self._cache[key]
                 if time.monotonic() - ts < float(ttl):
                     self._cache.move_to_end(key)
+                    self._freq[key] = self._freq.get(key, 0) + 1
                     return value
                 del self._cache[key]
+                self._freq.pop(key, None)
         return None
 
     def set(self, key: str, value: Any, ttl: int | None = None) -> None:
@@ -60,12 +65,27 @@ class ThreadSafeLRU:
             if key in self._cache:
                 self._cache.move_to_end(key)
             elif len(self._cache) >= self._maxsize:
-                self._cache.popitem(last=False)
+                self._evict_lfu()
             self._cache[key] = (value, time.monotonic(), int(effective_ttl))
+            self._freq[key] = 1
+
+    def _evict_lfu(self) -> None:
+        if not self._cache:
+            return
+        min_freq = min(self._freq.values())
+        candidates = [k for k, f in self._freq.items() if f == min_freq]
+        evict_key = candidates[0]
+        for k in candidates:
+            if k in self._cache:
+                evict_key = k
+                break
+        self._cache.pop(evict_key, None)
+        self._freq.pop(evict_key, None)
 
     def delete(self, key: str) -> None:
         with self._lock:
             self._cache.pop(key, None)
+            self._freq.pop(key, None)
 
     def delete_prefix(self, prefix: str) -> int:
         count = 0
@@ -73,19 +93,23 @@ class ThreadSafeLRU:
             keys_to_delete = [k for k in self._cache if k.startswith(prefix)]
             for k in keys_to_delete:
                 del self._cache[k]
+                self._freq.pop(k, None)
                 count += 1
         return count
 
     def clear(self) -> None:
         with self._lock:
             self._cache.clear()
+            self._freq.clear()
 
     def __len__(self) -> int:
         with self._lock:
             return len(self._cache)
 
 
-_db_query_cache = ThreadSafeLRU(maxsize=2000, ttl=120)
+_db_query_cache = ThreadSafeLRU(maxsize=10000, ttl=300)
+
+_query_cache: dict[str, tuple[float, list]] = {}
 
 
 class CacheManager:
@@ -170,7 +194,7 @@ class SQLiteStore:
         self._dropped_writes = 0
         self._pool: list[sqlite3.Connection] = []
         self._pool_lock = threading.Lock()
-        self._pool_max_size = 8
+        self._pool_max_size = 16
         self._stop_flush = threading.Event()
         self._init_db()
         self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
@@ -186,11 +210,11 @@ class SQLiteStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA cache_size=-128000")
+        conn.execute("PRAGMA cache_size=-256000")
         conn.execute("PRAGMA temp_store=MEMORY")
-        conn.execute("PRAGMA mmap_size=67108864")
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA journal_size_limit=67108864")
+        conn.execute("PRAGMA mmap_size=134217728")
+        conn.execute("PRAGMA busy_timeout=8000")
+        conn.execute("PRAGMA journal_size_limit=134217728")
         return conn
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -255,6 +279,9 @@ class SQLiteStore:
     def _init_db(self) -> None:
         conn = self._get_conn()
         try:
+            conn.execute("PRAGMA wal_autocheckpoint=100")
+            conn.execute("PRAGMA optimize")
+            conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS kline (
                     symbol TEXT NOT NULL,
@@ -335,6 +362,7 @@ class SQLiteStore:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_backtest_symbol ON backtest_results(symbol, strategy_name);
+                CREATE INDEX IF NOT EXISTS idx_backtest_recent ON backtest_results(created_at DESC, symbol);
                 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON trade_signals(symbol, created_at);
                 CREATE INDEX IF NOT EXISTS idx_kline_composite
                 ON kline(symbol, market, kline_type, adjust, date DESC);
@@ -503,6 +531,23 @@ class SQLiteStore:
                 logger.error("写缓冲区溢出，丢弃 %s 条最旧记录（累计丢弃: %s），示例: %s", dropped, self, dropped_samples)
             self._write_buffer.append((sql, params, 0, 0.0))
 
+    def _batch_execute(self, items: list[tuple[str, tuple]]) -> None:
+        if not items:
+            return
+        try:
+            conn = self._get_conn()
+            with conn:
+                for sql, params in items:
+                    try:
+                        conn.execute(sql, params)
+                    except Exception as e:
+                        logger.warning("Batch execute item error: %s | sql=%s", e, sql[:80])
+                conn.commit()
+        except Exception as e:
+            logger.error("Batch execute transaction error: %s", e)
+            for sql, params in items:
+                self.buffered_write(sql, params)
+
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         conn = self._get_conn()
         cursor = conn.execute(sql, params)
@@ -530,6 +575,31 @@ class SQLiteStore:
         conn = self._get_conn()
         cursor = conn.execute(sql, params)
         return [dict(row) for row in cursor.fetchall()]
+
+    def fetchall_cached(self, sql: str, params: tuple = (), ttl: float = 60.0) -> list[dict]:
+        cache_key = hashlib.md5(f"{sql}:{params}".encode()).hexdigest()[:16]
+        now = time.monotonic()
+        if cache_key in _query_cache:
+            ts, rows = _query_cache[cache_key]
+            if now - ts < ttl:
+                logger.debug("Cache hit for query key=%s", cache_key)
+                return rows
+        rows = self.fetchall(sql, params)
+        _query_cache[cache_key] = (now, rows)
+        logger.debug("Cache miss for query key=%s, stored result", cache_key)
+        return rows
+
+    def invalidate_cache(self, pattern: str = "") -> int:
+        if not pattern:
+            count = len(_query_cache)
+            _query_cache.clear()
+            logger.debug("Invalidated entire query cache (%d entries)", count)
+            return count
+        keys_to_remove = [k for k in _query_cache if k.startswith(pattern)]
+        for k in keys_to_remove:
+            del _query_cache[k]
+        logger.debug("Invalidated %d cache entries matching pattern=%s", len(keys_to_remove), pattern)
+        return len(keys_to_remove)
 
     def fetch(self, sql: str, params: tuple = ()) -> list[dict]:
         return self.fetchall(sql, params)
@@ -885,14 +955,12 @@ class SQLiteStore:
         if self._flush_thread.is_alive():
             self._flush_thread.join(timeout=5)
         self._flush_buffer()
-        # 关闭线程本地连接
         if hasattr(self._local, "conn") and self._local.conn is not None:
             try:
-                self._release_to_pool(self._local.conn)
+                self._local.conn.close()
             except Exception as e:
-                logger.debug("Error releasing local connection to pool: %s", e)
+                logger.debug("Error closing local connection: %s", e)
             self._local.conn = None
-        # 关闭连接池中的所有连接
         with self._pool_lock:
             for conn in self._pool:
                 try:
@@ -904,6 +972,73 @@ class SQLiteStore:
 
 _db_instance: SQLiteStore | None = None
 _db_lock = threading.Lock()
+
+
+class AsyncWriteQueue:
+    def __init__(self, db: SQLiteStore, max_size: int = 1000, batch_size: int = 100):
+        self._db = db
+        self._queue: asyncio.Queue[tuple[str, tuple]] = asyncio.Queue(maxsize=max_size)
+        self._batch_size = batch_size
+        self._running = False
+        self._task: asyncio.Task | None = None
+        self._pending = 0
+
+    async def start(self) -> None:
+        self._running = True
+        self._task = asyncio.create_task(self._worker())
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._task is not None:
+            await self._task
+            self._task = None
+
+    async def put(self, sql: str, params: tuple = ()) -> None:
+        self._pending += 1
+        await self._queue.put((sql, params))
+
+    def put_nowait(self, sql: str, params: tuple = ()) -> None:
+        self._pending += 1
+        self._queue.put_nowait((sql, params))
+
+    @property
+    def pending(self) -> int:
+        return self._pending
+
+    @property
+    def qsize(self) -> int:
+        return self._queue.qsize()
+
+    async def _worker(self) -> None:
+        batch: list[tuple[str, tuple]] = []
+        while self._running or not self._queue.empty():
+            try:
+                item = await asyncio.wait_for(self._queue.get(), timeout=0.1)
+                batch.append(item)
+                while not self._queue.empty() and len(batch) < self._batch_size:
+                    batch.append(self._queue.get_nowait())
+                if batch:
+                    await asyncio.to_thread(self._db._batch_execute, batch)
+                    self._pending -= len(batch)
+                    batch.clear()
+            except asyncio.TimeoutError:
+                if batch:
+                    await asyncio.to_thread(self._db._batch_execute, batch)
+                    self._pending -= len(batch)
+                    batch.clear()
+            except asyncio.CancelledError:
+                if batch:
+                    await asyncio.to_thread(self._db._batch_execute, batch)
+                    self._pending -= len(batch)
+                    batch.clear()
+                return
+            except Exception as e:
+                logger.error("AsyncWriteQueue worker error: %s", e)
+                if batch:
+                    for sql, params in batch:
+                        self._db.buffered_write(sql, params)
+                    self._pending -= len(batch)
+                    batch.clear()
 
 
 def get_db() -> SQLiteStore:

@@ -1,9 +1,11 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from enum import Enum
 
 import numpy as np
 import pandas as pd
 
+from core.factor_validity import FactorValidityMonitor
 from core.indicators import calc_adx, calc_atr, calc_chandelier_exit, calc_kelly_fraction
 from core.strategies import (
     AdaptiveTrendFollowingStrategy,
@@ -266,119 +268,89 @@ def calc_cvar(returns: np.ndarray, confidence: float = CVAR_CONFIDENCE) -> float
 
 def classify_market_regime(df: pd.DataFrame, window: int = 20) -> list[MarketRegime]:
     n = len(df)
-    regimes = [MarketRegime.LOW_VOLATILITY_CONSOLIDATION] * n
-
     if n < window + 1:
-        return regimes
+        return [MarketRegime.LOW_VOLATILITY_CONSOLIDATION] * n
 
-    c = df["close"].values.astype(float)
-    h = df["high"].values.astype(float)
-    low_arr = df["low"].values.astype(float)
-    v = df["volume"].values.astype(float) if "volume" in df.columns else np.ones(n)
+    c = df["close"].values.astype(np.float64)
+    h = df["high"].values.astype(np.float64)
+    low_arr = df["low"].values.astype(np.float64)
+    v = df["volume"].values.astype(np.float64) if "volume" in df.columns else np.ones(n)
 
     adx_full = calc_adx(h, low_arr, c, period=14)
-    atr_full = calc_atr(h, low_arr, c, period=14)
 
-    adx_strong_threshold = 30.0
-    adx_mild_threshold = 20.0
+    c_s = pd.Series(c)
+    ma20 = c_s.rolling(window, min_periods=window).mean().values
+    ma10 = c_s.rolling(10, min_periods=10).mean().values
+
+    returns = c_s.pct_change().values
+    hist_vol = pd.Series(returns).rolling(window, min_periods=2).std().values * np.sqrt(252)
+
+    deviation = np.where(ma20 > 0, (c - ma20) / ma20, 0.0)
+    short_deviation = np.where(ma10 > 0, (c - ma10) / ma10, 0.0)
+
     adx_window = adx_full[max(0, len(adx_full) - 252):]
     valid_adx = adx_window[np.isfinite(adx_window)]
-    if len(valid_adx) > 60:
-        adx_strong_threshold = float(np.percentile(valid_adx, 75))
-        adx_mild_threshold = float(np.percentile(valid_adx, 50))
-        adx_strong_threshold = max(25, min(40, adx_strong_threshold))
-        adx_mild_threshold = max(15, min(30, adx_mild_threshold))
+    adx_strong = float(np.percentile(valid_adx, 75)) if len(valid_adx) > 60 else 30.0
+    adx_mild = float(np.percentile(valid_adx, 50)) if len(valid_adx) > 60 else 20.0
+    adx_strong = np.clip(adx_strong, 25, 40)
+    adx_mild = np.clip(adx_mild, 15, 30)
 
-    for i in range(window, n):
-        try:
-            segment_c = c[i - window:i]
-            segment_v = v[i - window:i]
-            atr_full[i - window:i]
+    adx = np.where(np.isfinite(adx_full), adx_full, 0.0)
+    is_strong = adx > adx_strong
+    is_mild = (adx > adx_mild) & ~is_strong
+    is_ranging = adx <= adx_mild
+    is_high_vol = hist_vol > 0.25
 
-            adx_val = adx_full[i] if not np.isnan(adx_full[i]) else 0
-            returns = np.diff(segment_c) / segment_c[:-1]
-            returns = returns[np.isfinite(returns)]
-            hist_vol = float(np.std(returns) * np.sqrt(252)) if len(returns) > 1 else 0
+    regimes = np.full(n, MarketRegime.LOW_VOLATILITY_CONSOLIDATION, dtype=object)
 
-            vol_x = np.arange(len(segment_v))
-            if len(segment_v) > 1:
-                float(np.polyfit(vol_x, segment_v, 1)[0])
-            else:
-                pass
+    regimes[is_ranging & is_high_vol] = MarketRegime.HIGH_VOLATILITY_RANGE
 
-            ma20 = float(np.mean(segment_c))
-            ma10 = float(np.mean(segment_c[-10:])) if len(segment_c) >= 10 else ma20
-            price = c[i]
-            deviation = (price - ma20) / ma20 if ma20 > 0 else 0
-            short_deviation = (price - ma10) / ma10 if ma10 > 0 else 0
+    is_mild_high_vol = is_mild & is_high_vol
+    regimes[is_mild_high_vol] = MarketRegime.HIGH_VOLATILITY_RANGE
+    is_mild_low_vol = is_mild & ~is_high_vol
+    regimes[is_mild_low_vol & (short_deviation < -0.005)] = MarketRegime.MILD_TREND_DOWN
+    regimes[is_mild_low_vol & (short_deviation > 0) & ~(short_deviation < -0.005)] = MarketRegime.MILD_TREND_UP
+    is_mild_remaining = is_mild_low_vol & (short_deviation >= -0.005) & (short_deviation <= 0)
+    regimes[is_mild_remaining & (hist_vol > 0.20)] = MarketRegime.HIGH_VOLATILITY_RANGE
 
-            trend_strength = adx_val
-            is_strong_trend = trend_strength > adx_strong_threshold
-            is_mild_trend = trend_strength > adx_mild_threshold
-            is_ranging = trend_strength < adx_mild_threshold
+    is_strong_down = is_strong & (deviation < -0.01)
+    regimes[is_strong_down] = MarketRegime.STRONG_TREND_DOWN
+    is_strong_up = is_strong & ~is_strong_down
+    regimes[is_strong_up] = MarketRegime.STRONG_TREND_UP
 
-            if i >= window + 10:
-                support = float(np.min(low_arr[i - window:i - 5]))
-                recent_low = float(np.min(low_arr[i - 5:i + 1]))
-                float(np.max(h[i - 3:i + 1]))
-                recent_vol = float(np.mean(v[i - 3:i + 1]))
-                avg_vol = float(np.mean(v[i - window:i - 5])) if i > window + 5 else 1
-                vol_shrink = avg_vol > 0 and recent_vol < avg_vol * 0.8
-                if (recent_low < support and price > support and
-                        vol_shrink and price > ma20 * 0.98):
-                    regimes[i] = MarketRegime.BEAR_TRAP
-                    continue
+    if n > window + 10:
+        support = pd.Series(low_arr).rolling(window).min().shift(5).values
+        recent_low = pd.Series(low_arr).rolling(5).min().values
+        recent_vol = pd.Series(v).rolling(3).mean().values
+        avg_vol = pd.Series(v).rolling(window).mean().shift(5).values
+        vol_shrink = np.where(avg_vol > 0, recent_vol < avg_vol * 0.8, False)
+        bear_trap_mask = (
+            np.isfinite(support) &
+            (recent_low < support) &
+            (c > support) &
+            vol_shrink &
+            (c > ma20 * 0.98)
+        )
+        regimes[bear_trap_mask] = MarketRegime.BEAR_TRAP
 
-            if i >= window + 5:
-                prev_high = float(np.max(h[i - window:i - 3]))
-                recent_peak = float(np.max(h[i - 3:i + 1]))
-                recent_vol_avg = float(np.mean(v[i - 5:i + 1]))
-                longer_vol_avg = float(np.mean(v[i - window:i - 5])) if i > window + 5 else 1
-                adx_declining = adx_val < 25
-                if (recent_peak >= prev_high * 0.99 and adx_declining and
-                        recent_vol_avg < longer_vol_avg * 0.8 and deviation > 0.01):
-                    regimes[i] = MarketRegime.DISTRIBUTION_TOP
-                    continue
+    if n > window + 5:
+        prev_high = pd.Series(h).rolling(window).max().shift(3).values
+        recent_peak = pd.Series(h).rolling(3).max().values
+        recent_vol_avg = pd.Series(v).rolling(5).mean().values
+        longer_vol_avg = pd.Series(v).rolling(window).mean().shift(5).values
+        adx_declining = adx < 25
+        dist_top_mask = (
+            np.isfinite(prev_high) &
+            (recent_peak >= prev_high * 0.99) &
+            adx_declining &
+            np.where(longer_vol_avg > 0, recent_vol_avg < longer_vol_avg * 0.8, False) &
+            (deviation > 0.01)
+        )
+        regimes[dist_top_mask] = MarketRegime.DISTRIBUTION_TOP
 
-            if is_strong_trend:
-                if deviation > 0.02 or deviation > 0 or short_deviation > 0:
-                    regimes[i] = MarketRegime.STRONG_TREND_UP
-                elif deviation < -0.03 or deviation < -0.01:
-                    regimes[i] = MarketRegime.STRONG_TREND_DOWN
-                else:
-                    if short_deviation > 0:
-                        regimes[i] = MarketRegime.MILD_TREND_UP
-                    else:
-                        regimes[i] = MarketRegime.MILD_TREND_DOWN
-            elif is_mild_trend:
-                if deviation > 0.005:
-                    regimes[i] = MarketRegime.MILD_TREND_UP
-                elif deviation < -0.005:
-                    regimes[i] = MarketRegime.MILD_TREND_DOWN
-                elif short_deviation > 0:
-                    regimes[i] = MarketRegime.MILD_TREND_UP
-                elif short_deviation < 0:
-                    regimes[i] = MarketRegime.MILD_TREND_DOWN
-                else:
-                    if hist_vol > 0.20:
-                        regimes[i] = MarketRegime.HIGH_VOLATILITY_RANGE
-                    else:
-                        regimes[i] = MarketRegime.LOW_VOLATILITY_CONSOLIDATION
-            elif is_ranging:
-                if hist_vol > 0.25:
-                    regimes[i] = MarketRegime.HIGH_VOLATILITY_RANGE
-                else:
-                    regimes[i] = MarketRegime.LOW_VOLATILITY_CONSOLIDATION
-            else:
-                if hist_vol > 0.20:
-                    regimes[i] = MarketRegime.HIGH_VOLATILITY_RANGE
-                else:
-                    regimes[i] = MarketRegime.LOW_VOLATILITY_CONSOLIDATION
-        except Exception as e:
-            logger.debug("Regime classification failed at index %s: %s", i, e)
-            regimes[i] = MarketRegime.LOW_VOLATILITY_CONSOLIDATION
+    regimes[:window] = MarketRegime.LOW_VOLATILITY_CONSOLIDATION
 
-    return regimes
+    return regimes.tolist()
 
 
 class AdaptiveStrategyEngine:
@@ -392,6 +364,7 @@ class AdaptiveStrategyEngine:
         self._mtf_analyzer = MultiTimeframeAnalyzer()
         self._returns_history: list[float] = []
         self._returns_history_max = 120
+        self._factor_monitor = FactorValidityMonitor(lookback=60, ic_threshold=0.03)
 
     def _kelly_position(self, c: np.ndarray, lookback: int = 60) -> float:
         return calc_kelly_fraction(c, lookback, half_kelly=KELLY_FRACTION)
@@ -451,24 +424,43 @@ class AdaptiveStrategyEngine:
     def _precompute_scores(self, strategy_instances: dict, df: pd.DataFrame, n: int) -> dict:
         scores = {}
         step = max(1, n // 100)
+        df_copy = df.copy()
+
+        def _compute_single(regime, strategy):
+            name = type(strategy).__name__
+            bar_scores = np.zeros(n)
+            last_score = 0.0
+            for i in range(step, n, step):
+                try:
+                    score = strategy.generate_score(df_copy.iloc[:i + 1])
+                    last_score = score if np.isfinite(score) else last_score
+                except Exception as e:
+                    logger.debug("Regime score generation failed at bar %s: %s", i, e)
+                bar_scores[i:min(i + step, n)] = last_score
+            if last_score != 0.0:
+                bar_scores[:step] = last_score
+            return regime, name, bar_scores
+
+        tasks = []
         for regime, instances in strategy_instances.items():
-            regime_scores = {}
             for strategy in instances:
-                name = type(strategy).__name__
-                bar_scores = np.zeros(n)
-                last_score = 0.0
-                for i in range(step, n, step):
+                tasks.append((regime, strategy))
+
+        if len(tasks) <= 2:
+            for regime, strategy in tasks:
+                r, name, bar_scores = _compute_single(regime, strategy)
+                scores.setdefault(r, {})[name] = bar_scores
+        else:
+            max_workers = min(len(tasks), 8)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_compute_single, r, s): (r, s) for r, s in tasks}
+                for future in as_completed(futures):
                     try:
-                        score = strategy.generate_score(df.iloc[:i + 1])
-                        last_score = score if np.isfinite(score) else last_score
+                        r, name, bar_scores = future.result(timeout=30)
+                        scores.setdefault(r, {})[name] = bar_scores
                     except Exception as e:
-                        logger.debug("Regime score generation failed at bar %s: %s", i, e)
-                    bar_scores[i:min(i + step, n)] = last_score
-                # 填充初始区间 0..step，使用第一个有效分数避免零值信号
-                if last_score != 0.0:
-                    bar_scores[:step] = last_score
-                regime_scores[name] = bar_scores
-            scores[regime] = regime_scores
+                        logger.debug("Strategy score computation failed: %s", e)
+
         return scores
 
     def _adapt_strategy_weights(self, regime: MarketRegime, alloc: dict,
@@ -478,11 +470,9 @@ class AdaptiveStrategyEngine:
         strategy_names = [cls.__name__ for cls in alloc.get("strategies", [])]
         n_strategies = len(strategy_names)
 
-        # Q-Learning权重调整
         q_adapter = self._get_q_adapter(regime, n_strategies)
         q_weights = q_adapter.select_weights(regime, volatility, trend, base_weights)
 
-        # 历史表现调整
         adapted = list(q_weights)
         for idx, name in enumerate(strategy_names):
             if name in self._strategy_perf and len(self._strategy_perf[name]) >= 3:
@@ -493,6 +483,10 @@ class AdaptiveStrategyEngine:
                 adjustment = np.clip(score * 0.03, -0.02, 0.04)
                 if idx < len(adapted):
                     adapted[idx] = max(0.05, adapted[idx] + adjustment)
+
+            ic_adjustment = self._factor_monitor.get_weight_adjustment(name)
+            if idx < len(adapted):
+                adapted[idx] *= ic_adjustment
 
         total = sum(adapted)
         if total > 0:
@@ -784,6 +778,10 @@ class AdaptiveStrategyEngine:
                         q_adapter = self._get_q_adapter(regime, len(instances))
                         q_adapter.update(regime, current_vol, current_trend, best_buy_idx, reward)
 
+                        buy_score_at_entry = position.get("buy_score", 0.0) if position else 0.0
+                        actual_ret = result["pnl"] / (position.get("entry_price", 1.0) * shares) if position and shares > 0 else 0.0
+                        self._factor_monitor.update(name, buy_score_at_entry, actual_ret)
+
             in_cooldown = (i - last_sell_bar) <= COOLDOWN_BARS
 
             if position is None and buy_score > BUY_THRESHOLD and not in_cooldown:
@@ -894,6 +892,7 @@ class AdaptiveStrategyEngine:
                     "trailing_stop": trailing_stop,
                     "peak_price": fill_price,
                     "chandelier_stop": chandelier_stop,
+                    "buy_score": buy_score,
                 }
                 buy_bar_set.add(i)
 
@@ -1092,4 +1091,5 @@ class AdaptiveStrategyEngine:
             "kline_with_signals": kline_with_signals[-500:] if kline_with_signals else [],
             "market_regime_labels": market_regime_labels,
             "strategy_allocation": strategy_allocation_records,
+            "factor_validity": self._factor_monitor.summary(),
         }

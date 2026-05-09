@@ -64,9 +64,12 @@ def risk_parity_optimize(
         return float(np.sum((rc - target_risk) ** 2))
 
     w = np.ones(n) / n
-    lr = 0.5
-    prev_obj = risk_parity_objective(w)
-    for iteration in range(200):
+    m = np.zeros(n)
+    v = np.zeros(n)
+    beta1, beta2, eps_adam = 0.9, 0.999, 1e-8
+    lr = 0.01
+
+    for iteration in range(500):
         grad = np.zeros(n)
         eps = 1e-6
         for i in range(n):
@@ -77,20 +80,20 @@ def risk_parity_optimize(
             w_minus[i] -= eps
             loss_minus = risk_parity_objective(w_minus)
             grad[i] = (loss_plus - loss_minus) / (2 * eps)
-        w = w - lr * grad
+
+        m = beta1 * m + (1 - beta1) * grad
+        v = beta2 * v + (1 - beta2) * grad ** 2
+        m_hat = m / (1 - beta1 ** (iteration + 1))
+        v_hat = v / (1 - beta2 ** (iteration + 1))
+        w = w - lr * m_hat / (np.sqrt(v_hat) + eps_adam)
         w = np.clip(w, min_weight, max_weight)
         total = w.sum()
         if total > 0:
             w = w / total
+
         curr_obj = risk_parity_objective(w)
         if curr_obj < 1e-10:
             break
-        if curr_obj >= prev_obj:
-            lr *= 0.5
-            if lr < 1e-8:
-                logger.debug("Risk parity converged at iter %d with obj=%.2e", iteration, curr_obj)
-                break
-        prev_obj = curr_obj
     return w
 
 

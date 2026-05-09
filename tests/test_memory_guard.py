@@ -63,14 +63,16 @@ class TestIsMemoryPressure:
     @patch("core.memory_guard.psutil", create=True)
     def test_returns_true_when_above_threshold(self, _):
         import core.memory_guard as mg
-        mock_psutil = _make_psutil_mock(percent=76.0)
+        threshold = mg._ADAPTIVE["pressure"] * 100
+        mock_psutil = _make_psutil_mock(percent=threshold + 1)
         with patch.dict("sys.modules", {"psutil": mock_psutil}):
             assert mg.is_memory_pressure() is True
 
     @patch("core.memory_guard.psutil", create=True)
     def test_returns_false_when_below_threshold(self, _):
         import core.memory_guard as mg
-        mock_psutil = _make_psutil_mock(percent=50.0)
+        threshold = mg._ADAPTIVE["pressure"] * 100
+        mock_psutil = _make_psutil_mock(percent=threshold - 10)
         with patch.dict("sys.modules", {"psutil": mock_psutil}):
             assert mg.is_memory_pressure() is False
 
@@ -79,14 +81,16 @@ class TestIsMemoryCritical:
     @patch("core.memory_guard.psutil", create=True)
     def test_returns_true_when_above_threshold(self, _):
         import core.memory_guard as mg
-        mock_psutil = _make_psutil_mock(percent=86.0)
+        threshold = mg._ADAPTIVE["critical"] * 100
+        mock_psutil = _make_psutil_mock(percent=threshold + 1)
         with patch.dict("sys.modules", {"psutil": mock_psutil}):
             assert mg.is_memory_critical() is True
 
     @patch("core.memory_guard.psutil", create=True)
     def test_returns_false_when_below_threshold(self, _):
         import core.memory_guard as mg
-        mock_psutil = _make_psutil_mock(percent=80.0)
+        threshold = mg._ADAPTIVE["critical"] * 100
+        mock_psutil = _make_psutil_mock(percent=threshold - 10)
         with patch.dict("sys.modules", {"psutil": mock_psutil}):
             assert mg.is_memory_critical() is False
 

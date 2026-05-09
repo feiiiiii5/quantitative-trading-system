@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package quantcore.order.v1;
+
+service OrderService {
+  rpc SubmitOrder(SubmitOrderRequest) returns (SubmitOrderResponse);
+  rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
+  rpc GetOrderStatus(OrderStatusRequest) returns (OrderStatusResponse);
+  rpc StreamOrderUpdates(StreamOrderUpdatesRequest) returns (stream OrderUpdate);
+}
+
+enum OrderSide {
+  ORDER_SIDE_UNSPECIFIED = 0;
+  ORDER_SIDE_BUY = 1;
+  ORDER_SIDE_SELL = 2;
+}
+
+enum OrderType {
+  ORDER_TYPE_UNSPECIFIED = 0;
+  ORDER_TYPE_MARKET = 1;
+  ORDER_TYPE_LIMIT = 2;
+  ORDER_TYPE_STOP = 3;
+  ORDER_TYPE_STOP_LIMIT = 4;
+}
+
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+  ORDER_STATUS_PENDING = 1;
+  ORDER_STATUS_ACCEPTED = 2;
+  ORDER_STATUS_PARTIALLY_FILLED = 3;
+  ORDER_STATUS_FILLED = 4;
+  ORDER_STATUS_CANCELLED = 5;
+  ORDER_STATUS_REJECTED = 6;
+}
+
+message SubmitOrderRequest {
+  string client_order_id = 1;
+  string symbol = 2;
+  OrderSide side = 3;
+  OrderType order_type = 4;
+  int64 quantity = 5;
+  double price = 6;
+  double stop_price = 7;
+  string strategy_id = 8;
+  string account_id = 9;
+  int32 time_in_force = 10;
+}
+
+message SubmitOrderResponse {
+  string order_id = 1;
+  string client_order_id = 2;
+  OrderStatus status = 3;
+  string reject_reason = 4;
+  int64 timestamp_ns = 5;
+}
+
+message CancelOrderRequest {
+  string order_id = 1;
+  string client_order_id = 2;
+  string account_id = 3;
+}
+
+message CancelOrderResponse {
+  bool success = 1;
+  string order_id = 2;
+  string message = 3;
+}
+
+message OrderStatusRequest {
+  string order_id = 1;
+  string client_order_id = 2;
+}
+
+message OrderStatusResponse {
+  string order_id = 1;
+  string client_order_id = 2;
+  string symbol = 3;
+  OrderSide side = 4;
+  OrderType order_type = 5;
+  OrderStatus status = 6;
+  int64 quantity = 7;
+  int64 filled_quantity = 8;
+  double avg_fill_price = 9;
+  double commission = 10;
+  int64 timestamp_ns = 11;
+}
+
+message StreamOrderUpdatesRequest {
+  string account_id = 1;
+  repeated string symbol_filters = 2;
+}
+
+message OrderUpdate {
+  string order_id = 1;
+  OrderStatus status = 2;
+  int64 filled_quantity = 3;
+  double fill_price = 4;
+  double commission = 5;
+  int64 timestamp_ns = 6;
+  string event_type = 7;
+}

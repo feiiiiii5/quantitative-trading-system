@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package quantcore.strategy.v1;
+
+service StrategyService {
+  rpc RunBacktest(BacktestRequest) returns (BacktestResponse);
+  rpc StreamBacktestProgress(BacktestProgressRequest) returns (stream BacktestProgress);
+  rpc DeployStrategy(DeployStrategyRequest) returns (DeployStrategyResponse);
+  rpc StopStrategy(StopStrategyRequest) returns (StopStrategyResponse);
+  rpc ListStrategies(ListStrategiesRequest) returns (ListStrategiesResponse);
+  rpc GetStrategyStatus(StrategyStatusRequest) returns (StrategyStatusResponse);
+}
+
+message BacktestRequest {
+  string strategy_id = 1;
+  string strategy_code = 2;
+  repeated string symbols = 3;
+  string start_date = 4;
+  string end_date = 5;
+  double initial_capital = 6;
+  double commission = 7;
+  double slippage = 8;
+  map<string, string> parameters = 9;
+}
+
+message BacktestResponse {
+  string backtest_id = 1;
+  double total_return = 2;
+  double annual_return = 3;
+  double sharpe_ratio = 4;
+  double max_drawdown = 5;
+  double win_rate = 6;
+  double profit_factor = 7;
+  int32 total_trades = 8;
+  double avg_trade_return = 9;
+  double calmar_ratio = 10;
+  repeated EquityPoint equity_curve = 11;
+}
+
+message EquityPoint {
+  int64 timestamp_ns = 1;
+  double equity = 2;
+  double drawdown = 3;
+}
+
+message BacktestProgressRequest {
+  string backtest_id = 1;
+}
+
+message BacktestProgress {
+  string backtest_id = 1;
+  double progress_pct = 2;
+  string current_phase = 3;
+  int32 bars_processed = 4;
+  int32 total_bars = 5;
+}
+
+message DeployStrategyRequest {
+  string strategy_id = 1;
+  string strategy_code = 2;
+  repeated string symbols = 3;
+  map<string, string> parameters = 4;
+  string account_id = 5;
+}
+
+message DeployStrategyResponse {
+  bool success = 1;
+  string deployment_id = 2;
+  string message = 3;
+}
+
+message StopStrategyRequest {
+  string deployment_id = 1;
+}
+
+message StopStrategyResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ListStrategiesRequest {
+  string account_id = 1;
+  bool active_only = 2;
+}
+
+message ListStrategiesResponse {
+  repeated StrategyInfo strategies = 1;
+}
+
+message StrategyInfo {
+  string deployment_id = 1;
+  string strategy_id = 2;
+  string status = 3;
+  int64 started_at_ns = 4;
+  double pnl = 5;
+  int32 trade_count = 6;
+}
+
+message StrategyStatusRequest {
+  string deployment_id = 1;
+}
+
+message StrategyStatusResponse {
+  string deployment_id = 1;
+  string strategy_id = 2;
+  string status = 3;
+  double current_pnl = 4;
+  int32 trade_count = 5;
+  double sharpe_ratio = 6;
+  double max_drawdown = 7;
+  repeated string active_positions = 8;
+  int64 started_at_ns = 9;
+}

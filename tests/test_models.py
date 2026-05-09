@@ -1,148 +1,195 @@
-from dataclasses import FrozenInstanceError
-
 import pytest
+from pydantic import ValidationError
 
 from core.models import (
-    BacktestMetrics,
-    CorrelationResult,
-    KlineBar,
-    MarketDataPoint,
-    PortfolioSnapshot,
-    Position,
-    TradeSignal,
+    TickData,
+    BarData,
+    TradeSignalV2,
+    SignalTypeV2,
+    PositionV2,
+    OrderV2,
+    OrderSide,
+    OrderStatus,
+    TradeRecordV2,
+    BacktestConfigV2,
+    BacktestResultV2,
+    validate_signal_dict,
+    convert_legacy_signal,
 )
 
 
-class TestTradeSignal:
-    def test_creation_with_defaults(self):
-        sig = TradeSignal(signal_type="buy")
-        assert sig.signal_type == "buy"
-        assert sig.strength == 0.0
-        assert sig.reason == ""
+class TestTickData:
 
-    def test_creation_with_all_fields(self):
-        sig = TradeSignal(signal_type="sell", strength=0.85, reason="momentum")
-        assert sig.signal_type == "sell"
-        assert sig.strength == 0.85
-        assert sig.reason == "momentum"
+    def test_valid_tick(self):
+        tick = TickData(symbol="000001", price=10.5, volume=1000)
+        assert tick.symbol == "000001"
+        assert tick.price == 10.5
 
-    def test_frozen_immutability(self):
-        sig = TradeSignal(signal_type="hold")
-        with pytest.raises(FrozenInstanceError):
-            sig.signal_type = "buy"
+    def test_negative_price_rejected(self):
+        with pytest.raises(ValidationError):
+            TickData(symbol="000001", price=-1.0)
 
+    def test_zero_price_allowed(self):
+        tick = TickData(symbol="000001", price=0.0)
+        assert tick.price == 0.0
 
-class TestKlineBar:
-    def test_creation(self):
-        bar = KlineBar(date="2025-01-01", open=10.0, high=12.0, low=9.0, close=11.0, volume=1000)
-        assert bar.date == "2025-01-01"
-        assert bar.open == 10.0
-        assert bar.amount == 0.0
-
-    def test_typical_price(self):
-        bar = KlineBar(date="d", open=10.0, high=12.0, low=9.0, close=11.0, volume=1000)
-        assert bar.typical_price == pytest.approx((12.0 + 9.0 + 11.0) / 3.0)
-
-    def test_range(self):
-        bar = KlineBar(date="d", open=10.0, high=12.0, low=9.0, close=11.0, volume=1000)
-        assert bar.range == pytest.approx(3.0)
-
-    def test_body(self):
-        bar = KlineBar(date="d", open=10.0, high=12.0, low=9.0, close=11.0, volume=1000)
-        assert bar.body == pytest.approx(1.0)
-
-    def test_is_bullish_true(self):
-        bar = KlineBar(date="d", open=10.0, high=12.0, low=9.0, close=11.0, volume=1000)
-        assert bar.is_bullish is True
-
-    def test_is_bullish_false(self):
-        bar = KlineBar(date="d", open=11.0, high=12.0, low=9.0, close=10.0, volume=1000)
-        assert bar.is_bullish is False
+    def test_json_round_trip(self):
+        tick = TickData(symbol="000001", price=10.5, bid=10.4, ask=10.6)
+        data = tick.model_dump()
+        restored = TickData(**data)
+        assert restored.price == 10.5
 
 
-class TestPosition:
-    def test_creation_with_defaults(self):
-        pos = Position(symbol="AAPL", entry_price=150.0, shares=100)
-        assert pos.symbol == "AAPL"
-        assert pos.entry_price == 150.0
-        assert pos.shares == 100
-        assert pos.entry_date == ""
-        assert pos.stop_loss == 0.0
-        assert pos.take_profit == 0.0
+class TestBarData:
 
-    def test_cost(self):
-        pos = Position(symbol="AAPL", entry_price=150.0, shares=100)
-        assert pos.cost == pytest.approx(15000.0)
+    def test_valid_bar(self):
+        bar = BarData(symbol="000001", date="2023-01-01", open=10, high=11, low=9, close=10.5, volume=5000)
+        assert bar.close == 10.5
 
-    def test_risk_per_share_with_stop_loss(self):
-        pos = Position(symbol="AAPL", entry_price=150.0, shares=100, stop_loss=140.0)
-        assert pos.risk_per_share == pytest.approx(10.0)
+    def test_high_lt_low_rejected(self):
+        with pytest.raises(ValidationError):
+            BarData(symbol="000001", high=9, low=11)
 
-    def test_risk_per_share_without_stop_loss(self):
-        pos = Position(symbol="AAPL", entry_price=150.0, shares=100)
-        assert pos.risk_per_share == 0.0
+    def test_defaults(self):
+        bar = BarData()
+        assert bar.symbol == ""
+        assert bar.close == 0.0
 
 
-class TestPortfolioSnapshot:
-    def test_empty_portfolio(self):
-        snap = PortfolioSnapshot(cash=10000.0)
-        assert snap.total_position_value == 0.0
-        assert snap.total_value == pytest.approx(10000.0)
-        assert snap.position_count == 0
+class TestTradeSignalV2:
 
-    def test_with_positions(self):
-        pos_a = Position(symbol="A", entry_price=100.0, shares=10)
-        pos_b = Position(symbol="B", entry_price=50.0, shares=20)
-        snap = PortfolioSnapshot(cash=5000.0, positions={"A": pos_a, "B": pos_b})
-        assert snap.total_position_value == pytest.approx(2000.0)
-        assert snap.total_value == pytest.approx(7000.0)
-        assert snap.position_count == 2
+    def test_buy_signal(self):
+        sig = TradeSignalV2(signal_type=SignalTypeV2.BUY, strength=0.8, price=10.5)
+        assert sig.signal_type == SignalTypeV2.BUY
+        assert sig.strength == 0.8
 
+    def test_strength_out_of_range(self):
+        with pytest.raises(ValidationError):
+            TradeSignalV2(signal_type=SignalTypeV2.BUY, strength=1.5)
 
-class TestBacktestMetrics:
-    def test_all_defaults(self):
-        m = BacktestMetrics()
-        assert m.total_return == 0.0
-        assert m.annual_return == 0.0
-        assert m.sharpe_ratio == 0.0
-        assert m.sortino_ratio == 0.0
-        assert m.max_drawdown == 0.0
-        assert m.win_rate == 0.0
-        assert m.profit_factor == 0.0
-        assert m.total_trades == 0
-        assert m.avg_trade_return == 0.0
-        assert m.calmar_ratio == 0.0
+    def test_negative_bar_index_rejected(self):
+        with pytest.raises(ValidationError):
+            TradeSignalV2(signal_type=SignalTypeV2.BUY, bar_index=-2)
 
-    def test_custom_values(self):
-        m = BacktestMetrics(total_return=0.25, sharpe_ratio=1.5, total_trades=42)
-        assert m.total_return == 0.25
-        assert m.sharpe_ratio == 1.5
-        assert m.total_trades == 42
+    def test_buy_stop_loss_above_price_rejected(self):
+        with pytest.raises(ValidationError):
+            TradeSignalV2(signal_type=SignalTypeV2.BUY, price=10.0, stop_loss=11.0)
 
+    def test_sell_stop_loss_below_price_rejected(self):
+        with pytest.raises(ValidationError):
+            TradeSignalV2(signal_type=SignalTypeV2.SELL, price=10.0, stop_loss=9.0)
 
-class TestMarketDataPoint:
-    def test_is_valid_true(self):
-        dp = MarketDataPoint(symbol="AAPL", price=150.0)
-        assert dp.is_valid is True
+    def test_buy_take_profit_below_price_rejected(self):
+        with pytest.raises(ValidationError):
+            TradeSignalV2(signal_type=SignalTypeV2.BUY, price=10.0, take_profit=9.0)
 
-    def test_is_valid_zero_price(self):
-        dp = MarketDataPoint(symbol="AAPL", price=0.0)
-        assert dp.is_valid is False
+    def test_sell_take_profit_above_price_rejected(self):
+        with pytest.raises(ValidationError):
+            TradeSignalV2(signal_type=SignalTypeV2.SELL, price=10.0, take_profit=11.0)
 
-    def test_is_valid_empty_symbol(self):
-        dp = MarketDataPoint(symbol="", price=150.0)
-        assert dp.is_valid is False
+    def test_hold_signal_no_price_validation(self):
+        sig = TradeSignalV2(signal_type=SignalTypeV2.HOLD)
+        assert sig.signal_type == SignalTypeV2.HOLD
 
 
-class TestCorrelationResult:
-    def test_is_highly_correlated_above_threshold(self):
-        cr = CorrelationResult(symbol_a="A", symbol_b="B", correlation=0.85)
-        assert cr.is_highly_correlated is True
+class TestPositionV2:
 
-    def test_is_highly_correlated_below_threshold(self):
-        cr = CorrelationResult(symbol_a="A", symbol_b="B", correlation=0.5)
-        assert cr.is_highly_correlated is False
+    def test_long_position(self):
+        pos = PositionV2(symbol="000001", quantity=100, avg_cost=10.0)
+        assert pos.is_long is True
+        assert pos.is_short is False
+        assert pos.is_flat is False
 
-    def test_is_highly_correlated_negative(self):
-        cr = CorrelationResult(symbol_a="A", symbol_b="B", correlation=-0.8)
-        assert cr.is_highly_correlated is True
+    def test_flat_position(self):
+        pos = PositionV2(symbol="000001", quantity=0)
+        assert pos.is_flat is True
+
+    def test_negative_cost_rejected(self):
+        with pytest.raises(ValidationError):
+            PositionV2(symbol="000001", avg_cost=-1.0)
+
+
+class TestOrderV2:
+
+    def test_valid_order(self):
+        order = OrderV2(symbol="000001", side=OrderSide.BUY, quantity=100)
+        assert order.side == OrderSide.BUY
+        assert order.status == OrderStatus.PENDING
+
+    def test_zero_quantity_rejected(self):
+        with pytest.raises(ValidationError):
+            OrderV2(symbol="000001", side=OrderSide.BUY, quantity=0)
+
+    def test_negative_quantity_rejected(self):
+        with pytest.raises(ValidationError):
+            OrderV2(symbol="000001", side=OrderSide.BUY, quantity=-10)
+
+
+class TestTradeRecordV2:
+
+    def test_valid_trade(self):
+        trade = TradeRecordV2(symbol="000001", side=OrderSide.BUY, quantity=100, price=10.5)
+        assert trade.price == 10.5
+
+    def test_zero_price_rejected(self):
+        with pytest.raises(ValidationError):
+            TradeRecordV2(symbol="000001", side=OrderSide.BUY, quantity=100, price=0)
+
+
+class TestBacktestConfigV2:
+
+    def test_valid_config(self):
+        config = BacktestConfigV2(initial_capital=500000)
+        assert config.initial_capital == 500000
+
+    def test_zero_capital_rejected(self):
+        with pytest.raises(ValidationError):
+            BacktestConfigV2(initial_capital=0)
+
+    def test_commission_out_of_range(self):
+        with pytest.raises(ValidationError):
+            BacktestConfigV2(commission_rate=0.1)
+
+
+class TestBacktestResultV2:
+
+    def test_valid_result(self):
+        result = BacktestResultV2(strategy_name="test", total_return=0.15, sharpe_ratio=1.5)
+        assert result.strategy_name == "test"
+
+    def test_win_rate_out_of_range(self):
+        with pytest.raises(ValidationError):
+            BacktestResultV2(strategy_name="test", win_rate=1.5)
+
+    def test_negative_trades_rejected(self):
+        with pytest.raises(ValidationError):
+            BacktestResultV2(strategy_name="test", total_trades=-1)
+
+
+class TestLegacyConversion:
+
+    def test_validate_signal_dict_buy(self):
+        data = {"type": "buy", "strength": 0.8, "bar_index": 5, "price": 10.5}
+        sig = validate_signal_dict(data)
+        assert sig.signal_type == SignalTypeV2.BUY
+        assert sig.strength == 0.8
+
+    def test_validate_signal_dict_sell(self):
+        data = {"type": "sell", "bar_index": 10, "price": 12.0}
+        sig = validate_signal_dict(data)
+        assert sig.signal_type == SignalTypeV2.SELL
+
+    def test_convert_legacy_signal(self):
+        sig = TradeSignalV2(signal_type=SignalTypeV2.BUY, strength=0.7, price=10.0)
+        d = convert_legacy_signal(sig)
+        assert d["type"] == "buy"
+        assert d["strength"] == 0.7
+        assert d["price"] == 10.0
+
+    def test_round_trip(self):
+        original = {"type": "buy", "strength": 0.6, "bar_index": 3, "price": 15.0, "stop_loss": 14.0}
+        sig = validate_signal_dict(original)
+        converted = convert_legacy_signal(sig)
+        assert converted["type"] == original["type"]
+        assert converted["strength"] == original["strength"]
+        assert converted["bar_index"] == original["bar_index"]

@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package quantcore.ai.v1;
+
+service AIEngineService {
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  rpc MineFactors(FactorMiningRequest) returns (FactorMiningResponse);
+  rpc Predict(PredictRequest) returns (PredictResponse);
+  rpc DetectRisk(RiskDetectionRequest) returns (RiskDetectionResponse);
+  rpc StreamAnomalies(AnomalyStreamRequest) returns (stream AnomalyAlert);
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  bool healthy = 1;
+  string version = 2;
+  bool gpu_available = 3;
+  int64 timestamp_ns = 4;
+}
+
+message FactorMiningRequest {
+  repeated double close = 1;
+  repeated double high = 2;
+  repeated double low = 3;
+  repeated double volume = 4;
+  repeated double open = 5;
+  int32 top_n = 6;
+  string rank_method = 7;
+}
+
+message FactorResult {
+  string name = 1;
+  double ic = 2;
+  double turnover = 3;
+  repeated double values = 4;
+}
+
+message FactorMiningResponse {
+  repeated FactorResult factors = 1;
+  int64 timestamp_ns = 2;
+}
+
+message PredictRequest {
+  repeated double features = 1;
+  int32 seq_len = 2;
+  int32 feature_dim = 3;
+  int32 horizon = 4;
+}
+
+message PredictResponse {
+  repeated double predictions = 1;
+  double confidence = 2;
+  int64 timestamp_ns = 3;
+}
+
+message RiskDetectionRequest {
+  repeated double returns = 1;
+  repeated double prices = 2;
+  double confidence_level = 3;
+  int32 anomaly_window = 4;
+  double anomaly_threshold = 5;
+}
+
+message RiskDetectionResponse {
+  repeated int32 anomaly_indices = 1;
+  repeated int32 regime_change_indices = 2;
+  double var_estimate = 3;
+  double cvar_estimate = 4;
+  int64 timestamp_ns = 5;
+}
+
+message AnomalyStreamRequest {
+  repeated double returns = 1;
+  int32 window = 2;
+  double threshold = 3;
+}
+
+message AnomalyAlert {
+  int32 index = 1;
+  double z_score = 2;
+  double value = 3;
+  string severity = 4;
+  int64 timestamp_ns = 5;
+}

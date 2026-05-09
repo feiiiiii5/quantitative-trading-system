@@ -2,21 +2,46 @@ import asyncio
 import io
 import logging
 import time
+import uuid
+import zlib
 
 import numpy as np
-from fastapi import APIRouter, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, Query, Request
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from api.utils import json_response as _json_response
 from api.utils import safe_error
+from core.json_utils import json_dumps
 
 logger = logging.getLogger(__name__)
 backtest_router = APIRouter()
 
 _perf_overview_cache: dict[str, tuple[float, dict]] = {}
-_PERF_CACHE_TTL = 300.0
-_PERF_CACHE_MAX = 50
+_PERF_CACHE_TTL = 600.0
+_PERF_CACHE_MAX = 500
+
+_COMPRESS_THRESHOLD = 50_000
+
+_backtest_result_cache: dict[str, tuple[float, dict]] = {}
+_BACKTEST_CACHE_TTL = 300.0
+_BACKTEST_CACHE_MAX = 1000
+
+
+def _compressed_response(data: dict) -> Response:
+    json_bytes = json_dumps(data).encode("utf-8")
+    if len(json_bytes) > _COMPRESS_THRESHOLD:
+        compressed = zlib.compress(json_bytes, level=6)
+        return Response(
+            content=compressed,
+            media_type="application/json",
+            headers={
+                "Content-Encoding": "deflate",
+                "X-Original-Size": str(len(json_bytes)),
+                "X-Compressed-Size": str(len(compressed)),
+            },
+        )
+    return Response(content=json_bytes, media_type="application/json")
 
 
 class BacktestRunRequest(BaseModel):
@@ -207,6 +232,13 @@ async def run_backtest(
     body: BacktestRunRequest,
 ):
     try:
+        cache_key = "%s:%s:%s:%s" % (body.symbol, body.strategy_type, body.start_date, body.end_date)
+        cached_entry = _backtest_result_cache.get(cache_key)
+        if cached_entry is not None:
+            ts, cached_data = cached_entry
+            if time.monotonic() - ts < _BACKTEST_CACHE_TTL:
+                return _compressed_response({"success": True, "data": cached_data, "cached": True})
+
         fetcher = request.app.state.fetcher
         df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
@@ -217,15 +249,25 @@ async def run_backtest(
         if "error" in result:
             return _json_response(False, error=result["error"])
 
-        return _json_response(True, data=result)
+        if len(_backtest_result_cache) >= _BACKTEST_CACHE_MAX:
+            oldest_key = min(_backtest_result_cache, key=lambda k: _backtest_result_cache[k][0])
+            del _backtest_result_cache[oldest_key]
+        _backtest_result_cache[cache_key] = (time.monotonic(), result)
+
+        return _compressed_response({"success": True, "data": result})
     except Exception as e:
-        logger.error("backtest run error: %s", e,  exc_info=True)
+        logger.error("backtest run error: %s", e, exc_info=True)
         return _json_response(False, error=safe_error(e))
 
 
 @backtest_router.get("/backtest/result/{task_id}")
 async def get_backtest_result(request: Request, task_id: str):
     return _json_response(False, error="回测结果查询暂不支持")
+
+
+_compare_cache: dict[str, tuple[float, dict]] = {}
+_COMPARE_CACHE_TTL = 360.0
+_COMPARE_CACHE_MAX = 600
 
 
 @backtest_router.get("/backtest/compare")
@@ -237,6 +279,13 @@ async def compare_strategies(
     period: str = Query("1y", max_length=5),
 ):
     try:
+        cache_key = "cmp:%s:%s:%s" % (symbol, start_date, end_date)
+        cached_entry = _compare_cache.get(cache_key)
+        if cached_entry is not None:
+            ts, cached_data = cached_entry
+            if time.monotonic() - ts < _COMPARE_CACHE_TTL:
+                return _compressed_response({"success": True, "data": cached_data, "cached": True})
+
         fetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
@@ -263,6 +312,11 @@ async def compare_strategies(
         from core.backtest import compare_results
         result_list = list(results.values())
         comparison_data = compare_results(result_list)
+
+        if len(_compare_cache) >= _COMPARE_CACHE_MAX:
+            oldest_key = min(_compare_cache, key=lambda k: _compare_cache[k][0])
+            del _compare_cache[oldest_key]
+        _compare_cache[cache_key] = (time.monotonic(), comparison_data)
 
         return _json_response(True, data=comparison_data)
     except Exception as e:
@@ -1027,4 +1081,140 @@ async def walk_forward_analysis_endpoint(request: Request, body: WalkForwardAnal
         return _json_response(True, data=result.to_dict())
     except Exception as e:
         logger.error("walk forward analysis error: %s", e, exc_info=True)
+        return _json_response(False, error=safe_error(e))
+
+
+_optimization_tasks: dict[str, dict] = {}
+
+
+class AutoOptimizeRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$")
+    strategy_name: str = Field(..., min_length=1, max_length=30, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    start_date: str = Field("2022-01-01", pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Field("2025-12-31", pattern=r"^\d{4}-\d{2}-\d{2}$")
+    metric: str = Field("sharpe_ratio", pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    max_iterations: int = Field(50, ge=5, le=200)
+
+
+@backtest_router.post("/backtest/auto_optimize")
+async def auto_optimize(
+    request: Request,
+    body: AutoOptimizeRequest,
+    background_tasks: BackgroundTasks,
+):
+    try:
+        from core.strategies import STRATEGY_REGISTRY
+
+        if body.strategy_name not in STRATEGY_REGISTRY:
+            return _json_response(False, error=f"未知策略: {body.strategy_name}")
+
+        task_id = uuid.uuid4().hex[:16]
+        _optimization_tasks[task_id] = {"status": "pending", "progress": 0, "result": None, "error": None}
+
+        async def _run_optimization() -> None:
+            _optimization_tasks[task_id]["status"] = "running"
+            try:
+                from core.backtest import BatchStrategyRunner
+
+                strategy_cls = STRATEGY_REGISTRY[body.strategy_name]
+                runner = BatchStrategyRunner()
+                fetcher = request.app.state.fetcher
+                df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
+                if df is None or df.empty:
+                    _optimization_tasks[task_id].update({"status": "error", "error": "无法获取数据"})
+                    return
+
+                import pandas as pd
+                if "date" in df.columns:
+                    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+                    df = df.dropna(subset=["date"])
+                    df = df[(df["date"] >= body.start_date) & (df["date"] <= body.end_date)].reset_index(drop=True)
+
+                if len(df) < 30:
+                    _optimization_tasks[task_id].update({"status": "error", "error": "数据不足"})
+                    return
+
+                result = await asyncio.to_thread(
+                    runner.auto_optimize,
+                    [strategy_cls], df, None, body.max_iterations, body.metric,
+                )
+                _optimization_tasks[task_id].update({"status": "completed", "progress": 100, "result": result})
+            except Exception as e:
+                logger.error("Auto-optimize task %s failed: %s", task_id, e, exc_info=True)
+                _optimization_tasks[task_id].update({"status": "error", "error": str(e)})
+
+        background_tasks.add_task(_run_optimization)
+        return _json_response(True, data={
+            "task_id": task_id,
+            "message": "优化任务已启动，通过 GET /backtest/auto_optimize/{task_id} 查询进度",
+        })
+    except Exception as e:
+        return _json_response(False, error=safe_error(e))
+
+
+@backtest_router.get("/backtest/auto_optimize/{task_id}")
+async def get_optimization_status(task_id: str):
+    task_info = _optimization_tasks.get(task_id)
+    if not task_info:
+        return _json_response(False, error="任务不存在")
+    return _json_response(True, data=task_info)
+
+
+@backtest_router.post("/backtest/result/save")
+async def save_backtest_result(request: Request):
+    try:
+        from core.backtest import BacktestResultStore
+
+        body = await request.json()
+        symbol = body.get("symbol", "")
+        strategy_name = body.get("strategy_name", "")
+        params = body.get("params", {})
+        result_data = body.get("result", {})
+
+        if not symbol or not strategy_name:
+            return _json_response(False, error="缺少 symbol 或 strategy_name")
+
+        from core.backtest.result import BacktestResult
+        result = BacktestResult(strategy_name=strategy_name)
+        for key in ("total_return", "annual_return", "sharpe_ratio", "max_drawdown",
+                     "calmar_ratio", "win_rate", "profit_factor", "total_trades",
+                     "win_trades", "loss_trades", "avg_profit", "avg_loss",
+                     "avg_hold_days", "benchmark_return", "alpha", "beta"):
+            if key in result_data:
+                setattr(result, key, result_data[key])
+
+        store = BacktestResultStore()
+        result_id = store.save(result, symbol, strategy_name, params)
+        return _json_response(True, data={"result_id": result_id})
+    except Exception as e:
+        return _json_response(False, error=safe_error(e))
+
+
+@backtest_router.get("/backtest/result/history")
+async def get_backtest_history(
+    symbol: str = Query("", max_length=20),
+    limit: int = Query(20, ge=1, le=100),
+):
+    try:
+        from core.backtest import BacktestResultStore
+        store = BacktestResultStore()
+        history = store.get_history(symbol=symbol, limit=limit)
+        return _json_response(True, data=history)
+    except Exception as e:
+        return _json_response(False, error=safe_error(e))
+
+
+@backtest_router.post("/backtest/result/compare")
+async def compare_saved_results(request: Request):
+    try:
+        body = await request.json()
+        result_ids = body.get("result_ids", [])
+        if len(result_ids) < 2:
+            return _json_response(False, error="至少需要2个结果ID进行对比")
+
+        from core.backtest import BacktestResultStore
+        store = BacktestResultStore()
+        comparison = store.compare(result_ids)
+        return _json_response(True, data=comparison)
+    except Exception as e:
         return _json_response(False, error=safe_error(e))

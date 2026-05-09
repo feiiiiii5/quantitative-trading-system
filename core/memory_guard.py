@@ -18,6 +18,7 @@ __all__ = [
     'memory_guard',
     'MemoryGuard',
     'limit_cache_size',
+    'get_adaptive_thresholds',
 ]
 
 _MEMORY_WARNING_RATIO = 0.75
@@ -27,6 +28,23 @@ _LAST_GC_TIME = 0.0
 _GC_COOLDOWN = 20.0
 _MAX_CACHE_SIZE = 1000
 _CLEANUP_CALLBACKS: list[Callable[[], None]] = []
+
+
+def get_adaptive_thresholds() -> dict:
+    try:
+        import psutil
+        total_gb = psutil.virtual_memory().total / (1024 ** 3)
+        if total_gb >= 16:
+            return {"pressure": 0.75, "critical": 0.90, "max_backtest_mb": 4096}
+        elif total_gb >= 8:
+            return {"pressure": 0.70, "critical": 0.85, "max_backtest_mb": 2048}
+        else:
+            return {"pressure": 0.65, "critical": 0.80, "max_backtest_mb": 1024}
+    except ImportError:
+        return {"pressure": 0.70, "critical": 0.85, "max_backtest_mb": 2048}
+
+
+_ADAPTIVE = get_adaptive_thresholds()
 
 
 def get_memory_usage() -> dict:
@@ -49,19 +67,17 @@ def get_memory_usage() -> dict:
 
 
 def is_memory_pressure() -> bool:
-    """判断系统是否处于内存压力状态"""
     try:
         import psutil
-        return bool(psutil.virtual_memory().percent >= _MEMORY_WARNING_RATIO * 100)
+        return bool(psutil.virtual_memory().percent >= _ADAPTIVE["pressure"] * 100)
     except ImportError:
         return False
 
 
 def is_memory_critical() -> bool:
-    """判断系统是否处于内存临界状态"""
     try:
         import psutil
-        return bool(psutil.virtual_memory().percent >= _MEMORY_CRITICAL_RATIO * 100)
+        return bool(psutil.virtual_memory().percent >= _ADAPTIVE["critical"] * 100)
     except ImportError:
         return False
 
@@ -114,23 +130,14 @@ def check_and_reclaim_if_needed() -> bool:
 
 
 @contextmanager
-def memory_guard(operation: str = "", max_mb: int = 2048, auto_reclaim: bool = True):
-    """内存守护上下文管理器装饰器版本，更简洁的用法
-
-    用法:
-        with memory_guard("回测计算", max_mb=2048):
-            # 内存密集操作
-            result = heavy_computation()
-
-    Args:
-        operation: 操作名称，用于日志标识
-        max_mb: 最大允许内存使用(MB)，超过则触发回收
-        auto_reclaim: 是否在退出时自动检查并回收内存
-    """
+def memory_guard(operation: str = "", max_mb: int | None = None, auto_reclaim: bool = True):
+    if max_mb is None:
+        max_mb = _ADAPTIVE["max_backtest_mb"]
     start_mb = get_memory_usage().get("rss_mb", 0)
     if start_mb > max_mb:
         logger.warning(
-            f"[{operation}] 内存已超限 {start_mb:.0f}MB > {max_mb}MB，执行预回收"
+            "[%s] 内存已超限 %.0fMB > %dMB，执行预回收",
+            operation, start_mb, max_mb,
         )
         reclaim_memory(force=True)
         start_mb = get_memory_usage().get("rss_mb", 0)
@@ -143,30 +150,24 @@ def memory_guard(operation: str = "", max_mb: int = 2048, auto_reclaim: bool = T
             delta = end_mb - start_mb
             if delta > 500:
                 logger.warning(
-                    f"[{operation}] 内存增长 {delta:.0f}MB (当前 {end_mb:.0f}MB)，建议检查内存泄漏"
+                    "[%s] 内存增长 %.0fMB (当前 %.0fMB)，建议检查内存泄漏",
+                    operation, delta, end_mb,
                 )
             check_and_reclaim_if_needed()
 
 
 class MemoryGuard:
-    """内存守护上下文管理器，在内存密集操作前后检查和回收内存
-
-    用法:
-        with MemoryGuard("回测计算", max_mb=2048):
-            # 内存密集操作
-            result = heavy_computation()
-    """
-
-    def __init__(self, operation: str = "", max_mb: int = 2048):
+    def __init__(self, operation: str = "", max_mb: int | None = None):
         self._operation = operation
-        self._max_mb = max_mb
+        self._max_mb = max_mb or _ADAPTIVE["max_backtest_mb"]
         self._start_mb = 0.0
 
     def __enter__(self):
         self._start_mb = get_memory_usage().get("rss_mb", 0)
         if self._start_mb > self._max_mb:
             logger.warning(
-                f"[{self._operation}] 内存已超限 {self._start_mb:.0f}MB > {self._max_mb}MB，执行回收"
+                "[%s] 内存已超限 %.0fMB > %dMB，执行回收",
+                self._operation, self._start_mb, self._max_mb,
             )
             reclaim_memory(force=True)
             self._start_mb = get_memory_usage().get("rss_mb", 0)
@@ -177,7 +178,8 @@ class MemoryGuard:
         delta = end_mb - self._start_mb
         if delta > 500:
             logger.warning(
-                f"[{self._operation}] 内存增长 {delta:.0f}MB (当前 {end_mb:.0f}MB)，建议检查内存泄漏"
+                "[%s] 内存增长 %.0fMB (当前 %.0fMB)，建议检查内存泄漏",
+                self._operation, delta, end_mb,
             )
         check_and_reclaim_if_needed()
         return False

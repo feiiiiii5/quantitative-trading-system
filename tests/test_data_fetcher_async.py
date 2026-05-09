@@ -17,8 +17,9 @@ class TestCircuitBreaker:
         assert breaker.state == "CLOSED"
 
     def test_circuit_breaker_record_failure(self):
+        import asyncio
         breaker = CircuitBreaker(failure_threshold=2, timeout=60)
-        breaker._record_failure()
+        asyncio.run(breaker._record_failure())
         assert breaker.failure_count == 1
 
     def test_circuit_breaker_is_valid_result(self):
@@ -29,9 +30,10 @@ class TestCircuitBreaker:
         assert breaker._is_valid_result(pd.DataFrame({"a": [1]})) is True
 
     def test_circuit_breaker_open_after_threshold(self):
+        import asyncio
         breaker = CircuitBreaker(failure_threshold=2, timeout=60)
-        breaker._record_failure()
-        breaker._record_failure()
+        asyncio.run(breaker._record_failure())
+        asyncio.run(breaker._record_failure())
         assert breaker.state == "OPEN"
 
 
@@ -102,7 +104,7 @@ class TestCircuitBreakerAsyncCall:
     @pytest.mark.asyncio
     async def test_async_call_blocks_when_open(self):
         breaker = CircuitBreaker(failure_threshold=1, timeout=60)
-        breaker._record_failure()
+        await breaker._record_failure()
 
         async def some_coro():
             return "should not reach"

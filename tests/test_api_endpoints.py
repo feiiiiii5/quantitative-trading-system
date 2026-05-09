@@ -23,6 +23,48 @@ class TestHealthAndRoot:
         data = resp.json()
         assert "status" in data
 
+    def test_api_health(self, client):
+        resp = client.get("/api/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] in ("healthy", "degraded")
+        assert "checks" in data
+        assert "database" in data["checks"]
+        assert "trading" in data["checks"]
+        assert "data_fetcher" in data["checks"]
+        assert "data_sources" in data
+        assert "cache_info" in data
+        assert "uptime_seconds" in data
+        assert data["version"] == "3.0.0"
+
+    def test_request_id_in_response(self, client):
+        resp = client.get("/api/health")
+        assert resp.status_code == 200
+        assert "x-request-id" in resp.headers
+
+    def test_request_id_passthrough(self, client):
+        custom_id = "test-req-12345678"
+        resp = client.get("/api/health", headers={"X-Request-ID": custom_id})
+        assert resp.status_code == 200
+        assert resp.headers["x-request-id"] == custom_id
+
+    def test_security_headers_in_response(self, client):
+        resp = client.get("/api/health")
+        assert resp.headers.get("x-content-type-options") == "nosniff"
+        assert resp.headers.get("x-frame-options") == "DENY"
+
+    def test_sse_endpoint_empty_symbols(self, client):
+        resp = client.get("/api/sse/realtime?symbols=")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is False
+
+    def test_sse_endpoint_invalid_symbols(self, client):
+        resp = client.get("/api/sse/realtime?symbols=,,,")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is False
+
 
 class TestMarketAPI:
     def test_market_overview(self, client):
@@ -111,6 +153,7 @@ class TestTradingAPI:
         assert "total_assets" in data.get("data", {})
 
     def test_trading_buy(self, client):
+        client.post("/api/trading/reset")
         resp = client.post("/api/trading/buy", json={
             "symbol": "600000", "name": "浦发银行", "market": "A",
             "price": 10.0, "shares": 100, "market_price": 10.0,
@@ -120,6 +163,7 @@ class TestTradingAPI:
         assert data["success"] is True
 
     def test_trading_sell_t1_restricted(self, client):
+        client.post("/api/trading/reset")
         resp = client.post("/api/trading/buy", json={
             "symbol": "601398", "name": "工商银行", "market": "A",
             "price": 5.0, "shares": 100, "market_price": 5.0,

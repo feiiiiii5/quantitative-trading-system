@@ -238,12 +238,12 @@ class APIAuthMiddleware(BaseHTTPMiddleware):
         self._rate_limits: dict[str, list[float]] = {}
         self._rate_lock = threading.Lock()
         self._max_clients = 1000
-        self._rate_limit_per_minute = 120 if not enabled else 60
+        self._rate_limit_per_minute = 60 if enabled else 600
         self._cleanup_interval = 300
         self._last_cleanup = time.monotonic()
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        if not self._enabled or request.url.path.startswith("/docs") or request.url.path.startswith("/openapi"):
+        if request.url.path.startswith("/docs") or request.url.path.startswith("/openapi"):
             return await call_next(request)
 
         client_ip = request.client.host if request.client else "unknown"
@@ -267,7 +267,7 @@ class APIAuthMiddleware(BaseHTTPMiddleware):
                 return Response(status_code=429, content='{"success":false,"error":"Rate limit exceeded"}')
             self._rate_limits[client_ip].append(now)
 
-        if self._api_key:
+        if self._enabled and self._api_key:
             api_key = request.headers.get("X-API-Key", "")
             if not hmac.compare_digest(api_key, self._api_key):
                 return Response(status_code=401, content='{"success":false,"error":"Invalid API key"}')

@@ -1,0 +1,234 @@
+version: "3.9"
+
+services:
+  api-gateway:
+    build:
+      context: ../../services/api-gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - GATEWAY_PORT=8080
+      - MARKET_DATA_ADDR=market-data:50051
+      - ORDER_ENGINE_ADDR=order-engine:50052
+      - RISK_ENGINE_ADDR=risk-engine:50053
+      - STRATEGY_ENGINE_ADDR=strategy-engine:50054
+      - PORTFOLIO_ENGINE_ADDR=portfolio-engine:50055
+      - BACKTEST_ENGINE_ADDR=backtest-engine:50056
+      - AI_ENGINE_ADDR=ai-engine:50057
+      - REDIS_ADDR=redis:6379
+      - GIN_MODE=release
+    depends_on:
+      - market-data
+      - redis
+    restart: unless-stopped
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://loki:3100/loki/api/v1/push"
+
+  market-data:
+    build:
+      context: ../../services/market-data-engine
+      dockerfile: Dockerfile
+    ports:
+      - "50051:50051"
+    environment:
+      - MARKET_DATA_ADDR=0.0.0.0:50051
+      - ORDERBOOK_DEPTH=10
+      - RUST_LOG=info
+    restart: unless-stopped
+
+  order-engine:
+    build:
+      context: ../../services/order-engine
+      dockerfile: Dockerfile
+    ports:
+      - "50052:50052"
+    environment:
+      - ORDER_ENGINE_ADDR=0.0.0.0:50052
+      - RUST_LOG=info
+    restart: unless-stopped
+
+  risk-engine:
+    build:
+      context: ../../services/risk-engine
+      dockerfile: Dockerfile
+    ports:
+      - "50053:50053"
+    environment:
+      - RISK_ENGINE_ADDR=0.0.0.0:50053
+      - RUST_LOG=info
+    restart: unless-stopped
+
+  strategy-engine:
+    build:
+      context: ../../services/strategy-engine
+      dockerfile: Dockerfile
+    ports:
+      - "50054:50054"
+    environment:
+      - DATABASE_PATH=/data/quantcore.db
+      - REDIS_URL=redis://redis:6379
+      - CLICKHOUSE_HOST=clickhouse
+      - KAFKA_BROKERS=redpanda:9092
+    volumes:
+      - strategy-data:/data
+    depends_on:
+      - redis
+      - clickhouse
+    restart: unless-stopped
+
+  portfolio-engine:
+    build:
+      context: ../../services/portfolio-engine
+      dockerfile: Dockerfile
+    ports:
+      - "50055:50055"
+    environment:
+      - CLICKHOUSE_HOST=clickhouse
+    depends_on:
+      - clickhouse
+    restart: unless-stopped
+
+  backtest-engine:
+    build:
+      context: ../../services/backtest-engine
+      dockerfile: Dockerfile
+      target: runtime
+    ports:
+      - "50056:50056"
+    environment:
+      - CLICKHOUSE_HOST=clickhouse
+    depends_on:
+      - clickhouse
+    restart: unless-stopped
+
+  ai-engine:
+    build:
+      context: ../../services/ai-engine
+      dockerfile: Dockerfile
+    ports:
+      - "50057:50057"
+    environment:
+      - CLICKHOUSE_HOST=clickhouse
+    depends_on:
+      - clickhouse
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=quantcore
+      - POSTGRES_USER=quantcore
+      - POSTGRES_PASSWORD=quantcore_dev
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.1
+    command:
+      - redpanda
+      - start
+      - --mode
+      - dev-container
+      - --smp
+      - "1"
+      - --memory
+      - 512M
+      - --overprovisioned
+    ports:
+      - "9092:9092"
+      - "9644:9644"
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    restart: unless-stopped
+
+  vault:
+    image: hashicorp/vault:1.18
+    ports:
+      - "8200:8200"
+    environment:
+      - VAULT_DEV_ROOT_TOKEN_ID=quantcore-dev-root
+      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - vault-data:/vault/data
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./alert_rules.yml:/etc/prometheus/alert_rules.yml
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.1.0
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki-config.yaml:/etc/loki/local-config.yaml
+      - loki-data:/loki
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.5.0
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "3200:3200"
+    volumes:
+      - ./tempo-config.yaml:/etc/tempo/tempo.yaml
+      - tempo-data:/tempo
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - loki
+      - prometheus
+      - tempo
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  clickhouse-data:
+  redpanda-data:
+  grafana-data:
+  strategy-data:
+  postgres-data:
+  vault-data:
+  loki-data:
+  tempo-data:

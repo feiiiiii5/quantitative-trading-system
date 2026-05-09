@@ -1,0 +1,6 @@
+grpcio==66.0.0
+grpcio-tools==66.0.0
+protobuf==5.27.3
+uvloop==0.20.0
+pandas==2.2.3
+numpy==2.1.3

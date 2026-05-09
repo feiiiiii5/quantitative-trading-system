@@ -317,12 +317,12 @@ async def lifespan(app: FastAPI):
         logger.warning(f"aiohttp session close failed: {e}")
 
     try:
+        trading: SimulatedTrading = app.state.trading
         db = get_db()
-        db._flush_buffer()
-        db.close()
-        logger.info("数据库连接已关闭")
+        db.set_config("portfolio_snapshot", trading.export_portfolio())
+        logger.info("Portfolio snapshot saved")
     except Exception as e:
-        logger.error("Failed to close database: %s", e)
+        logger.error("Failed to save portfolio snapshot: %s", e)
 
     try:
         from core.market_data import stop_background_refresh
@@ -337,12 +337,12 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Cache flush on shutdown failed: {e}")
 
     try:
-        trading: SimulatedTrading = app.state.trading
         db = get_db()
-        db.set_config("portfolio_snapshot", trading.export_portfolio())
-        logger.info("Portfolio snapshot saved")
+        db._flush_buffer()
+        db.close()
+        logger.info("数据库连接已关闭")
     except Exception as e:
-        logger.error("Failed to save portfolio snapshot: %s", e)
+        logger.error("Failed to close database: %s", e)
 
     logger.info("QuantCore 已关闭")
 
@@ -577,6 +577,56 @@ app.add_middleware(APIAuthMiddleware,
     api_key=_api_config.get("api_key", ""),
     enabled=_api_config.get("auth_enabled", False),
 )
+
+
+class _RequestTimingMiddleware:
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        start = time.monotonic()
+        await self._app(scope, receive, send)
+        elapsed = time.monotonic() - start
+        path = scope.get("path", "")
+        if elapsed > 2.0:
+            logger.warning("Slow request: %s %.3fs", path, elapsed)
+        elif elapsed > 0.5:
+            logger.info("Request: %s %.3fs", path, elapsed)
+
+
+class _SecurityHeadersMiddleware:
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        async def _send(message):
+            if message["type"] == "http.response.start":
+                headers = dict(message.get("headers", []))
+                security_headers = {
+                    b"x-content-type-options": b"nosniff",
+                    b"x-frame-options": b"DENY",
+                    b"x-xss-protection": b"1; mode=block",
+                    b"referrer-policy": b"strict-origin-when-cross-origin",
+                    b"cache-control": b"no-store",
+                }
+                for k, v in security_headers.items():
+                    if k not in headers:
+                        headers[k] = v
+                message["headers"] = list(headers.items())
+            await send(message)
+
+        await self._app(scope, receive, _send)
+
+
+app.add_middleware(_SecurityHeadersMiddleware)
+app.add_middleware(_RequestTimingMiddleware)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
@@ -590,6 +640,69 @@ app.include_router(router, prefix="/api")
 app.include_router(backtest_router, prefix="/api")
 app.include_router(feature_router, prefix="/api")
 app.include_router(duckdb_router, prefix="/api")
+
+
+@app.get("/api/health")
+async def health_check():
+    checks: dict[str, str] = {}
+    db_ok = False
+    try:
+        db = getattr(app.state, "db", None)
+        if db is not None:
+            db.fetch("SELECT 1")
+            db_ok = True
+    except Exception:
+        pass
+    checks["database"] = "ok" if db_ok else "unavailable"
+    trading_ok = getattr(app.state, "trading", None) is not None
+    checks["trading"] = "ok" if trading_ok else "unavailable"
+
+    fetcher_ok = False
+    data_sources: dict[str, Any] = {}
+    try:
+        fetcher = getattr(app.state, "fetcher", None)
+        if fetcher is not None:
+            fetcher_ok = True
+            for name, breaker in fetcher._circuit_breakers.items():
+                data_sources[name] = {
+                    "circuit_state": breaker.state,
+                    "failure_count": breaker.failure_count,
+                }
+            health_stats = getattr(fetcher._health, "_memory_stats", {})
+            for (src, req_type), stats in health_stats.items():
+                key = f"{src}_{req_type}"
+                total = stats["success_count"] + stats["fail_count"]
+                data_sources.setdefault(src, {})
+                data_sources[src][f"{req_type}_success_rate"] = round(
+                    stats["success_count"] / total, 4
+                ) if total > 0 else 0.0
+                data_sources[src][f"{req_type}_avg_latency"] = round(
+                    stats["latency_sum"] / stats["success_count"], 4
+                ) if stats["success_count"] > 0 else None
+    except Exception as e:
+        logger.debug("Health check data source error: %s", e)
+    checks["data_fetcher"] = "ok" if fetcher_ok else "unavailable"
+
+    cache_info: dict[str, Any] = {}
+    try:
+        from api.routes import _rt_cache, _kline_cache, _analysis_cache
+        cache_info["realtime"] = _rt_cache.stats()
+        cache_info["kline"] = _kline_cache.stats()
+        cache_info["analysis"] = _analysis_cache.stats()
+    except Exception:
+        pass
+
+    uptime = time.time() - getattr(app.state, "start_time", time.time())
+
+    all_ok = db_ok and trading_ok and fetcher_ok
+    return {
+        "status": "healthy" if all_ok else "degraded",
+        "checks": checks,
+        "data_sources": data_sources,
+        "cache_info": cache_info,
+        "uptime_seconds": round(uptime, 1),
+        "version": "3.0.0",
+    }
 
 
 _request_counter = itertools.count(1)
@@ -804,11 +917,20 @@ async def spa_fallback(request, call_next):
 
 
 def _build_frontend():
-    frontend_dir = BASE_DIR / "frontend"
+    frontend_dir = BASE_DIR / "frontend-v2"
     if not frontend_dir.exists():
+        logger.warning("未找到 frontend-v2 目录，跳过前端构建")
         return False
     static_dir = BASE_DIR / "static"
-    if (static_dir / "index.html").exists():
+    build_marker = static_dir / ".frontend-v2"
+
+    if static_dir.exists() and not build_marker.exists():
+        import shutil
+        shutil.rmtree(static_dir, ignore_errors=True)
+        logger.info("检测到旧版前端构建，已清理")
+
+    if (static_dir / "index.html").exists() and build_marker.exists():
+        logger.info("前端已构建，跳过重复构建")
         return True
 
     import shutil
@@ -843,23 +965,19 @@ def _build_frontend():
             capture_output=True, text=True, timeout=120,
         )
         if result.returncode == 0:
+            static_dir.mkdir(parents=True, exist_ok=True)
+            build_marker.touch()
             logger.info("前端构建完成")
             return True
-        logger.warning(f"前端构建失败: {result.stderr[:200]}")
+        logger.warning(f"前端构建失败: {result.stderr[:300]}")
     except Exception as e:
         logger.warning(f"前端构建异常: {e}")
     return False
 
 
 if __name__ == "__main__":
-    _dev_mode = "--dev" in sys.argv
-    if _dev_mode:
-        PORT = 8081
-        logger.info("开发模式: 后端运行在 8081, 前端 Vite 运行在 8080")
-
     _kill_existing_process()
-    if not _dev_mode:
-        _build_frontend()
+    _build_frontend()
 
     def open_browser():
         _preload_done.wait(timeout=30)
@@ -867,6 +985,7 @@ if __name__ == "__main__":
 
     threading.Thread(target=open_browser, daemon=True).start()
 
+    logger.info(f"QuantCore 启动 -> http://localhost:{PORT}")
     uvicorn.run(
         app,
         host="0.0.0.0",

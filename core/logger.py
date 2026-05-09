@@ -1,9 +1,28 @@
+__all__ = [
+    "setup_logger",
+    "get_logger",
+    "get_recent_logs",
+    "log_with_context",
+    "log_error",
+    "log_warning",
+    "log_info",
+    "log_debug",
+    "logger",
+    "LOG_DIR",
+    "APP_LOG_PATH",
+    "ERROR_LOG_PATH",
+]
+
 import json
 import logging
 import logging.handlers
+import sys
 import time
 from collections import deque
 from pathlib import Path
+from typing import Any
+
+from loguru import logger as _loguru_logger
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 LOG_DIR = DATA_DIR / "logs"
@@ -12,23 +31,38 @@ APP_LOG_PATH = LOG_DIR / "app.log"
 
 _LOGGER_INITIALIZED = False
 
+_loguru_format = (
+    "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
+    "{level:<8} | "
+    "{name}:{function}:{line} | "
+    "{message}"
+)
 
-class JSONFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        log_record = {
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S.%f", time.localtime(record.created)),
-            "level": record.levelname,
-            "module": record.name,
-            "message": record.getMessage(),
-            "filename": record.filename,
-            "lineno": record.lineno,
-        }
-        if hasattr(record, "extra"):
-            log_record.update(record.extra)
-        if record.exc_info:
-            import traceback
-            log_record["exception"] = traceback.format_exc()
-        return json.dumps(log_record, ensure_ascii=False)
+_json_format = (
+    '{"timestamp":"{time:YYYY-MM-DD HH:mm:ss.SSS}",'
+    '"level":"{level}",'
+    '"module":"{name}",'
+    '"message":"{message}",'
+    '"filename":"{file}",'
+    '"lineno":"{line}"}'
+)
+
+
+class _LoguruToLoggingHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level = _loguru_logger.level(record.levelname).no
+        except ValueError:
+            level = record.levelno
+
+        frame = record
+        depth = 0
+        while frame and frame.filename != record.filename:
+            depth += 1
+
+        _loguru_logger.opt(depth=depth, exception=record.exc_info).log(
+            level, record.getMessage()
+        )
 
 
 def setup_logger(level: int = logging.INFO) -> None:
@@ -38,38 +72,36 @@ def setup_logger(level: int = logging.INFO) -> None:
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    root_logger = logging.getLogger()
-    root_logger.setLevel(level)
+    _loguru_logger.remove()
 
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
-
-    app_handler = logging.handlers.RotatingFileHandler(
-        APP_LOG_PATH,
-        maxBytes=10 * 1024 * 1024,
-        backupCount=5,
-        encoding="utf-8"
+    _loguru_logger.add(
+        sys.stderr,
+        format=_loguru_format,
+        level=logging.getLevelName(level),
+        colorize=True,
     )
-    app_handler.setLevel(logging.INFO)
-    app_handler.setFormatter(JSONFormatter())
 
-    error_handler = logging.handlers.RotatingFileHandler(
-        ERROR_LOG_PATH,
-        maxBytes=5 * 1024 * 1024,
-        backupCount=3,
-        encoding="utf-8"
+    _loguru_logger.add(
+        str(APP_LOG_PATH),
+        format=_json_format,
+        level="INFO",
+        rotation="10 MB",
+        retention=5,
+        compression="gz",
+        encoding="utf-8",
+        serialize=False,
     )
-    error_handler.setLevel(logging.ERROR)
-    error_handler.setFormatter(JSONFormatter())
 
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
-    console_handler.setFormatter(console_formatter)
-
-    root_logger.addHandler(app_handler)
-    root_logger.addHandler(error_handler)
-    root_logger.addHandler(console_handler)
+    _loguru_logger.add(
+        str(ERROR_LOG_PATH),
+        format=_json_format,
+        level="ERROR",
+        rotation="5 MB",
+        retention=3,
+        compression="gz",
+        encoding="utf-8",
+        serialize=False,
+    )
 
     for noisy in [
         "numexpr", "numexpr.utils", "numpy", "urllib3", "urllib3.connectionpool",
@@ -99,48 +131,37 @@ def get_recent_logs(limit: int = 100, level: str | None = None) -> list[dict]:
                     rows.append(log_entry)
                 except json.JSONDecodeError:
                     pass
-    except Exception as e:
-        logger.debug("Failed to read log file: %s", e)
+    except Exception:
+        pass
     return list(rows)[-limit:]
 
 
 def get_logger(name: str) -> logging.Logger:
-    """获取带有上下文支持的日志记录器"""
     return logging.getLogger(name)
 
 
-# 默认日志记录器实例
-logger = logging.getLogger("quantcore")
+logger = _loguru_logger.bind(component="quantcore")
 
 
-def log_with_context(logger: logging.Logger, level: int, message: str, **kwargs) -> None:
-    """带有上下文信息的日志记录"""
-    extra = kwargs
-    logger.log(level, message, extra={"extra": extra})
+def log_with_context(log_instance: Any, level: int, message: str, **kwargs) -> None:
+    bound = log_instance.bind(**kwargs)
+    bound.log(level, message)
 
 
-def log_error(logger: logging.Logger, message: str, error: Exception | None = None, **kwargs) -> None:
-    """记录错误日志"""
-    extra = kwargs
+def log_error(log_instance: Any, message: str, error: Exception | None = None, **kwargs) -> None:
     if error:
-        extra["error_type"] = type(error).__name__
-        extra["error_message"] = str(error)
-    logger.error(message, extra={"extra": extra})
+        kwargs["error_type"] = type(error).__name__
+        kwargs["error_message"] = str(error)
+    log_instance.bind(**kwargs).error(message)
 
 
-def log_warning(logger: logging.Logger, message: str, **kwargs) -> None:
-    """记录警告日志"""
-    extra = kwargs
-    logger.warning(message, extra={"extra": extra})
+def log_warning(log_instance: Any, message: str, **kwargs) -> None:
+    log_instance.bind(**kwargs).warning(message)
 
 
-def log_info(logger: logging.Logger, message: str, **kwargs) -> None:
-    """记录信息日志"""
-    extra = kwargs
-    logger.info(message, extra={"extra": extra})
+def log_info(log_instance: Any, message: str, **kwargs) -> None:
+    log_instance.bind(**kwargs).info(message)
 
 
-def log_debug(logger: logging.Logger, message: str, **kwargs) -> None:
-    """记录调试日志"""
-    extra = kwargs
-    logger.debug(message, extra={"extra": extra})
+def log_debug(log_instance: Any, message: str, **kwargs) -> None:
+    log_instance.bind(**kwargs).debug(message)

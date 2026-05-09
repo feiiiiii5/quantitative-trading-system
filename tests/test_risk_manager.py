@@ -155,3 +155,24 @@ class TestEnhancedRiskManager:
         var = manager.calc_var(returns, 100000.0)
         assert isinstance(var, float)
         assert var >= 0
+
+    def test_reset_clears_state(self):
+        manager = EnhancedRiskManager(max_concentration=0.3, initial_capital=100000)
+        manager.update_daily_pnl(-5000)
+        manager.register_position("000001", 10.0)
+        manager.update_position_returns("000001", -0.01)
+        manager.reset()
+        report = manager.get_risk_report()
+        assert report["current_daily_pnl"] == 0.0
+        assert report["circuit_breaker_active"] is False
+
+    def test_concentration_at_exact_boundary(self):
+        filter = ConcentrationFilter(max_concentration=0.3)
+        order = Order(order_id="test", symbol="000001", side=OrderSide.BUY, order_type=OrderType.MARKET, quantity=100, price=10.0)
+        context = {
+            "total_assets": 10000.0,
+            "current_positions": {"000001": {"market_value": 2000.0}},
+            "cash": 8000.0,
+        }
+        approved, reason = filter.check(order, context)
+        assert approved

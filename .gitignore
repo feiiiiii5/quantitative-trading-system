@@ -15,3 +15,7 @@ test-results/
 *.egg-info/
 dist/
 build/
+target/
+*.rlib
+*.rmeta
+.qc_style_tmp/

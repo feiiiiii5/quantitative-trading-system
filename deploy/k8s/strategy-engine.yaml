@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: strategy-engine
+  labels:
+    app: quantcore
+    service: strategy-engine
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      service: strategy-engine
+  template:
+    metadata:
+      labels:
+        app: quantcore
+        service: strategy-engine
+    spec:
+      containers:
+        - name: strategy-engine
+          image: quantcore/strategy-engine:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DATABASE_PATH
+              value: "/data/quantcore.db"
+            - name: REDIS_URL
+              value: "redis://redis:6379"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: strategy-data
+              mountPath: /data
+      volumes:
+        - name: strategy-data
+          persistentVolumeClaim:
+            claimName: strategy-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: strategy-engine
+spec:
+  selector:
+    service: strategy-engine
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: strategy-data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi

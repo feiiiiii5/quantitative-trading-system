@@ -1,0 +1,103 @@
+syntax = "proto3";
+
+package quantcore.marketdata.v1;
+
+service MarketDataService {
+  rpc GetRealtime(RealtimeRequest) returns (RealtimeResponse);
+  rpc GetHistory(HistoryRequest) returns (HistoryResponse);
+  rpc StreamRealtime(StreamRealtimeRequest) returns (stream RealtimeUpdate);
+  rpc GetOrderBook(OrderBookRequest) returns (OrderBookResponse);
+  rpc SubscribeDepth(DepthSubscriptionRequest) returns (stream DepthUpdate);
+}
+
+message RealtimeRequest {
+  repeated string symbols = 1;
+}
+
+message RealtimeResponse {
+  repeated RealtimeQuote quotes = 1;
+  int64 timestamp_ns = 2;
+}
+
+message RealtimeQuote {
+  string symbol = 1;
+  double price = 2;
+  double open = 3;
+  double high = 4;
+  double low = 5;
+  double close = 6;
+  double prev_close = 7;
+  int64 volume = 8;
+  double amount = 9;
+  double bid_price = 10;
+  double ask_price = 11;
+  int64 bid_volume = 12;
+  int64 ask_volume = 13;
+  double change_pct = 14;
+  double turnover_rate = 15;
+  int64 timestamp_ns = 16;
+}
+
+message StreamRealtimeRequest {
+  repeated string symbols = 1;
+  int32 interval_ms = 2;
+}
+
+message RealtimeUpdate {
+  RealtimeQuote quote = 1;
+  string event_type = 2;
+}
+
+message HistoryRequest {
+  string symbol = 1;
+  string start_date = 2;
+  string end_date = 3;
+  string period = 4;
+  int32 limit = 5;
+}
+
+message HistoryResponse {
+  repeated Bar bars = 1;
+  string symbol = 2;
+}
+
+message Bar {
+  int64 timestamp_ns = 1;
+  double open = 2;
+  double high = 3;
+  double low = 4;
+  double close = 5;
+  int64 volume = 6;
+  double amount = 7;
+}
+
+message OrderBookRequest {
+  string symbol = 1;
+  int32 depth = 2;
+}
+
+message OrderBookResponse {
+  string symbol = 1;
+  repeated PriceLevel bids = 2;
+  repeated PriceLevel asks = 3;
+  int64 timestamp_ns = 4;
+}
+
+message PriceLevel {
+  double price = 1;
+  int64 quantity = 2;
+  int32 order_count = 3;
+}
+
+message DepthSubscriptionRequest {
+  string symbol = 1;
+  int32 depth = 2;
+}
+
+message DepthUpdate {
+  string symbol = 1;
+  repeated PriceLevel bids = 2;
+  repeated PriceLevel asks = 3;
+  int64 timestamp_ns = 4;
+  string update_type = 5;
+}

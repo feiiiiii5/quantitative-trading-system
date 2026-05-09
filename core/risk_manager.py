@@ -44,7 +44,7 @@ class ConcentrationFilter(RiskFilter):
             return False, "委托价格无效，无法计算集中度"
         order_value = order.quantity * order.price
         concentration = (current_value + order_value) / total_assets
-        if concentration > self._max:
+        if concentration > self._max + 1e-9:
             return False, f"持仓集中度{concentration:.1%}超过上限{self._max:.1%}"
         return True, ""
 
@@ -302,6 +302,15 @@ class EnhancedRiskManager:
             if isinstance(f, DailyLossFilter):
                 f.update_daily_pnl(pnl)
                 break
+
+    def reset(self) -> None:
+        for f in self._filters:
+            if isinstance(f, DailyLossFilter):
+                f._daily_pnl = 0.0
+                f._circuit_breaker_time = None
+                f._daily_reset_date = None
+        self._trailing_stop._positions.clear()
+        self._position_returns.clear()
 
     def calc_var(self, returns_history: list[float], portfolio_value: float) -> float:
         """计算VaR(95%)，返回正值表示可能的最大损失金额"""

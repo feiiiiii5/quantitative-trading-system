@@ -48,11 +48,13 @@ async def get_aiohttp_session() -> aiohttp.ClientSession:
         async with _get_session_lock():
             if _aiohttp_session is None or _aiohttp_session.closed:
                 connector = aiohttp.TCPConnector(
-                    limit=100,
-                    ttl_dns_cache=300,
+                    limit=200,
+                    ttl_dns_cache=600,
                     use_dns_cache=True,
+                    keepalive_timeout=30,
+                    enable_cleanup_closed=True,
                 )
-                timeout = aiohttp.ClientTimeout(total=8, connect=3)
+                timeout = aiohttp.ClientTimeout(total=12, connect=5)
                 _aiohttp_session = aiohttp.ClientSession(
                     connector=connector,
                     timeout=timeout,
@@ -166,13 +168,18 @@ US_INDICES = {
     ".INX": "标普500",
 }
 
-_realtime_cache = ThreadSafeLRU(maxsize=3000, ttl=10)
-_history_cache = ThreadSafeLRU(maxsize=1500, ttl=180)
-_indicator_cache = ThreadSafeLRU(maxsize=800, ttl=300)
-_financial_cache = ThreadSafeLRU(maxsize=500, ttl=3600)
-_northbound_cache = ThreadSafeLRU(maxsize=100, ttl=60)
+_realtime_cache = ThreadSafeLRU(maxsize=15000, ttl=20)
+_history_cache = ThreadSafeLRU(maxsize=8000, ttl=600)
+_indicator_cache = ThreadSafeLRU(maxsize=6000, ttl=900)
+_financial_cache = ThreadSafeLRU(maxsize=3000, ttl=10800)
+_northbound_cache = ThreadSafeLRU(maxsize=1000, ttl=180)
+_market_overview_cache = ThreadSafeLRU(maxsize=500, ttl=60)
 _hot_symbols_cache: list[str] = []
 _hot_symbols_lock: asyncio.Lock | None = None
+
+_inflight_requests: dict[str, asyncio.Future] = {}
+_inflight_lock = asyncio.Lock()
+_INFLIGHT_MAX = 500
 
 
 def _get_hot_symbols_lock() -> asyncio.Lock:
@@ -182,14 +189,15 @@ def _get_hot_symbols_lock() -> asyncio.Lock:
     return _hot_symbols_lock
 
 CACHE_TTL_TIERS = {
-    "realtime": 8,
-    "realtime_hot": 3,
-    "history": 120,
-    "indicator": 300,
-    "financial": 3600,
-    "northbound": 60,
-    "limit_up": 30,
-    "dragon_tiger": 300,
+    "realtime": 18,
+    "realtime_hot": 8,
+    "history": 480,
+    "indicator": 900,
+    "financial": 10800,
+    "northbound": 180,
+    "limit_up": 45,
+    "dragon_tiger": 600,
+    "market_overview": 60,
 }
 
 
@@ -867,8 +875,8 @@ class CircuitBreaker:
         self.last_failure_time = 0.0
         self.half_open_calls = 0
         self.half_open_max = half_open_calls
-        self._lock = threading.Lock()
-        self._probe_in_progress = False
+        self._lock = asyncio.Lock()
+        self._half_open_sem = asyncio.Semaphore(half_open_calls)
 
     @staticmethod
     def _is_valid_result(result) -> bool:
@@ -882,29 +890,22 @@ class CircuitBreaker:
             return len(result) > 0
         return True
 
-    def _acquire_permission(self, func_name: str) -> bool:
-        with self._lock:
+    async def _acquire_permission(self, func_name: str) -> bool:
+        async with self._lock:
             if self.state == "CLOSED":
                 return True
             if self.state == "OPEN":
                 if time.monotonic() - self.last_failure_time > self.timeout:
-                    if self._probe_in_progress:
-                        return False
                     self.state = "HALF_OPEN"
                     self.half_open_calls = 0
-                    self._probe_in_progress = True
                     return True
                 return False
             if self.state == "HALF_OPEN":
-                if self._probe_in_progress:
-                    return False
-                self._probe_in_progress = True
                 return True
             return False
 
-    def _record_success(self, result) -> None:
-        with self._lock:
-            self._probe_in_progress = False
+    async def _record_success(self, result) -> None:
+        async with self._lock:
             if self.state == "HALF_OPEN":
                 self.half_open_calls += 1
                 if self._is_valid_result(result):
@@ -925,9 +926,8 @@ class CircuitBreaker:
                     if self.failure_count >= self.failure_threshold:
                         self.state = "OPEN"
 
-    def _record_failure(self) -> None:
-        with self._lock:
-            self._probe_in_progress = False
+    async def _record_failure(self) -> None:
+        async with self._lock:
             self.failure_count += 1
             self.last_failure_time = time.monotonic()
             if self.failure_count >= self.failure_threshold:
@@ -935,15 +935,20 @@ class CircuitBreaker:
 
     async def call(self, func, *args, **kwargs):
         func_name = getattr(func, '__name__', 'source')
-        if not self._acquire_permission(func_name):
+        if not await self._acquire_permission(func_name):
             raise CircuitBreakerError(f"Circuit breaker OPEN for {func_name}")
+        is_half_open = self.state == "HALF_OPEN"
         try:
-            result = await func(*args, **kwargs)
-            self._record_success(result)
+            if is_half_open:
+                async with self._half_open_sem:
+                    result = await func(*args, **kwargs)
+            else:
+                result = await func(*args, **kwargs)
+            await self._record_success(result)
             return result
         except Exception as e:
             logger.debug("CircuitBreaker call error: %s", e)
-            self._record_failure()
+            await self._record_failure()
             raise
 
 
@@ -1197,6 +1202,33 @@ class SmartDataFetcher:
         if cached is not None:
             return cached
 
+        inflight_key = f"rt:{cache_key}"
+        async with _inflight_lock:
+            if inflight_key in _inflight_requests:
+                return await _inflight_requests[inflight_key]
+            if len(_inflight_requests) >= _INFLIGHT_MAX:
+                result = await self._fetch_realtime_from_sources(symbol, market, cache_key)
+                if result and validate_realtime_data(result, symbol):
+                    _realtime_cache.set(cache_key, result)
+                return result
+            loop = asyncio.get_running_loop()
+            fut = loop.create_future()
+            _inflight_requests[inflight_key] = fut
+
+        try:
+            result = await self._fetch_realtime_from_sources(symbol, market, cache_key)
+            if result and validate_realtime_data(result, symbol):
+                _realtime_cache.set(cache_key, result)
+            fut.set_result(result)
+            return result
+        except Exception as e:
+            fut.set_result(None)
+            return None
+        finally:
+            async with _inflight_lock:
+                _inflight_requests.pop(inflight_key, None)
+
+    async def _fetch_realtime_from_sources(self, symbol: str, market: str, cache_key: str) -> dict | None:
         ranked = self._health.rank_sources(["eastmoney", "tencent", "sina"], "realtime")
 
         for source_name in ranked:
@@ -1292,23 +1324,48 @@ class SmartDataFetcher:
             _history_cache.set(cache_key, db_df)
             return db_df
 
-        df = await self._fetch_history_from_sources(clean_symbol, market, kline_type, adjust, period)
-        if df is not None and not df.empty:
-            df, warnings = DataQualityChecker.check_kline(df)
-            if warnings:
-                logger.debug("Data quality warnings for %s: %s", symbol, warnings)
-            if not validate_kline_data(df, symbol):
-                return pd.DataFrame()
-            rows = df.to_dict("records")
-            self._db.upsert_kline_rows(symbol, market, kline_type, adjust, rows)
-            _history_cache.set(cache_key, df)
-            return df
+        inflight_key = f"hist:{cache_key}"
+        async with _inflight_lock:
+            if inflight_key in _inflight_requests:
+                return await _inflight_requests[inflight_key]
+            if len(_inflight_requests) >= _INFLIGHT_MAX:
+                df = await self._fetch_history_from_sources(clean_symbol, market, kline_type, adjust, period)
+                if df is not None and not df.empty:
+                    _history_cache.set(cache_key, df)
+                return df if df is not None else pd.DataFrame()
+            loop = asyncio.get_running_loop()
+            fut = loop.create_future()
+            _inflight_requests[inflight_key] = fut
 
-        return pd.DataFrame()
+        try:
+            df = await self._fetch_history_from_sources(clean_symbol, market, kline_type, adjust, period)
+            if df is not None and not df.empty:
+                df, warnings = DataQualityChecker.check_kline(df)
+                if warnings:
+                    logger.debug("Data quality warnings for %s: %s", symbol, warnings)
+                if not validate_kline_data(df, symbol):
+                    result = pd.DataFrame()
+                    fut.set_result(result)
+                    return result
+                rows = df.to_dict("records")
+                self._db.upsert_kline_rows(symbol, market, kline_type, adjust, rows)
+                _history_cache.set(cache_key, df)
+                fut.set_result(df)
+                return df
+            result = pd.DataFrame()
+            fut.set_result(result)
+            return result
+        except Exception as e:
+            result = pd.DataFrame()
+            fut.set_result(result)
+            return result
+        finally:
+            async with _inflight_lock:
+                _inflight_requests.pop(inflight_key, None)
 
     async def get_history_batch(self, symbols: list[str], period: str = "1y",
                                 kline_type: str = "daily", adjust: str = "qfq",
-                                max_concurrent: int = 8) -> dict[str, pd.DataFrame]:
+                                max_concurrent: int = 16) -> dict[str, pd.DataFrame]:
         if not symbols:
             return {}
         sem = asyncio.Semaphore(max_concurrent)
@@ -1719,6 +1776,17 @@ class SmartDataFetcher:
             await self.get_market_overview()
         except Exception as e:
             logger.debug("Preload market overview error: %s", e)
+        try:
+            await self.refresh_hot_symbols_cache()
+        except Exception as e:
+            logger.debug("Preload hot symbols error: %s", e)
+        try:
+            async with _get_hot_symbols_lock():
+                hot = list(_hot_symbols_cache[:10])
+            if hot:
+                await self.prefetch_symbols(hot, priority="watchlist")
+        except Exception as e:
+            logger.debug("Preload hot prefetch error: %s", e)
 
     async def prefetch_symbols(self, symbols: list[str], priority: str = "normal") -> None:
         """批量预热缓存，按优先级排序：watchlist > portfolio > hot"""
@@ -1726,11 +1794,11 @@ class SmartDataFetcher:
             return
 
         if priority == "watchlist":
-            batch = symbols[:20]
+            batch = symbols[:30]
         elif priority == "portfolio":
-            batch = symbols[:15]
+            batch = symbols[:20]
         else:
-            batch = symbols[:10]
+            batch = symbols[:15]
 
         tasks = []
         for symbol in batch:

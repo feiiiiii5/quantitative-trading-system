@@ -269,7 +269,89 @@ def run_bayesian_optimization(
     n_trials: int = 50,
     timeout_seconds: float = 60.0,
 ) -> dict:
-    """使用贝叶斯优化进行参数搜索（基于scipy的简化实现）"""
+    try:
+        return _run_optuna_optimization(strategy_name, df, metric, n_trials, timeout_seconds)
+    except ImportError:
+        logger.debug("Optuna not available, falling back to scipy differential_evolution")
+        return _run_scipy_optimization(strategy_name, df, metric, n_trials, timeout_seconds)
+
+
+def _run_optuna_optimization(
+    strategy_name: str,
+    df: pd.DataFrame,
+    metric: str = "sharpe_ratio",
+    n_trials: int = 50,
+    timeout_seconds: float = 60.0,
+) -> dict:
+    import optuna
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    spec = _STRATEGY_PARAM_SPECS.get(strategy_name)
+    if spec is None:
+        raise ValueError(f"Strategy {strategy_name} not supported for optimization")
+
+    engine = BacktestEngine()
+    start_time = time.monotonic()
+    evaluated_params: list[dict] = []
+
+    maximize = metric in ("sharpe_ratio", "total_return", "annual_return", "win_rate")
+    direction = "maximize" if maximize else "minimize"
+
+    def objective(trial: optuna.Trial) -> float:
+        if time.monotonic() - start_time > timeout_seconds:
+            raise optuna.TrialPruned()
+
+        params = {}
+        for pname, pspec in spec.items():
+            if pspec["type"] == "int":
+                params[pname] = trial.suggest_int(pname, int(pspec["min"]), int(pspec["max"]))
+            else:
+                params[pname] = trial.suggest_float(pname, float(pspec["min"]), float(pspec["max"]), step=float(pspec.get("step", 0.1)))
+
+        try:
+            strategy = _make_strategy(strategy_name, params)
+            bt_result = engine.run(strategy, df)
+            score = float(getattr(bt_result, metric, 0))
+            evaluated_params.append({
+                "params": {k: (int(v) if isinstance(v, (np.integer,)) else round(float(v), 4) if isinstance(v, (np.floating, float)) else v) for k, v in params.items()},
+                metric: round(score, 4),
+                "total_return": round(float(bt_result.total_return), 4),
+                "sharpe_ratio": round(float(bt_result.sharpe_ratio), 4),
+            })
+            return score
+        except Exception as e:
+            logger.debug("Optuna trial failed: %s", e)
+            raise optuna.TrialPruned()
+
+    sampler = optuna.samplers.TPESampler(seed=42)
+    study = optuna.create_study(direction=direction, sampler=sampler)
+    study.optimize(objective, n_trials=n_trials, timeout=timeout_seconds, show_progress_bar=False)
+
+    if evaluated_params:
+        evaluated_params.sort(key=lambda x: x.get(metric, 0), reverse=maximize)
+        best = evaluated_params[0]
+    else:
+        best = {"params": dict(study.best_params), metric: round(study.best_value, 4)}
+
+    return {
+        "strategy": strategy_name,
+        "metric": metric,
+        "best": best,
+        "top_results": evaluated_params[:10],
+        "optimization_method": "optuna_tpe",
+        "n_trials": len(evaluated_params),
+        "elapsed_seconds": round(time.monotonic() - start_time, 2),
+    }
+
+
+def _run_scipy_optimization(
+    strategy_name: str,
+    df: pd.DataFrame,
+    metric: str = "sharpe_ratio",
+    n_trials: int = 50,
+    timeout_seconds: float = 60.0,
+) -> dict:
     from scipy.optimize import differential_evolution
 
     spec = _STRATEGY_PARAM_SPECS.get(strategy_name)

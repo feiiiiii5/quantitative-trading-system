@@ -1,0 +1,4 @@
+grpcio==1.66.0
+grpcio-tools==1.66.0
+protobuf==5.27.3
+uvloop==0.20.0
