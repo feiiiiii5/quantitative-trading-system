@@ -7,8 +7,6 @@ try:
 
     _HAS_ORJSON = True
 except ImportError:
-    import json as _stdlib_json
-
     _HAS_ORJSON = False
 
 __all__ = ["json_dumps", "json_loads"]

@@ -8,7 +8,6 @@ __all__ = [
 ]
 
 import asyncio
-import contextlib
 import logging
 import threading
 import time

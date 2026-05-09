@@ -7637,7 +7637,6 @@ async def get_strategy_dashboard(
     """综合策略性能仪表盘：回测结果 + IC监控 + 市场状态权重 + 风险平价"""
     try:
         from core.backtest import run_parallel_backtest
-        from core.backtest.validation import walk_forward_ic_validation
         from core.factor_validity import FactorValidityMonitor
         from core.regime_weight_tracker import RegimeWeightTracker
         from core.risk_parity_portfolio import RiskParityPortfolio

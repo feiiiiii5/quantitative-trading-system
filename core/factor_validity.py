@@ -8,7 +8,7 @@ __all__ = [
 
 import logging
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -28,7 +28,7 @@ class FactorValidityMonitor:
         self._ic_history[strategy_name].append((predicted_score, actual_return))
         history = self._ic_history[strategy_name]
         if len(history) >= 20:
-            scores, returns = zip(*history)
+            scores, returns = zip(*history, strict=True)
             scores_arr = np.array(scores, dtype=float)
             returns_arr = np.array(returns, dtype=float)
             valid = np.isfinite(scores_arr) & np.isfinite(returns_arr)

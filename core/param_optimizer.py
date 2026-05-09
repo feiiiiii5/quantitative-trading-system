@@ -300,7 +300,7 @@ def _run_optuna_optimization(
 
     def objective(trial: optuna.Trial) -> float:
         if time.monotonic() - start_time > timeout_seconds:
-            raise optuna.TrialPruned()
+            raise optuna.TrialPruned() from None
 
         params = {}
         for pname, pspec in spec.items():
@@ -322,7 +322,7 @@ def _run_optuna_optimization(
             return score
         except Exception as e:
             logger.debug("Optuna trial failed: %s", e)
-            raise optuna.TrialPruned()
+            raise optuna.TrialPruned() from None
 
     sampler = optuna.samplers.TPESampler(seed=42)
     study = optuna.create_study(direction=direction, sampler=sampler)

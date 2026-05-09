@@ -1,8 +1,6 @@
 import logging
 import random
 
-import numpy as np
-
 from .result import BacktestResult
 
 logger = logging.getLogger(__name__)

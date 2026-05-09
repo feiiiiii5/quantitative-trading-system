@@ -1346,7 +1346,7 @@ async def factor_registry(request: Request):
             return _json_response(True, data=_factor_registry_cache)
         from core.multi_factor_framework import FACTOR_REGISTRY, FactorCategory
         factors = []
-        for name, defn in FACTOR_REGISTRY.items():
+        for _name, defn in FACTOR_REGISTRY.items():
             factors.append({
                 "name": defn.name,
                 "category": defn.category.value,
@@ -1579,7 +1579,7 @@ async def ml_train_model(request: Request):
 async def ml_predict(request: Request):
     try:
         body = await request.json()
-        from core.ml_strategy_framework import MLStrategyPipeline, SKLEARN_AVAILABLE
+        from core.ml_strategy_framework import SKLEARN_AVAILABLE
         if not SKLEARN_AVAILABLE:
             return _json_response(False, error="scikit-learn 未安装")
         model_data = body.get("model")

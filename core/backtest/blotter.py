@@ -13,9 +13,7 @@ __all__ = [
 
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-
-import numpy as np
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -159,9 +157,7 @@ class TieredCommission(CommissionModel):
         trade_value = shares * price
         commission = max(trade_value * self._commission_rate, self._min)
         stamp_tax = 0.0
-        if not is_buy and self._stamp_tax_on_sell_only:
-            stamp_tax = trade_value * self._stamp_tax_rate
-        elif not self._stamp_tax_on_sell_only:
+        if not is_buy or not self._stamp_tax_on_sell_only:
             stamp_tax = trade_value * self._stamp_tax_rate
         return commission + stamp_tax
 

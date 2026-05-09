@@ -9,7 +9,6 @@ from core.models import validate_signal_dict
 from core.orders import Order, OrderSide, OrderType
 from core.strategies import BaseStrategy
 
-from .cost_model import RealisticCostModel
 from .result import BacktestResult, InsufficientDataError, MIN_BARS_REQUIRED
 from .stats import compute_backtest_statistics
 

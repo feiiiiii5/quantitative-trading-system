@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from core.factor_validity import FactorValidityMonitor
-from core.portfolio_optimizer import risk_parity_optimize, ic_weighted_optimize
+from core.portfolio_optimizer import risk_parity_optimize
 
 logger = logging.getLogger(__name__)
 

@@ -5,7 +5,7 @@ __all__ = [
 ]
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -97,14 +97,6 @@ class AdaptiveFactorCombiner:
         if self._update_count % self._reweight_interval == 0:
             self._reweight()
 
-        scores = list(factor_scores.values())
-        if scores:
-            all_scores = np.array(scores)
-            ranked = self._rank_normalize(all_scores)
-            for i, name in enumerate(self._factor_names):
-                if name in factor_scores:
-                    all_scores[i] = factor_scores[name]
-
         composite = 0.0
         for name in self._factor_names:
             w = self._current_weights.get(name, 0.0)
@@ -131,8 +123,10 @@ class AdaptiveFactorCombiner:
         return composite
 
     def get_factor_signals(self, factor_scores: dict[str, float]) -> list[FactorSignal]:
+        score_values = np.array([factor_scores.get(n, 0.0) for n in self._factor_names])
+        ranked = self._rank_normalize(score_values) if len(score_values) > 0 else np.array([])
         signals = []
-        for name in self._factor_names:
+        for i, name in enumerate(self._factor_names):
             ic = self._get_mean_ic(name)
             ic_ir = self._get_ic_ir(name)
             w = self._current_weights.get(name, 0.0)
@@ -140,7 +134,7 @@ class AdaptiveFactorCombiner:
             signals.append(FactorSignal(
                 factor_name=name,
                 raw_score=s,
-                rank_score=0.0,
+                rank_score=float(ranked[i]) if i < len(ranked) else 0.0,
                 ic=ic,
                 ic_ir=ic_ir,
                 weight=w,

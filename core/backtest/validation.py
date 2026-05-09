@@ -148,7 +148,7 @@ def walk_forward_ic_validation(
         pred_scores, actual_rets = _extract_signal_return_pairs(oos_result, test_df)
 
         if len(pred_scores) >= 10:
-            for score, ret in zip(pred_scores, actual_rets):
+            for score, ret in zip(pred_scores, actual_rets, strict=True):
                 factor_monitor.update(strategy_name, float(score), float(ret))
 
             date_str = ""
@@ -301,7 +301,7 @@ def walk_forward_oos_validation(
             keys = list(param_grid.keys())
             values = list(param_grid.values())
             for combo in product(*values):
-                params = dict(zip(keys, combo))
+                params = dict(zip(keys, combo, strict=True))
                 try:
                     engine = BacktestEngine(initial_capital=initial_capital)
                     result = engine.run(strategy_cls(**params), train_df)
@@ -391,6 +391,7 @@ def walk_forward_oos_validation(
         "summary": {
             "avg_is_sharpe": round(avg_is_sharpe, 4),
             "avg_oos_sharpe": round(avg_oos_sharpe, 4),
+            "avg_is_return": round(avg_is_return, 4),
             "avg_oos_return": round(avg_oos_return, 4),
             "overfitting_ratio": round(overfitting_ratio, 4),
             "consistency_rate": round(consistency, 4),

@@ -92,14 +92,12 @@ def vectorized_equity_curve(
 
     position = np.zeros(n, dtype=np.int64)
     in_market = False
-    entry_idx = -1
     entry_price = 0.0
     shares = 0
 
     for i in range(n):
         if not in_market and entries[i]:
             in_market = True
-            entry_idx = i
             entry_price = closes[i]
             alloc = initial_capital * 0.3
             shares = int(alloc / entry_price / lot_size) * lot_size

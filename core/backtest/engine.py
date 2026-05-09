@@ -8,7 +8,6 @@ __all__ = [
 ]
 
 import logging
-from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -16,7 +15,6 @@ import pandas as pd
 from core.data_governance import DataQualityPipeline
 from core.events import BacktestProgressTracker, Event, EventBus, EventType
 from core.memory_guard import memory_guard
-from core.orders import Order, OrderSide, OrderType
 from core.risk_manager import EnhancedRiskManager
 from core.strategies import BaseStrategy, SignalType, StrategyResult
 
@@ -25,11 +23,9 @@ from .event_driven import run_event_driven
 from .optimization import monte_carlo_analysis, parameter_grid_scan, parameter_sensitivity, sensitivity_analysis
 from .result import BacktestResult, InsufficientDataError, MIN_BARS_REQUIRED
 from .simulation import (
-    BacktestProfiler,
     _check_limit_price,
     _excursion,
     _get_limit_pct,
-    _get_strategy_min_bars,
     _simulate_call_auction_fill,
     _simulate_twap_fill,
 )

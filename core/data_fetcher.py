@@ -1221,7 +1221,7 @@ class SmartDataFetcher:
                 _realtime_cache.set(cache_key, result)
             fut.set_result(result)
             return result
-        except Exception as e:
+        except Exception:
             fut.set_result(None)
             return None
         finally:
@@ -1355,7 +1355,7 @@ class SmartDataFetcher:
             result = pd.DataFrame()
             fut.set_result(result)
             return result
-        except Exception as e:
+        except Exception:
             result = pd.DataFrame()
             fut.set_result(result)
             return result
