@@ -9,6 +9,11 @@ from enum import Enum
 import numpy as np
 import pandas as pd
 
+try:
+    from scipy.signal import find_peaks as _find_peaks
+except ImportError:
+    _find_peaks = None
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -148,6 +153,7 @@ class BaseStrategy:
         self._param_hash: str = ""
         self._created_at: str = ""
         self._bar_buffer: list[dict] = []
+        self._bar_df: pd.DataFrame | None = None
         self._bar_index: int = 0
         self._validate_params()
         self._compute_param_hash()
@@ -155,6 +161,7 @@ class BaseStrategy:
     def reset(self) -> None:
         """重置策略内部状态，在回测开始前调用"""
         self._bar_buffer = []
+        self._bar_df = None
         self._bar_index = 0
 
     def _validate_params(self) -> None:
@@ -234,20 +241,25 @@ class BaseStrategy:
             信号列表 [{"action":"buy"|"sell", "reason":"...", "confidence":0.8,
                       "qty":100, "stop_loss":0, "take_profit":0}]
         """
-        self._bar_buffer.append(bar)
         self._bar_index += 1
 
         max_window = int(getattr(self, "_long", 0) or getattr(self, "_period", 0) or 60)
         max_window = max(max_window, 2) + 5
-        if len(self._bar_buffer) > max_window:
-            self._bar_buffer = self._bar_buffer[-max_window:]
+
+        new_row = pd.DataFrame([bar])
+        if self._bar_df is None:
+            self._bar_df = new_row
+        else:
+            self._bar_df = pd.concat([self._bar_df, new_row], ignore_index=True)
+            if len(self._bar_df) > max_window:
+                self._bar_df = self._bar_df.iloc[-max_window:].reset_index(drop=True)
 
         min_bars = int(getattr(self, "min_bars", 2))
-        if len(self._bar_buffer) < min_bars:
+        if len(self._bar_df) < min_bars:
             return []
 
         try:
-            df = pd.DataFrame(self._bar_buffer)
+            df = self._bar_df.copy()
             for col in ("open", "high", "low", "close", "volume"):
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -346,7 +358,17 @@ class BaseStrategy:
         return 0.0
 
     def generate_signals(self, df: pd.DataFrame) -> StrategyResult:
-        """逐bar生成信号 — 通过 on_bar() 统一入口"""
+        """逐bar生成信号 — 通过 on_bar() 统一入口
+
+        .. deprecated::
+            直接使用 on_bar() 事件驱动接口。此方法仅作为批量回放兼容层保留。
+        """
+        import warnings
+        warnings.warn(
+            "generate_signals() is deprecated; use on_bar() event-driven interface instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         signals = []
         if df is None or len(df) < 2:
             return StrategyResult(strategy_name=self.name, signals=signals)
@@ -1211,6 +1233,7 @@ class RegimeSwitchingStrategy(BaseStrategy):
     """简化马尔科夫机制转换策略"""
 
     min_bars = 90
+    _hmm_cache: dict = {}
 
     def __init__(self, window: int = 120, max_iter: int = 50, tol: float = 1e-6):
         super().__init__()
@@ -1298,7 +1321,22 @@ class RegimeSwitchingStrategy(BaseStrategy):
             return TradeSignal(SignalType.HOLD)
         if np.std(returns) < 0.001:
             return TradeSignal(SignalType.HOLD)
-        current_state, trans, gamma, means = self._fit_hmm(np.clip(returns, -0.12, 0.12))
+
+        import time as _time
+        cache_key = (len(returns), round(float(returns[-1]), 6), round(float(np.std(returns)), 6))
+        cached_entry = self.__class__._hmm_cache.get(cache_key)
+        if cached_entry is not None:
+            ts_cached, cached_result = cached_entry
+            if _time.monotonic() - ts_cached < 60:
+                current_state, trans, gamma, means = cached_result
+            else:
+                del self.__class__._hmm_cache[cache_key]
+                current_state, trans, gamma, means = self._fit_hmm(np.clip(returns, -0.12, 0.12))
+                self.__class__._hmm_cache[cache_key] = (_time.monotonic(), (current_state, trans, gamma, means))
+        else:
+            current_state, trans, gamma, means = self._fit_hmm(np.clip(returns, -0.12, 0.12))
+            self.__class__._hmm_cache[cache_key] = (_time.monotonic(), (current_state, trans, gamma, means))
+
         state_score = means - 0.5 * np.std(returns)
         bull_state = int(np.argmax(state_score))
         bear_state = 1 - bull_state
@@ -1548,15 +1586,16 @@ class ElliottWaveAIStrategy(BaseStrategy):
     def generate_signal(self, df: pd.DataFrame, use_precomputed: bool = True) -> TradeSignal:
         if df is None or len(df) < 120:
             return TradeSignal(SignalType.HOLD)
+        if _find_peaks is None:
+            return TradeSignal(SignalType.HOLD)
         c = df["close"].astype(float).reset_index(drop=True)
         v = df["volume"].astype(float).reset_index(drop=True) if "volume" in df.columns else pd.Series(1, index=c.index)
         prices = c.values
 
         try:
-            from scipy.signal import find_peaks
-            peaks, _ = find_peaks(prices, distance=5, prominence=prices.std() * 0.3)
-            troughs, _ = find_peaks(-prices, distance=5, prominence=prices.std() * 0.3)
-        except (ImportError, ValueError):
+            peaks, _ = _find_peaks(prices, distance=5, prominence=prices.std() * 0.3)
+            troughs, _ = _find_peaks(-prices, distance=5, prominence=prices.std() * 0.3)
+        except ValueError:
             return TradeSignal(SignalType.HOLD)
 
         if len(peaks) < 3 or len(troughs) < 3:
@@ -1616,10 +1655,11 @@ class ElliottWaveAIStrategy(BaseStrategy):
         c = df["close"].astype(float).reset_index(drop=True)
         prices = c.values
         try:
-            from scipy.signal import find_peaks
-            peaks, _ = find_peaks(prices, distance=5, prominence=prices.std() * 0.3)
-            troughs, _ = find_peaks(-prices, distance=5, prominence=prices.std() * 0.3)
-        except (ImportError, ValueError):
+            if _find_peaks is None:
+                return 0.0
+            peaks, _ = _find_peaks(prices, distance=5, prominence=prices.std() * 0.3)
+            troughs, _ = _find_peaks(-prices, distance=5, prominence=prices.std() * 0.3)
+        except ValueError:
             return 0.0
         if len(peaks) < 3 or len(troughs) < 3:
             return 0.0
@@ -2993,10 +3033,7 @@ class CompositeStrategy(BaseStrategy):
 
     def generate_signal(self, df: pd.DataFrame, use_precomputed: bool = True) -> TradeSignal:
         if len(df) > 0:
-            import hashlib
-            idx_str = str(df.index[-1]) if hasattr(df.index[-1], '__str__') else str(len(df))
-            idx_part = hashlib.md5(idx_str.encode()).hexdigest()[:8]
-            cache_key = (len(df), float(df["close"].iloc[-1]) if len(df) > 0 else 0.0, idx_part)
+            cache_key = (len(df), id(df), float(df["close"].iloc[-1]))
             if cache_key == self._cache_key and self._cache_result is not None:
                 return self._cache_result
         else:
@@ -3496,6 +3533,14 @@ STRATEGY_REGISTRY = {
     "momentum_rotation": MomentumRotationStrategy,
     "MomentumRotationStrategy": MomentumRotationStrategy,
 }
+
+
+def unique_strategies():
+    seen = set()
+    for cls in STRATEGY_REGISTRY.values():
+        if cls not in seen:
+            seen.add(cls)
+            yield cls
 
 
 class StrategyRegistry:

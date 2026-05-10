@@ -80,7 +80,7 @@ def run_backtest(
             df = df[df["date"] <= end_date]
         df = df.sort_values("date").reset_index(drop=True)
         if len(df) < min_bars and len(df_full) >= min_bars:
-            logger.warning("Date range %s~%s only has %s bars, using available data", start_date, end_date, len)
+            logger.warning("Date range %s~%s only has %d bars, using available data", start_date, end_date, len(df))
             df = df_full.sort_values("date").reset_index(drop=True)
 
     if len(df) < min_bars:
@@ -180,7 +180,7 @@ def _run_adaptive_backtest(
             df = df[df["date"] <= end_date]
         df = df.sort_values("date").reset_index(drop=True)
         if len(df) < 40 and len(df_full) >= 40:
-            logger.warning("Adaptive: Date range %s~%s only has %s bars, using available data", start_date, end_date, len)
+            logger.warning("Adaptive: Date range %s~%s only has %d bars, using available data", start_date, end_date, len(df))
             df = df_full.sort_values("date").reset_index(drop=True)
 
     if len(df) < 40:

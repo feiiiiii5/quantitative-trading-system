@@ -296,6 +296,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.debug(f"Market data background refresh start failed: {e}")
 
+    try:
+        from core.reactive_bus import DataChannel, get_data_bus
+        bus = get_data_bus()
+        fetcher = app.state.fetcher
+        bus.register(DataChannel.MARKET_OVERVIEW, fetcher.get_market_overview, 10.0)
+        bus.register(DataChannel.MARKET_BREADTH, fetcher.get_market_breadth, 5.0)
+        bus.register(DataChannel.SECTOR_HEATMAP, fetcher.get_sector_heatmap, 60.0)
+        bus.register(DataChannel.HOT_SYMBOLS, fetcher.refresh_hot_symbols_cache, 60.0)
+        await bus.start()
+        app.state.data_bus = bus
+        logger.info("ReactiveDataBus started with %d channels", len(bus._fetchers))
+    except Exception as e:
+        logger.warning(f"ReactiveDataBus start failed: {e}")
+
     os.makedirs(BASE_DIR / "data", exist_ok=True)
     os.makedirs(BASE_DIR / "static", exist_ok=True)
 
@@ -313,6 +327,14 @@ async def lifespan(app: FastAPI):
         logger.info("后台异步任务已取消")
     except Exception as e:
         logger.error("Failed to cancel background tasks: %s", e)
+
+    try:
+        bus = getattr(app.state, "data_bus", None)
+        if bus is not None:
+            await bus.stop()
+            logger.info("ReactiveDataBus stopped")
+    except Exception as e:
+        logger.warning(f"ReactiveDataBus stop failed: {e}")
 
     try:
         from core.data_fetcher import close_aiohttp_session
@@ -665,7 +687,7 @@ async def health_check():
     checks["trading"] = "ok" if trading_ok else "unavailable"
 
     fetcher_ok = False
-    data_sources: dict[str, Any] = {}
+    data_sources: dict[str, object] = {}
     try:
         fetcher = getattr(app.state, "fetcher", None)
         if fetcher is not None:
@@ -677,7 +699,6 @@ async def health_check():
                 }
             health_stats = getattr(fetcher._health, "_memory_stats", {})
             for (src, req_type), stats in health_stats.items():
-                key = f"{src}_{req_type}"
                 total = stats["success_count"] + stats["fail_count"]
                 data_sources.setdefault(src, {})
                 data_sources[src][f"{req_type}_success_rate"] = round(
@@ -690,14 +711,7 @@ async def health_check():
         logger.debug("Health check data source error: %s", e)
     checks["data_fetcher"] = "ok" if fetcher_ok else "unavailable"
 
-    cache_info: dict[str, Any] = {}
-    try:
-        from api.routes import _rt_cache, _kline_cache, _analysis_cache
-        cache_info["realtime"] = _rt_cache.stats()
-        cache_info["kline"] = _kline_cache.stats()
-        cache_info["analysis"] = _analysis_cache.stats()
-    except Exception:
-        pass
+    cache_info: dict[str, object] = {}
     try:
         from core.async_utils import (
             rt_cache,
@@ -706,6 +720,10 @@ async def health_check():
             overview_cache,
             breadth_cache,
             backtest_result_cache,
+            fundamental_cache,
+            index_cache,
+            northbound_cache,
+            alert_cache,
         )
         cache_info["rt_cache"] = rt_cache.stats()
         cache_info["kline_cache"] = kline_cache.stats()
@@ -713,6 +731,10 @@ async def health_check():
         cache_info["overview_cache"] = overview_cache.stats()
         cache_info["breadth_cache"] = breadth_cache.stats()
         cache_info["backtest_result_cache"] = backtest_result_cache.stats()
+        cache_info["fundamental_cache"] = fundamental_cache.stats()
+        cache_info["index_cache"] = index_cache.stats()
+        cache_info["northbound_cache"] = northbound_cache.stats()
+        cache_info["alert_cache"] = alert_cache.stats()
     except Exception:
         pass
 
@@ -941,12 +963,12 @@ async def spa_fallback(request, call_next):
 
 
 def _build_frontend():
-    frontend_dir = BASE_DIR / "frontend-v2"
+    frontend_dir = BASE_DIR / "frontend"
     if not frontend_dir.exists():
-        logger.warning("未找到 frontend-v2 目录，跳过前端构建")
+        logger.warning("未找到 frontend 目录，跳过前端构建")
         return False
     static_dir = BASE_DIR / "static"
-    build_marker = static_dir / ".frontend-v2"
+    build_marker = static_dir / ".frontend-built"
 
     if static_dir.exists() and not build_marker.exists():
         import shutil

@@ -34,7 +34,7 @@ class RealisticCostModel:
         transfer = shares * self.transfer_fee_sh if is_sh else 0.0
         impact = 0.0
         if daily_amount > 0:
-            participation = amount / daily_amount
+            participation = min(amount / daily_amount, 1.0)
             impact = amount * self.market_impact_pct * np.sqrt(participation)
         total = fee + transfer + impact
         return {"commission": round(fee, 2), "transfer_fee": round(transfer, 2),
@@ -49,7 +49,7 @@ class RealisticCostModel:
         transfer = shares * self.transfer_fee_sh if is_sh else 0.0
         impact = 0.0
         if daily_amount > 0:
-            participation = amount / daily_amount
+            participation = min(amount / daily_amount, 1.0)
             impact = amount * self.market_impact_pct * np.sqrt(participation)
         total = fee + stamp + transfer + impact
         return {"commission": round(fee, 2), "stamp_tax": round(stamp, 2),

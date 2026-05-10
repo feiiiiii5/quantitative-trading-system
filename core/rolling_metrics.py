@@ -99,8 +99,10 @@ class RollingMetricsTracker:
         excess = returns - daily_rf
         downside = excess.clip(upper=0)
         rolling_excess_mean = excess.rolling(window).mean()
-        rolling_downside_std = downside.rolling(window).std()
-        result = (rolling_excess_mean / rolling_downside_std.replace(0, np.nan)) * np.sqrt(self._ann)
+        rolling_downside_dev = downside.rolling(window).apply(
+            lambda x: np.sqrt(np.mean(x ** 2)), raw=True
+        )
+        result = (rolling_excess_mean / rolling_downside_dev.replace(0, np.nan)) * np.sqrt(self._ann)
         result = result.dropna()
 
         max_points = 200

@@ -24,8 +24,6 @@ _PERF_CACHE_MAX = 500
 _COMPRESS_THRESHOLD = 50_000
 
 _backtest_result_cache: dict[str, tuple[float, dict]] = {}
-_BACKTEST_CACHE_TTL = 300.0
-_BACKTEST_CACHE_MAX = 1000
 
 
 def _sanitize_numpy(obj):
@@ -249,12 +247,6 @@ async def run_backtest(
     body: BacktestRunRequest,
 ):
     cache_key = "%s:%s:%s:%s" % (body.symbol, body.strategy_type, body.start_date, body.end_date)
-    cached_entry = _backtest_result_cache.get(cache_key)
-    if cached_entry is not None:
-        ts, cached_data = cached_entry
-        if time.monotonic() - ts < _BACKTEST_CACHE_TTL:
-            return _compressed_response({"success": True, "data": cached_data, "cached": True})
-
     from core.async_utils import backtest_result_cache, CACHE_TTL
     bt_cached = await backtest_result_cache.get(cache_key)
     if bt_cached is not None:
@@ -270,11 +262,7 @@ async def run_backtest(
     if isinstance(result, dict) and "error" in result:
         return _json_response(False, error=result["error"])
 
-    if len(_backtest_result_cache) >= _BACKTEST_CACHE_MAX:
-        oldest_key = min(_backtest_result_cache, key=lambda k: _backtest_result_cache[k][0])
-        del _backtest_result_cache[oldest_key]
-    _backtest_result_cache[cache_key] = (time.monotonic(), result)
-    await backtest_result_cache.set(cache_key, result, CACHE_TTL["backtest_result"])
+    await backtest_result_cache.set(cache_key, _sanitize_numpy(result), CACHE_TTL["backtest_result"])
 
     return _compressed_response({"success": True, "data": result})
 
@@ -327,6 +315,7 @@ async def run_backtest_stream(
         while True:
             try:
                 msg = await asyncio.wait_for(result_queue.get(), timeout=120.0)
+                msg = _sanitize_numpy(msg)
                 yield f"data: {json_dumps(msg)}\n\n"
                 if msg.get("type") in ("result", "error"):
                     break

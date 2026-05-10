@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 NETWORK_TIMEOUT_SECONDS = 30
 
 import asyncio
@@ -175,18 +177,22 @@ _financial_cache = ThreadSafeLRU(maxsize=3000, ttl=10800)
 _northbound_cache = ThreadSafeLRU(maxsize=1000, ttl=180)
 _market_overview_cache = ThreadSafeLRU(maxsize=500, ttl=60)
 _hot_symbols_cache: list[str] = []
-_hot_symbols_lock: asyncio.Lock | None = None
+_hot_symbols_lock = threading.Lock()
+
+
+def _get_hot_symbols() -> list[str]:
+    with _hot_symbols_lock:
+        return list(_hot_symbols_cache)
+
+
+def _set_hot_symbols(symbols: list[str]) -> None:
+    global _hot_symbols_cache
+    with _hot_symbols_lock:
+        _hot_symbols_cache = list(symbols)
 
 _inflight_requests: dict[str, asyncio.Future] = {}
 _inflight_lock = asyncio.Lock()
 _INFLIGHT_MAX = 500
-
-
-def _get_hot_symbols_lock() -> asyncio.Lock:
-    global _hot_symbols_lock
-    if _hot_symbols_lock is None:
-        _hot_symbols_lock = asyncio.Lock()
-    return _hot_symbols_lock
 
 CACHE_TTL_TIERS = {
     "realtime": 18,
@@ -795,7 +801,7 @@ class DataQualityChecker:
             na_run = cleaned[col].isna().astype(int).groupby(cleaned[col].isna().cumsum()).sum().max()
             if pd.notna(na_run) and na_run >= 3:
                 warnings.append(f"{col}_consecutive_nan:{int(na_run)}")
-            cleaned[col] = cleaned[col].interpolate(limit=1, limit_direction="both")
+            cleaned[col] = cleaned[col].ffill()
 
         price_cols = [c for c in ["open", "high", "low", "close"] if c in cleaned.columns]
         if price_cols:
@@ -803,7 +809,7 @@ class DataQualityChecker:
             if non_positive:
                 warnings.append(f"non_positive_price:{int(non_positive)}")
                 cleaned.loc[(cleaned[price_cols] <= 0).any(axis=1), price_cols] = np.nan
-                cleaned[price_cols] = cleaned[price_cols].interpolate(limit=1, limit_direction="both")
+                cleaned[price_cols] = cleaned[price_cols].ffill()
 
         if {"open", "high", "low", "close"}.issubset(cleaned.columns):
             row_high = cleaned[["open", "close", "high"]].max(axis=1)
@@ -963,7 +969,10 @@ def validate_realtime_data(data: dict, symbol: str) -> bool:
         ts_date = datetime.fromtimestamp(float(ts)).date()
     except (ValueError, TypeError, OSError):
         ts_date = datetime.now().date()
-    ok = price > 0 and -20 <= pct <= 20 and volume >= 0 and ts_date >= (datetime.now().date() - timedelta(days=1))
+    now = datetime.now()
+    is_market_hours = 9 <= now.hour < 16
+    date_ok = (ts_date == now.date()) if is_market_hours else (ts_date >= now.date() - timedelta(days=3))
+    ok = price > 0 and -20 <= pct <= 20 and volume >= 0 and date_ok
     if not ok:
         logger.debug("Invalid realtime data for %s: %s", symbol, data)
     return ok
@@ -1221,8 +1230,9 @@ class SmartDataFetcher:
                 _realtime_cache.set(cache_key, result)
             fut.set_result(result)
             return result
-        except Exception:
-            fut.set_result(None)
+        except Exception as e:
+            logger.debug("Realtime fetch failed for %s", symbol, exc_info=True)
+            fut.set_exception(e)
             return None
         finally:
             async with _inflight_lock:
@@ -1259,6 +1269,7 @@ class SmartDataFetcher:
                 self._health.record_request(source_name, "realtime", False, latency)
                 logger.debug("Source %s realtime error: %s", source_name, e)
 
+        logger.warning("All sources failed for realtime %s (market=%s)", symbol, market)
         return None
 
     async def get_realtime_batch(self, symbols: list[str]) -> dict[str, dict]:
@@ -1355,10 +1366,10 @@ class SmartDataFetcher:
             result = pd.DataFrame()
             fut.set_result(result)
             return result
-        except Exception:
-            result = pd.DataFrame()
-            fut.set_result(result)
-            return result
+        except Exception as e:
+            logger.debug("History fetch failed for %s", symbol, exc_info=True)
+            fut.set_exception(e)
+            return pd.DataFrame()
         finally:
             async with _inflight_lock:
                 _inflight_requests.pop(inflight_key, None)
@@ -1414,17 +1425,20 @@ class SmartDataFetcher:
                     logger.debug("History source task failed: %s", e)
 
             if len(results) >= 2:
-                # 结果投票：若两源数据差异>5%，以成交量更大的为准
                 dfs = list(results.values())
                 srcs = list(results.keys())
-                vol_a = dfs[0]["volume"].sum() if "volume" in dfs[0].columns else 0
-                vol_b = dfs[1]["volume"].sum() if "volume" in dfs[1].columns else 0
                 len_min = min(len(dfs[0]), len(dfs[1]))
                 if len_min > 0:
                     close_a = dfs[0]["close"].iloc[-len_min:].values.astype(float)
                     close_b = dfs[1]["close"].iloc[-len_min:].values.astype(float)
                     diff_pct = np.mean(np.abs(close_a - close_b) / np.maximum(close_a, 1e-8))
-                    chosen_src = (srcs[0] if vol_a >= vol_b else srcs[1]) if diff_pct > 0.05 else srcs[0]
+                    if diff_pct > 0.05:
+                        price_cols = [c for c in ["open", "high", "low", "close"] if c in dfs[0].columns and c in dfs[1].columns]
+                        score_a = len(dfs[0]) - dfs[0][price_cols].isna().sum().sum() if price_cols else len(dfs[0])
+                        score_b = len(dfs[1]) - dfs[1][price_cols].isna().sum().sum() if price_cols else len(dfs[1])
+                        chosen_src = srcs[0] if score_a >= score_b else srcs[1]
+                    else:
+                        chosen_src = srcs[0]
                 else:
                     chosen_src = srcs[0]
                 return results[chosen_src]
@@ -1466,6 +1480,7 @@ class SmartDataFetcher:
                     BaoStockSource.fetch_history, symbol, market, kline_type, adjust
                 )
             else:
+                logger.warning("Unknown data source: %s", source_name)
                 return None
 
             latency = time.monotonic() - start
@@ -1846,10 +1861,10 @@ class SmartDataFetcher:
             return cached
         try:
             if ak is None:
-                return {"up": 0, "down": 0, "flat": 0, "timestamp": time.time()}
+                return {"advance_count": 0, "decline_count": 0, "flat_count": 0, "total_amount": 0, "up": 0, "down": 0, "flat": 0, "timestamp": time.time()}
             df = await asyncio.to_thread(ak.stock_zh_a_spot_em)
             if df is None or df.empty:
-                return {"up": 0, "down": 0, "flat": 0, "timestamp": time.time()}
+                return {"advance_count": 0, "decline_count": 0, "flat_count": 0, "total_amount": 0, "up": 0, "down": 0, "flat": 0, "timestamp": time.time()}
             if "涨跌幅" in df.columns:
                 pct = pd.to_numeric(df["涨跌幅"], errors="coerce").fillna(0)
                 up = int((pct > 0).sum())
@@ -1858,6 +1873,10 @@ class SmartDataFetcher:
             else:
                 up = down = flat = 0
             result = {
+                "advance_count": up,
+                "decline_count": down,
+                "flat_count": flat,
+                "total_amount": 0,
                 "up": up,
                 "down": down,
                 "flat": flat,
@@ -1869,10 +1888,9 @@ class SmartDataFetcher:
             return result
         except Exception as e:
             logger.debug("Market breadth error: %s", e)
-            return {"up": 0, "down": 0, "flat": 0, "timestamp": time.time()}
+            return {"advance_count": 0, "decline_count": 0, "flat_count": 0, "total_amount": 0, "up": 0, "down": 0, "flat": 0, "timestamp": time.time()}
 
     async def refresh_hot_symbols_cache(self) -> None:
-        global _hot_symbols_cache
         try:
             if ak is None:
                 return
@@ -1880,8 +1898,7 @@ class SmartDataFetcher:
             if df is not None and not df.empty:
                 df = df.sort_values("成交额", ascending=False) if "成交额" in df.columns else df
                 symbols = df["代码"].tolist()[:50] if "代码" in df.columns else []
-                async with _get_hot_symbols_lock():
-                    _hot_symbols_cache = symbols
+                _set_hot_symbols(symbols)
         except Exception as e:
             logger.debug("Refresh hot symbols error: %s", e)
 
@@ -1895,8 +1912,7 @@ class SmartDataFetcher:
         except Exception as e:
             logger.debug("Preload hot symbols error: %s", e)
         try:
-            async with _get_hot_symbols_lock():
-                hot = list(_hot_symbols_cache[:10])
+            hot = _get_hot_symbols()[:10]
             if hot:
                 await self.prefetch_symbols(hot, priority="watchlist")
         except Exception as e:

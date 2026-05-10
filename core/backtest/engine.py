@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 __all__ = [
     "BacktestEngine",
     "DEFAULT_COMMISSION",
@@ -16,7 +18,7 @@ from core.data_governance import DataQualityPipeline
 from core.events import BacktestProgressTracker, Event, EventBus, EventType
 from core.memory_guard import memory_guard
 from core.risk_manager import EnhancedRiskManager
-from core.strategies import BaseStrategy, SignalType, StrategyResult
+from core.strategies import BaseStrategy, SignalType, TradeSignal
 
 from .cost_model import RealisticCostModel
 from .event_driven import run_event_driven
@@ -83,31 +85,8 @@ class BacktestEngine:
         strategy.reset()
         self._event_bus.publish(Event(EventType.INIT, {"strategy": strategy.name}))
 
-        result = strategy.generate_signals(df)
-        if not result.signals:
-            return self._build_result(strategy.name, df, [], [], result)
-
-        buy_signals = sorted(
-            [s for s in result.signals if s.signal_type == SignalType.BUY],
-            key=lambda s: s.bar_index,
-        )
-        sell_signals = sorted(
-            [s for s in result.signals if s.signal_type == SignalType.SELL],
-            key=lambda s: s.bar_index,
-        )
-
-        # 买卖信号优先级控制：同一K线同时出现买卖信号时，按优先级过滤
-        sell_bars = {s.bar_index for s in sell_signals}
-        buy_bars = {s.bar_index for s in buy_signals}
-        conflicting_bars = sell_bars & buy_bars
-        if conflicting_bars:
-            buy_signals = [s for s in buy_signals if s.bar_index not in conflicting_bars]
-            logger.debug(
-                f"Signal priority: removed {len(conflicting_bars)} conflicting buy signal(s) on bars {conflicting_bars}"
-            )
-
         with memory_guard(f"Backtest_{strategy.name}", max_mb=2048):
-            return self._build_result(strategy.name, df, buy_signals, sell_signals, result, symbol)
+            return self._build_result(strategy.name, df, strategy, symbol)
 
     def run_event_driven(
         self,
@@ -149,9 +128,7 @@ class BacktestEngine:
         self,
         name: str,
         df: pd.DataFrame,
-        buy_signals: list,
-        sell_signals: list,
-        strategy_result: StrategyResult,
+        strategy: BaseStrategy,
         symbol: str = "",
     ) -> BacktestResult:
         closes = df["close"].values.astype(float) if "close" in df.columns else np.array([])
@@ -174,7 +151,6 @@ class BacktestEngine:
         sell_bar_set = set()
         lot_size = 100
 
-        # 预计算ATR用于动态止损
         atr_values = np.zeros(n)
         if n > 14 and len(highs) == n and len(lows) == n:
             tr_arr = np.maximum(
@@ -193,9 +169,6 @@ class BacktestEngine:
             if n > window:
                 atr_values[window:] = (cumsum[window:] - cumsum[:-window]) / window
 
-        buy_idx = 0
-        sell_idx = 0
-
         volumes = df["volume"].values.astype(float) if "volume" in df.columns else None
         amounts_col = df["amount"].values.astype(float) if "amount" in df.columns else None
 
@@ -204,185 +177,221 @@ class BacktestEngine:
         prev_closes[1:] = closes[:-1]
 
         for i in range(1, n):
-            while buy_idx < len(buy_signals) and buy_signals[buy_idx].bar_index == i:
-                sig = buy_signals[buy_idx]
-                buy_idx += 1
-                if position is not None:
+            bar = {
+                "open": float(opens[i]),
+                "high": float(highs[i]),
+                "low": float(lows[i]),
+                "close": float(closes[i]),
+                "volume": float(volumes[i]) if volumes is not None else 0,
+                "date": str(dates_col[i])[:10],
+            }
+
+            try:
+                sigs = strategy.on_bar(bar, {})
+            except Exception as e:
+                logger.debug("Strategy on_bar error at bar %d: %s", i, e)
+                sigs = []
+
+            bar_buy = False
+            bar_sell = False
+            for sig in sigs:
+                action = sig.get("action", "hold")
+                if action not in ("buy", "sell"):
+                    continue
+                if action == "buy" and action == "sell":
+                    continue
+                if action == "buy" and bar_sell:
+                    continue
+                if action == "sell" and bar_buy:
                     continue
 
-                fill_price = opens[i] if i < len(opens) and opens[i] > 0 else closes[i]
-                if fill_price <= 0:
-                    continue
+                ts = TradeSignal(
+                    signal_type=SignalType.BUY if action == "buy" else SignalType.SELL,
+                    strength=sig.get("confidence", 0.5),
+                    reason=sig.get("reason", ""),
+                    bar_index=i,
+                    position_pct=sig.get("position_pct", 0.3),
+                    stop_loss=sig.get("stop_loss", 0.0),
+                    take_profit=sig.get("take_profit", 0.0),
+                )
 
-                fill_price = _simulate_call_auction_fill(fill_price, self._rng)
-
-                if self._enable_limit_check and i > 0:
-                    prev_close = prev_closes[i] if i < len(prev_closes) else closes[i - 1]
-                    limit_pct = _get_limit_pct(symbol)
-                    is_normal, fill_prob = _check_limit_price(float(prev_close), fill_price, is_buy=True, limit_pct=limit_pct)
-                    if not is_normal and self._rng.random() > fill_prob:
+                if action == "buy":
+                    bar_buy = True
+                    if position is not None:
                         continue
 
-                fill_price = fill_price * (1 + self._slippage_pct)
-
-                if volumes is not None:
-                    bar_vol = volumes[i] if i < len(volumes) else 0
-                    if np.isnan(bar_vol) or bar_vol <= 0:
+                    fill_price = opens[i] if i < len(opens) and opens[i] > 0 else closes[i]
+                    if fill_price <= 0:
                         continue
 
-                alloc_pct = sig.position_pct if sig.position_pct > 0 else 0.3
-                if alloc_pct < 0.2:
-                    alloc_pct = 0.3
-                alloc_amount = equity_curve[-1] * alloc_pct
-                if alloc_amount > cash * 0.98:
-                    alloc_amount = cash * 0.98
+                    fill_price = _simulate_call_auction_fill(fill_price, self._rng)
 
-                buy_shares = int(alloc_amount / fill_price / lot_size) * lot_size
-                if buy_shares <= 0:
-                    continue
+                    if self._enable_limit_check and i > 0:
+                        prev_close = prev_closes[i] if i < len(prev_closes) else closes[i - 1]
+                        limit_pct = _get_limit_pct(symbol)
+                        is_normal, fill_prob = _check_limit_price(float(prev_close), fill_price, is_buy=True, limit_pct=limit_pct)
+                        if not is_normal and self._rng.random() > fill_prob:
+                            continue
 
-                bar_amount = 0.0
-                if amounts_col is not None and i < len(amounts_col):
-                    bar_amount = float(amounts_col[i]) if not np.isnan(amounts_col[i]) else 0.0
-                if bar_amount <= 0 and volumes is not None and i < len(volumes):
-                    bar_amount = float(volumes[i]) * fill_price
+                    fill_price = fill_price * (1 + self._slippage_pct)
 
-                if bar_amount > 0:
-                    max_shares_by_amount = int(bar_amount * 0.25 / fill_price / lot_size) * lot_size
-                    if max_shares_by_amount > 0 and buy_shares > max_shares_by_amount:
-                        buy_shares = max_shares_by_amount
+                    if volumes is not None:
+                        bar_vol = volumes[i] if i < len(volumes) else 0
+                        if np.isnan(bar_vol) or bar_vol <= 0:
+                            continue
 
-                if buy_shares <= 0:
-                    continue
+                    alloc_pct = ts.position_pct if ts.position_pct > 0 else 0.3
+                    if alloc_pct < 0.2:
+                        alloc_pct = 0.3
+                    alloc_amount = equity_curve[-1] * alloc_pct
+                    if alloc_amount > cash * 0.98:
+                        alloc_amount = cash * 0.98
 
-                if self._enable_twap and bar_amount > 0:
-                    fill_price = _simulate_twap_fill(fill_price, buy_shares, bar_amount, rng=self._rng)
-
-                amount = buy_shares * fill_price
-                cost_detail = self._cost_model.calc_buy_cost(fill_price, buy_shares, amount, bar_amount)
-                total_cost = amount + cost_detail["total"]
-
-                if total_cost > cash:
-                    buy_shares = int(cash * 0.98 / fill_price / lot_size) * lot_size
+                    buy_shares = int(alloc_amount / fill_price / lot_size) * lot_size
                     if buy_shares <= 0:
                         continue
+
+                    bar_amount = 0.0
+                    if amounts_col is not None and i < len(amounts_col):
+                        bar_amount = float(amounts_col[i]) if not np.isnan(amounts_col[i]) else 0.0
+                    if bar_amount <= 0 and volumes is not None and i < len(volumes):
+                        bar_amount = float(volumes[i]) * fill_price
+
+                    if bar_amount > 0:
+                        max_shares_by_amount = int(bar_amount * 0.25 / fill_price / lot_size) * lot_size
+                        if max_shares_by_amount > 0 and buy_shares > max_shares_by_amount:
+                            buy_shares = max_shares_by_amount
+
+                    if buy_shares <= 0:
+                        continue
+
+                    if self._enable_twap and bar_amount > 0:
+                        fill_price = _simulate_twap_fill(fill_price, buy_shares, bar_amount, rng=self._rng)
+
                     amount = buy_shares * fill_price
                     cost_detail = self._cost_model.calc_buy_cost(fill_price, buy_shares, amount, bar_amount)
                     total_cost = amount + cost_detail["total"]
+
                     if total_cost > cash:
-                        buy_shares = int((cash - cost_detail["total"]) / fill_price / lot_size) * lot_size
+                        buy_shares = int(cash * 0.98 / fill_price / lot_size) * lot_size
                         if buy_shares <= 0:
                             continue
                         amount = buy_shares * fill_price
                         cost_detail = self._cost_model.calc_buy_cost(fill_price, buy_shares, amount, bar_amount)
                         total_cost = amount + cost_detail["total"]
+                        if total_cost > cash:
+                            buy_shares = int((cash - cost_detail["total"]) / fill_price / lot_size) * lot_size
+                            if buy_shares <= 0:
+                                continue
+                            amount = buy_shares * fill_price
+                            cost_detail = self._cost_model.calc_buy_cost(fill_price, buy_shares, amount, bar_amount)
+                            total_cost = amount + cost_detail["total"]
 
-                cash -= total_cost
-                shares = buy_shares
+                    cash -= total_cost
+                    shares = buy_shares
 
-                date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
-                position = {
-                    "entry_price": fill_price,
-                    "shares": buy_shares,
-                    "entry_idx": i,
-                    "entry_date": date_str,
-                    "stop_loss": sig.stop_loss,
-                    "take_profit": sig.take_profit,
-                    "highest_price": fill_price,
-                }
-                buy_bar_set.add(i)
+                    date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
+                    position = {
+                        "entry_price": fill_price,
+                        "shares": buy_shares,
+                        "entry_idx": i,
+                        "entry_date": date_str,
+                        "stop_loss": ts.stop_loss,
+                        "take_profit": ts.take_profit,
+                        "highest_price": fill_price,
+                    }
+                    buy_bar_set.add(i)
 
-                trades.append({
-                    "action": "buy",
-                    "symbol": "",
-                    "price": fill_price,
-                    "shares": buy_shares,
-                    "amount": round(amount, 2),
-                    "fee": round(cost_detail["total"], 2),
-                    "cost_detail": cost_detail,
-                    "date": date_str,
-                    "bar_index": i,
-                    "reason": sig.reason,
-                })
+                    trades.append({
+                        "action": "buy",
+                        "symbol": "",
+                        "price": fill_price,
+                        "shares": buy_shares,
+                        "amount": round(amount, 2),
+                        "fee": round(cost_detail["total"], 2),
+                        "cost_detail": cost_detail,
+                        "date": date_str,
+                        "bar_index": i,
+                        "reason": ts.reason,
+                    })
 
-            while sell_idx < len(sell_signals) and sell_signals[sell_idx].bar_index == i:
-                sig = sell_signals[sell_idx]
-                sell_idx += 1
-                if position is None:
-                    continue
-
-                entry_date = position.get("entry_date", "")
-                bar_date = str(dates_col[i])[:10] if i < len(dates_col) else ""
-                if entry_date and bar_date and entry_date == bar_date:
-                    continue
-
-                fill_price = opens[i] if i < len(opens) and opens[i] > 0 else closes[i]
-                if fill_price <= 0:
-                    continue
-
-                fill_price = _simulate_call_auction_fill(fill_price, self._rng)
-
-                if self._enable_limit_check and i > 0:
-                    prev_close = prev_closes[i] if i < len(prev_closes) else closes[i - 1]
-                    limit_pct = _get_limit_pct(symbol)
-                    is_normal, fill_prob = _check_limit_price(float(prev_close), fill_price, is_buy=False, limit_pct=limit_pct)
-                    if not is_normal and self._rng.random() > fill_prob:
+                elif action == "sell":
+                    bar_sell = True
+                    if position is None:
                         continue
 
-                fill_price = fill_price * (1 - self._slippage_pct)
+                    entry_date = position.get("entry_date", "")
+                    bar_date = str(dates_col[i])[:10] if i < len(dates_col) else ""
+                    if entry_date and bar_date and entry_date == bar_date:
+                        continue
 
-                sell_shares = shares
-                bar_amount = 0.0
-                if amounts_col is not None and i < len(amounts_col):
-                    bar_amount = float(amounts_col[i]) if not np.isnan(amounts_col[i]) else 0.0
-                if bar_amount <= 0 and volumes is not None and i < len(volumes):
-                    bar_amount = float(volumes[i]) * fill_price
+                    fill_price = opens[i] if i < len(opens) and opens[i] > 0 else closes[i]
+                    if fill_price <= 0:
+                        continue
 
-                if bar_amount > 0:
-                    max_shares_by_amount = int(bar_amount * 0.25 / fill_price / lot_size) * lot_size
-                    if max_shares_by_amount > 0 and sell_shares > max_shares_by_amount:
-                        sell_shares = max_shares_by_amount
+                    fill_price = _simulate_call_auction_fill(fill_price, self._rng)
 
-                if self._enable_twap and bar_amount > 0:
-                    fill_price = _simulate_twap_fill(fill_price, sell_shares, bar_amount, rng=self._rng)
+                    if self._enable_limit_check and i > 0:
+                        prev_close = prev_closes[i] if i < len(prev_closes) else closes[i - 1]
+                        limit_pct = _get_limit_pct(symbol)
+                        is_normal, fill_prob = _check_limit_price(float(prev_close), fill_price, is_buy=False, limit_pct=limit_pct)
+                        if not is_normal and self._rng.random() > fill_prob:
+                            continue
 
-                revenue = sell_shares * fill_price
-                cost_detail = self._cost_model.calc_sell_cost(fill_price, sell_shares, revenue, bar_amount)
-                total_fee = cost_detail["total"]
-                net_revenue = revenue - total_fee
+                    fill_price = fill_price * (1 - self._slippage_pct)
 
-                pnl = (fill_price - position["entry_price"]) * sell_shares - total_fee
+                    sell_shares = shares
+                    bar_amount = 0.0
+                    if amounts_col is not None and i < len(amounts_col):
+                        bar_amount = float(amounts_col[i]) if not np.isnan(amounts_col[i]) else 0.0
+                    if bar_amount <= 0 and volumes is not None and i < len(volumes):
+                        bar_amount = float(volumes[i]) * fill_price
 
-                cash += net_revenue
+                    if bar_amount > 0:
+                        max_shares_by_amount = int(bar_amount * 0.25 / fill_price / lot_size) * lot_size
+                        if max_shares_by_amount > 0 and sell_shares > max_shares_by_amount:
+                            sell_shares = max_shares_by_amount
 
-                date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
-                hold_days = i - position["entry_idx"]
-                mae, mfe = _excursion(position, i, lows, highs, n)
+                    if self._enable_twap and bar_amount > 0:
+                        fill_price = _simulate_twap_fill(fill_price, sell_shares, bar_amount, rng=self._rng)
 
-                trades.append({
-                    "action": "sell",
-                    "symbol": "",
-                    "price": fill_price,
-                    "shares": sell_shares,
-                    "amount": round(revenue, 2),
-                    "fee": round(total_fee, 2),
-                    "cost_detail": cost_detail,
-                    "date": date_str,
-                    "bar_index": i,
-                    "pnl": round(pnl, 2),
-                    "hold_days": hold_days,
-                    "mae": mae,
-                    "mfe": mfe,
-                    "reason": sig.reason,
-                })
+                    revenue = sell_shares * fill_price
+                    cost_detail = self._cost_model.calc_sell_cost(fill_price, sell_shares, revenue, bar_amount)
+                    total_fee = cost_detail["total"]
+                    net_revenue = revenue - total_fee
 
-                sell_bar_set.add(i)
-                shares -= sell_shares
-                if shares <= 0:
-                    shares = 0
-                    position = None
-                elif position is not None:
-                    position["shares"] = shares
+                    pnl = (fill_price - position["entry_price"]) * sell_shares - total_fee
+
+                    cash += net_revenue
+
+                    date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
+                    hold_days = i - position["entry_idx"]
+                    mae, mfe = _excursion(position, i, lows, highs, n)
+
+                    trades.append({
+                        "action": "sell",
+                        "symbol": "",
+                        "price": fill_price,
+                        "shares": sell_shares,
+                        "amount": round(revenue, 2),
+                        "fee": round(total_fee, 2),
+                        "cost_detail": cost_detail,
+                        "date": date_str,
+                        "bar_index": i,
+                        "pnl": round(pnl, 2),
+                        "hold_days": hold_days,
+                        "mae": mae,
+                        "mfe": mfe,
+                        "reason": ts.reason,
+                    })
+
+                    sell_bar_set.add(i)
+                    shares -= sell_shares
+                    if shares <= 0:
+                        shares = 0
+                        position = None
+                    elif position is not None:
+                        position["shares"] = shares
 
             if position is not None:
                 bar_low = float(lows[i]) if i < len(lows) else closes[i]
@@ -443,7 +452,8 @@ class BacktestEngine:
             bar_equity = cash + (shares * closes[i] if shares > 0 else 0)
             equity_curve.append(bar_equity)
             date_str_progress = str(dates_col[i])[:10] if i < len(dates_col) else ""
-            self._progress_tracker.on_bar(i, bar_equity, date_str_progress)
+            if i % 50 == 0 or i == n - 1:
+                self._progress_tracker.on_bar(i, bar_equity, date_str_progress)
 
         dates_list = []
         for d in dates_col:

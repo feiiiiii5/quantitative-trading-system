@@ -88,7 +88,9 @@ class MonteCarloVaR:
 
             portfolio_returns = simulated_returns @ w_arr
 
-            horizon_returns = portfolio_returns * (self.time_horizon / 252)
+            daily_mean = np.mean(portfolio_returns) / 252
+            daily_std = np.std(portfolio_returns) / np.sqrt(252)
+            horizon_returns = daily_mean * self.time_horizon + daily_std * np.sqrt(self.time_horizon) * rng.standard_normal(self.n_simulations)
 
             var_95 = float(np.percentile(horizon_returns, 5))
             var_99 = float(np.percentile(horizon_returns, 1))

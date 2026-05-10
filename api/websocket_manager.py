@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any, Dict, Optional, Set
+from typing import Dict, Set
 
 from fastapi import WebSocket
 
@@ -93,7 +93,7 @@ class OptimizedWSManager:
         dead: Set[WebSocket] = set()
         tasks = [self._safe_send(ws, payload) for ws in subscribers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        for ws, result in zip(subscribers, results):
+        for ws, result in zip(subscribers, results, strict=True):
             if isinstance(result, Exception):
                 dead.add(ws)
         if dead:
@@ -115,7 +115,7 @@ class OptimizedWSManager:
         dead: Set[WebSocket] = set()
         tasks = [self._safe_send(ws, payload) for ws in subscribers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        for ws, result in zip(subscribers, results):
+        for ws, result in zip(subscribers, results, strict=True):
             if isinstance(result, Exception):
                 dead.add(ws)
         if dead:

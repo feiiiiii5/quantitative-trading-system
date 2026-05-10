@@ -125,13 +125,17 @@ class TTLCache:
         }
 
 
-rt_cache = TTLCache(maxsize=15000)
-kline_cache = TTLCache(maxsize=500)
-sector_cache = TTLCache(maxsize=100)
-search_cache = TTLCache(maxsize=200)
-overview_cache = TTLCache(maxsize=10)
-breadth_cache = TTLCache(maxsize=10)
-backtest_result_cache = TTLCache(maxsize=500)
+rt_cache = TTLCache(maxsize=30000)
+kline_cache = TTLCache(maxsize=2000)
+sector_cache = TTLCache(maxsize=200)
+search_cache = TTLCache(maxsize=500)
+overview_cache = TTLCache(maxsize=20)
+breadth_cache = TTLCache(maxsize=20)
+backtest_result_cache = TTLCache(maxsize=1000)
+fundamental_cache = TTLCache(maxsize=1000)
+index_cache = TTLCache(maxsize=200)
+northbound_cache = TTLCache(maxsize=100)
+alert_cache = TTLCache(maxsize=500)
 
 CACHE_TTL = {
     "realtime": 3.0,
@@ -148,6 +152,10 @@ CACHE_TTL = {
     "northbound": 180.0,
     "limit_up": 45.0,
     "dragon_tiger": 600.0,
+    "index_quote": 15.0,
+    "alert_signal": 30.0,
+    "portfolio_summary": 10.0,
+    "hot_symbols": 60.0,
 }
 
 
@@ -169,14 +177,20 @@ def _convert_numpy(obj):
         return [_convert_numpy(v) for v in obj]
     try:
         import numpy as np
-        if isinstance(obj, (np.integer,)):
+        if isinstance(obj, np.datetime64):
+            return str(obj)
+        if isinstance(obj, np.timedelta64):
+            return str(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, np.integer):
             return int(obj)
-        if isinstance(obj, (np.floating,)):
+        if isinstance(obj, np.floating):
             return float(obj)
         if isinstance(obj, np.ndarray):
             return _convert_numpy(obj.tolist())
-        if isinstance(obj, np.bool_):
-            return bool(obj)
+        if isinstance(obj, np.void):
+            return None
     except ImportError:
         pass
     return obj

@@ -407,7 +407,10 @@ class PortfolioOptimizer:
                 return w_min_var
             target_excess = (target_return / 252) - (min_ret / 252)
             min_var_ret = float(np.dot(w_min_var, mean_ret))
-            diff = target_excess / (float(np.dot(mean_ret, inv_cov @ mean_ret)) / (ones @ inv_cov @ mean_ret) - min_var_ret)
+            denom_diff = float(np.dot(mean_ret, inv_cov @ mean_ret)) / (ones @ inv_cov @ mean_ret) - min_var_ret
+            if abs(denom_diff) < 1e-12:
+                return w_min_var
+            diff = target_excess / denom_diff
             diff = np.clip(diff, 0, 1)
             tangency = inv_cov @ mean_ret
             denom_t = ones @ tangency

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 QuantCore 数据库模块
 提供 SQLite 存储和线程安全缓存
@@ -5,6 +7,7 @@ QuantCore 数据库模块
 import asyncio
 import contextlib
 import hashlib
+import heapq
 import json
 import logging
 import sqlite3
@@ -45,7 +48,10 @@ class ThreadSafeLRU:
         self._ttl = ttl
         self._cache: OrderedDict[str, tuple[Any, float, int]] = OrderedDict()
         self._freq: dict[str, int] = {}
+        self._heap: list[tuple[int, float, str]] = []
         self._lock = threading.Lock()
+        self._hits = 0
+        self._misses = 0
 
     def get(self, key: str) -> Any | None:
         with self._lock:
@@ -54,9 +60,11 @@ class ThreadSafeLRU:
                 if time.monotonic() - ts < float(ttl):
                     self._cache.move_to_end(key)
                     self._freq[key] = self._freq.get(key, 0) + 1
+                    self._hits += 1
                     return value
                 del self._cache[key]
                 self._freq.pop(key, None)
+            self._misses += 1
         return None
 
     def set(self, key: str, value: Any, ttl: int | None = None) -> None:
@@ -68,19 +76,22 @@ class ThreadSafeLRU:
                 self._evict_lfu()
             self._cache[key] = (value, time.monotonic(), int(effective_ttl))
             self._freq[key] = 1
+            heapq.heappush(self._heap, (1, time.monotonic(), key))
 
     def _evict_lfu(self) -> None:
-        if not self._cache:
-            return
-        min_freq = min(self._freq.values())
-        candidates = [k for k, f in self._freq.items() if f == min_freq]
-        evict_key = candidates[0]
-        for k in candidates:
-            if k in self._cache:
-                evict_key = k
-                break
-        self._cache.pop(evict_key, None)
-        self._freq.pop(evict_key, None)
+        while self._heap:
+            freq, _, key = heapq.heappop(self._heap)
+            if key in self._cache:
+                current_freq = self._freq.get(key, 0)
+                if current_freq <= freq:
+                    self._cache.pop(key, None)
+                    self._freq.pop(key, None)
+                    return
+                heapq.heappush(self._heap, (current_freq, time.monotonic(), key))
+        if self._cache:
+            key_to_evict = next(iter(self._cache))
+            self._cache.pop(key_to_evict, None)
+            self._freq.pop(key_to_evict, None)
 
     def delete(self, key: str) -> None:
         with self._lock:
@@ -101,15 +112,25 @@ class ThreadSafeLRU:
         with self._lock:
             self._cache.clear()
             self._freq.clear()
+            self._heap.clear()
 
     def __len__(self) -> int:
         with self._lock:
             return len(self._cache)
 
+    def stats(self) -> dict:
+        total = self._hits + self._misses
+        return {
+            "size": len(self._cache),
+            "maxsize": self._maxsize,
+            "hits": self._hits,
+            "misses": self._misses,
+            "hit_rate": round(self._hits / total, 4) if total else 0,
+            "heap_size": len(self._heap),
+        }
+
 
 _db_query_cache = ThreadSafeLRU(maxsize=10000, ttl=300)
-
-_query_cache: dict[str, tuple[float, list]] = {}
 
 
 class CacheManager:
@@ -370,6 +391,7 @@ class SQLiteStore:
                 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON trade_signals(symbol, created_at);
                 CREATE INDEX IF NOT EXISTS idx_kline_composite
                 ON kline(symbol, market, kline_type, adjust, date DESC);
+                CREATE INDEX IF NOT EXISTS idx_source_stats_key ON source_stats(source_name, request_type);
                 CREATE INDEX IF NOT EXISTS idx_config_key ON config(key);
 
                 CREATE TABLE IF NOT EXISTS price_alerts (
@@ -474,12 +496,12 @@ class SQLiteStore:
 
     def _acquire_read_conn(self) -> sqlite3.Connection:
         with self._read_pool_lock:
-            if self._read_pool:
+            while self._read_pool:
                 conn = self._read_pool.pop()
                 try:
                     conn.execute("SELECT 1")
                     return conn
-                except sqlite3.OperationalError:
+                except sqlite3.DatabaseError:
                     try:
                         conn.close()
                     except Exception:
@@ -493,7 +515,7 @@ class SQLiteStore:
                     conn.execute("SELECT 1")
                     self._read_pool.append(conn)
                     return
-                except sqlite3.OperationalError:
+                except sqlite3.DatabaseError:
                     try:
                         conn.close()
                     except Exception:
@@ -651,28 +673,22 @@ class SQLiteStore:
 
     def fetchall_cached(self, sql: str, params: tuple = (), ttl: float = 60.0) -> list[dict]:
         cache_key = hashlib.md5(f"{sql}:{params}".encode()).hexdigest()[:16]
-        now = time.monotonic()
-        if cache_key in _query_cache:
-            ts, rows = _query_cache[cache_key]
-            if now - ts < ttl:
-                logger.debug("Cache hit for query key=%s", cache_key)
-                return rows
+        cached = _db_query_cache.get(cache_key)
+        if cached is not None:
+            logger.debug("Cache hit for query key=%s", cache_key)
+            return cached
         rows = self.fetchall(sql, params)
-        _query_cache[cache_key] = (now, rows)
+        _db_query_cache.set(cache_key, rows, ttl=int(ttl))
         logger.debug("Cache miss for query key=%s, stored result", cache_key)
         return rows
 
     def invalidate_cache(self, pattern: str = "") -> int:
         if not pattern:
-            count = len(_query_cache)
-            _query_cache.clear()
+            count = len(_db_query_cache)
+            _db_query_cache.clear()
             logger.debug("Invalidated entire query cache (%d entries)", count)
             return count
-        keys_to_remove = [k for k in _query_cache if k.startswith(pattern)]
-        for k in keys_to_remove:
-            del _query_cache[k]
-        logger.debug("Invalidated %d cache entries matching pattern=%s", len(keys_to_remove), pattern)
-        return len(keys_to_remove)
+        return _db_query_cache.delete_prefix(pattern)
 
     def fetch(self, sql: str, params: tuple = ()) -> list[dict]:
         return self.fetchall(sql, params)

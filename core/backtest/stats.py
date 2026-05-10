@@ -44,10 +44,10 @@ def compute_backtest_statistics(
     avg_loss = float(np.mean(loss_pnls)) if loss_pnls else 0.0
     avg_hold_days = float(np.mean(hold_days_list)) if hold_days_list else 0.0
 
-    total_return = (equity_curve[-1] - equity_curve[0]) / equity_curve[0] * 100 if equity_curve[0] > 1e-9 else 0.0
+    total_return = (equity_curve[-1] - equity_curve[0]) / equity_curve[0] * 100 if len(equity_curve) > 0 and equity_curve[0] > 1e-9 else 0.0
     trading_days = len(equity_curve)
     if trading_days >= 20:
-        annual_return = ((1 + total_return / 100) ** min(252 / trading_days, 3) - 1) * 100
+        annual_return = ((1 + total_return / 100) ** min(252 / max(trading_days, 1), 3) - 1) * 100
     else:
         annual_return = total_return
 
@@ -75,7 +75,7 @@ def compute_backtest_statistics(
         if len(downside) > 0:
             downside_dev = np.sqrt(np.mean(downside ** 2))
             if downside_dev > 1e-12:
-                sortino = (avg_ret * 252) / (downside_dev * np.sqrt(252))
+                sortino = (avg_ret / downside_dev) * np.sqrt(252)
 
     max_consec_losses = 0
     consec_count = 0

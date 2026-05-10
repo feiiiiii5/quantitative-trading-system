@@ -76,7 +76,7 @@ def _simulate_call_auction_fill(open_price: float, rng: np.random.Generator = No
 
 def _simulate_twap_fill(price: float, shares: int, daily_amount: float,
                          n_slices: int = 4, rng: np.random.Generator = None) -> float:
-    if daily_amount <= 0 or shares * price < daily_amount * 0.01:
+    if daily_amount <= 0 or shares <= 0 or shares * price < daily_amount * 0.01:
         return price
     if rng is None:
         rng = np.random.default_rng()

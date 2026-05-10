@@ -149,7 +149,7 @@ class ExecutionEngine:
             bar_qty = execute_twap(total_quantity, available_bars, bar_idx)
             if bar_qty <= 0:
                 continue
-            price = float(price_data["close"].iloc[-(bar_idx + 1)])
+            price = float(price_data["close"].iloc[bar_idx])
             result = self.execute_market_order(side, bar_qty, price)
             total_filled += result.filled_quantity
             total_value += result.avg_fill_price * result.filled_quantity
@@ -200,7 +200,7 @@ class ExecutionEngine:
             bar_qty = execute_vwap(total_quantity, vol_profile, bar_idx)
             if bar_qty <= 0:
                 continue
-            price = float(price_data["close"].iloc[-(bar_idx + 1)])
+            price = float(price_data["close"].iloc[bar_idx])
             result = self.execute_market_order(side, bar_qty, price)
             total_filled += result.filled_quantity
             total_value += result.avg_fill_price * result.filled_quantity

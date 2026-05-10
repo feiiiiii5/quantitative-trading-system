@@ -218,7 +218,7 @@ async def get_market_snapshot(request: Request):
         from datetime import datetime
 
         from core.market_hours import MarketHours
-        from core.news_engine import get_market_sentiment
+        from core.news_engine import get_news_engine
 
         snapshot = {
             "timestamp": datetime.now().isoformat(),
@@ -249,7 +249,9 @@ async def get_market_snapshot(request: Request):
             snapshot["indices"] = {}
 
         try:
-            sentiment = await get_market_sentiment()
+            engine = get_news_engine()
+            news_items = await engine.fetch_latest_news(50)
+            sentiment = engine.compute_market_sentiment(news_items)
             snapshot["sentiment"] = {
                 "score": round(sentiment.breadth_sentiment, 4),
                 "label": "偏多" if sentiment.breadth_sentiment > 0 else "偏空",
