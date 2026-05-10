@@ -195,8 +195,12 @@ class SQLiteStore:
         self._pool: list[sqlite3.Connection] = []
         self._pool_lock = threading.Lock()
         self._pool_max_size = 16
+        self._read_pool: list[sqlite3.Connection] = []
+        self._read_pool_lock = threading.Lock()
+        self._read_pool_max_size = 4
         self._stop_flush = threading.Event()
         self._init_db()
+        self._setup_read_pool()
         self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
         self._flush_thread.start()
         try:
@@ -451,6 +455,75 @@ class SQLiteStore:
             conn.commit()
         except sqlite3.OperationalError:
             pass
+
+    def _setup_read_pool(self) -> None:
+        for _ in range(self._read_pool_max_size):
+            conn = self._create_read_conn()
+            self._read_pool.append(conn)
+
+    def _create_read_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path, timeout=10, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=-256000")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA mmap_size=134217728")
+        conn.execute("PRAGMA query_only=ON")
+        return conn
+
+    def _acquire_read_conn(self) -> sqlite3.Connection:
+        with self._read_pool_lock:
+            if self._read_pool:
+                conn = self._read_pool.pop()
+                try:
+                    conn.execute("SELECT 1")
+                    return conn
+                except sqlite3.OperationalError:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+        return self._create_read_conn()
+
+    def _release_read_conn(self, conn: sqlite3.Connection) -> None:
+        with self._read_pool_lock:
+            if len(self._read_pool) < self._read_pool_max_size:
+                try:
+                    conn.execute("SELECT 1")
+                    self._read_pool.append(conn)
+                    return
+                except sqlite3.OperationalError:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                return
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    async def query_async(self, sql: str, params: tuple = ()) -> list[dict]:
+        def _query():
+            conn = self._acquire_read_conn()
+            try:
+                cursor = conn.execute(sql, params)
+                return [dict(row) for row in cursor.fetchall()]
+            finally:
+                self._release_read_conn(conn)
+        return await asyncio.to_thread(_query)
+
+    async def query_one_async(self, sql: str, params: tuple = ()) -> dict | None:
+        def _query():
+            conn = self._acquire_read_conn()
+            try:
+                cursor = conn.execute(sql, params)
+                row = cursor.fetchone()
+                return dict(row) if row else None
+            finally:
+                self._release_read_conn(conn)
+        return await asyncio.to_thread(_query)
 
     def _flush_loop(self) -> None:
         while not self._stop_flush.is_set():
@@ -968,6 +1041,13 @@ class SQLiteStore:
                 except Exception as e:
                     logger.debug("Error closing pool connection: %s", e)
             self._pool.clear()
+        with self._read_pool_lock:
+            for conn in self._read_pool:
+                try:
+                    conn.close()
+                except Exception as e:
+                    logger.debug("Error closing read pool connection: %s", e)
+            self._read_pool.clear()
 
 
 _db_instance: SQLiteStore | None = None

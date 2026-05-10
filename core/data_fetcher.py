@@ -1757,6 +1757,120 @@ class SmartDataFetcher:
         overview = await self.get_market_overview()
         return overview.get("temperature", 50.0)
 
+    async def get_batch_realtime_optimized(self, symbols: list[str]) -> dict[str, dict]:
+        if not symbols:
+            return {}
+        from core.async_utils import rt_cache, CACHE_TTL
+        cache_key = f"batch_rt_{','.join(sorted(symbols[:20]))}"
+        cached = await rt_cache.get(cache_key)
+        if cached is not None:
+            return {s: cached[s] for s in symbols if s in cached}
+        try:
+            if ak is None:
+                return await self.get_realtime_batch(symbols)
+            df = await asyncio.to_thread(ak.stock_zh_a_spot_em)
+            if df is None or df.empty:
+                return await self.get_realtime_batch(symbols)
+            target_codes = set()
+            for s in symbols:
+                clean = re.sub(r"^(sh|sz|SH|SZ)", "", str(s)).strip()
+                target_codes.add(clean)
+            if "代码" in df.columns:
+                filtered = df[df["代码"].isin(target_codes)]
+            else:
+                return await self.get_realtime_batch(symbols)
+            result = {}
+            for _, row in filtered.iterrows():
+                code = str(row.get("代码", ""))
+                symbol = code
+                for s in symbols:
+                    clean = re.sub(r"^(sh|sz|SH|SZ)", "", str(s)).strip()
+                    if clean == code:
+                        symbol = s
+                        break
+                result[symbol] = {
+                    "symbol": symbol,
+                    "market": "A",
+                    "name": str(row.get("名称", "")),
+                    "price": safe_float(row.get("最新价"), 0),
+                    "change_pct": safe_float(row.get("涨跌幅"), 0),
+                    "change": safe_float(row.get("涨跌额"), 0),
+                    "volume": safe_float(row.get("成交量"), 0),
+                    "amount": safe_float(row.get("成交额"), 0),
+                    "high": safe_float(row.get("最高"), 0),
+                    "low": safe_float(row.get("最低"), 0),
+                    "open": safe_float(row.get("今开"), 0),
+                    "last_close": safe_float(row.get("昨收"), 0),
+                    "turnover_rate": safe_float(row.get("换手率"), 0),
+                    "timestamp": time.time(),
+                }
+            await rt_cache.set(cache_key, result, CACHE_TTL["realtime_batch"])
+            return result
+        except Exception as e:
+            logger.debug("Batch realtime optimized error: %s", e)
+            return await self.get_realtime_batch(symbols)
+
+    async def get_sector_heatmap(self) -> dict:
+        from core.async_utils import sector_cache, CACHE_TTL
+        cache_key = "sector_heatmap"
+        cached = await sector_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            if ak is None:
+                return {"items": [], "timestamp": time.time()}
+            df = await asyncio.to_thread(ak.stock_board_industry_name_em)
+            if df is None or df.empty:
+                return {"items": [], "timestamp": time.time()}
+            items = []
+            for _, row in df.head(30).iterrows():
+                items.append({
+                    "name": str(row.get("板块名称", "")),
+                    "change_pct": safe_float(row.get("涨跌幅"), 0),
+                    "amount": safe_float(row.get("成交额"), 0),
+                    "leading_stock": str(row.get("领涨股票", "")),
+                    "leading_stock_change_pct": safe_float(row.get("领涨股票涨跌幅"), 0),
+                })
+            result = {"items": items, "timestamp": time.time()}
+            await sector_cache.set(cache_key, result, CACHE_TTL["sector_heatmap"])
+            return result
+        except Exception as e:
+            logger.debug("Sector heatmap error: %s", e)
+            return {"items": [], "timestamp": time.time()}
+
+    async def get_market_breadth(self) -> dict:
+        from core.async_utils import breadth_cache, CACHE_TTL
+        cache_key = "market_breadth"
+        cached = await breadth_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            if ak is None:
+                return {"up": 0, "down": 0, "flat": 0, "timestamp": time.time()}
+            df = await asyncio.to_thread(ak.stock_zh_a_spot_em)
+            if df is None or df.empty:
+                return {"up": 0, "down": 0, "flat": 0, "timestamp": time.time()}
+            if "涨跌幅" in df.columns:
+                pct = pd.to_numeric(df["涨跌幅"], errors="coerce").fillna(0)
+                up = int((pct > 0).sum())
+                down = int((pct < 0).sum())
+                flat = int((pct == 0).sum())
+            else:
+                up = down = flat = 0
+            result = {
+                "up": up,
+                "down": down,
+                "flat": flat,
+                "total": up + down + flat,
+                "up_ratio": round(up / max(up + down + flat, 1), 4),
+                "timestamp": time.time(),
+            }
+            await breadth_cache.set(cache_key, result, CACHE_TTL["market_breadth"])
+            return result
+        except Exception as e:
+            logger.debug("Market breadth error: %s", e)
+            return {"up": 0, "down": 0, "flat": 0, "timestamp": time.time()}
+
     async def refresh_hot_symbols_cache(self) -> None:
         global _hot_symbols_cache
         try:

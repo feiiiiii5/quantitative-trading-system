@@ -35,6 +35,26 @@ const NAV_ITEMS = [
     ),
   },
   {
+    to: '/risk',
+    label: '风险',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+        <path d="M12 8v4m0 4h.01" />
+      </svg>
+    ),
+  },
+  {
+    to: '/terminal',
+    label: '终端',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <polyline points="4 17 10 11 4 5" />
+        <line x1="12" y1="19" x2="20" y2="19" />
+      </svg>
+    ),
+  },
+  {
     to: '/about',
     label: '关于',
     icon: (

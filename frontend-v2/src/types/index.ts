@@ -15,11 +15,14 @@ export interface StockQuote {
   change_pct: number;
   volume: number;
   amount: number;
+  pe?: number;
+  pb?: number;
   turnover?: number;
   open?: number;
   high?: number;
   low?: number;
   close?: number;
+  sector?: string;
 }
 
 export interface IndexQuote {
@@ -49,28 +52,6 @@ export interface BacktestResult {
   trades: Array<Record<string, unknown>>;
 }
 
-export interface PortfolioSummary {
-  total_positions: number;
-  total_value: number;
-  avg_change_pct: number;
-  positions: Array<{
-    symbol: string;
-    name: string;
-    price: number;
-    change_pct: number;
-  }>;
-}
-
-export interface NewsItem {
-  title: string;
-  source: string;
-  time: string;
-  url: string;
-  sentiment?: number;
-  sentiment_label?: string;
-  related_symbols?: string[];
-}
-
 export interface SectorData {
   name: string;
   change_pct: number;
@@ -85,4 +66,61 @@ export interface MarketOverview {
   flat_count: number;
   total_amount: number;
   north_flow?: number;
+}
+
+export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+export interface RiskAlert {
+  id: string;
+  level: RiskLevel;
+  message: string;
+  value: number;
+  timestamp: number;
+}
+
+export interface RiskMetrics {
+  riskLevel: RiskLevel;
+  var95: number;
+  cvar: number;
+  maxDrawdown: number;
+  sharpe: number;
+  beta: number;
+  riskDecomposition: Array<{ source: string; contribution: number }>;
+  correlationMatrix: { labels: string[]; values: number[][] };
+  historicalVol: number[];
+  impliedVol: number[];
+  volDates: string[];
+}
+
+export interface OrderBookEntry {
+  price: number;
+  quantity: number;
+  orders: number;
+}
+
+export interface TradeRecord {
+  id: string;
+  price: number;
+  quantity: number;
+  amount: number;
+  direction: 'BUY' | 'SELL';
+  time: string;
+}
+
+export interface ExecutionStats {
+  vwap: number;
+  twap: number;
+  avgSlippage: number;
+  fillRate: number;
+}
+
+export type SignalAction = 'BUY' | 'SELL' | 'HOLD';
+
+export interface SignalItem {
+  symbol: string;
+  name: string;
+  action: SignalAction;
+  change_pct: number;
+  confidence?: number;
+  reason?: string;
 }

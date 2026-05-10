@@ -36,7 +36,9 @@ from api.auth import APIAuthMiddleware
 from api.backtest_routes import backtest_router
 from api.duckdb_routes import duckdb_router
 from api.feature_routes import feature_router
+from api.perf_routes import perf_router
 from api.routes import _manager, push_portfolio_metrics, push_realtime_data, router
+from core.async_utils import FastJSONResponse
 from core.config import get_config
 from core.logger import setup_logger
 from core.memory_guard import get_memory_usage, is_memory_critical, is_memory_pressure
@@ -182,6 +184,9 @@ async def lifespan(app: FastAPI):
     app.state.backtest_engine = BacktestEngine()
     app.state.trading = SimulatedTrading()
     app.state.start_time = time.time()
+
+    from api.websocket_manager import OptimizedWSManager
+    app.state.ws_manager = OptimizedWSManager()
 
     try:
         from api.auth import ensure_default_user
@@ -492,6 +497,7 @@ app = FastAPI(
     title="QuantCore",
     version="3.0.0",
     lifespan=lifespan,
+    default_response_class=FastJSONResponse,
     description="""
 ## QuantCore - Quantitative Trading System
 
@@ -640,6 +646,7 @@ app.include_router(router, prefix="/api")
 app.include_router(backtest_router, prefix="/api")
 app.include_router(feature_router, prefix="/api")
 app.include_router(duckdb_router, prefix="/api")
+app.include_router(perf_router, prefix="/api")
 
 
 @app.get("/api/health")
@@ -689,6 +696,23 @@ async def health_check():
         cache_info["realtime"] = _rt_cache.stats()
         cache_info["kline"] = _kline_cache.stats()
         cache_info["analysis"] = _analysis_cache.stats()
+    except Exception:
+        pass
+    try:
+        from core.async_utils import (
+            rt_cache,
+            kline_cache,
+            sector_cache,
+            overview_cache,
+            breadth_cache,
+            backtest_result_cache,
+        )
+        cache_info["rt_cache"] = rt_cache.stats()
+        cache_info["kline_cache"] = kline_cache.stats()
+        cache_info["sector_cache"] = sector_cache.stats()
+        cache_info["overview_cache"] = overview_cache.stats()
+        cache_info["breadth_cache"] = breadth_cache.stats()
+        cache_info["backtest_result_cache"] = backtest_result_cache.stats()
     except Exception:
         pass
 

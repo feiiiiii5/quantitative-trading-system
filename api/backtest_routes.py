@@ -28,7 +28,24 @@ _BACKTEST_CACHE_TTL = 300.0
 _BACKTEST_CACHE_MAX = 1000
 
 
+def _sanitize_numpy(obj):
+    if isinstance(obj, dict):
+        return {k: _sanitize_numpy(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_numpy(v) for v in obj]
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return _sanitize_numpy(obj.tolist())
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    return obj
+
+
 def _compressed_response(data: dict) -> Response:
+    data = _sanitize_numpy(data)
     json_bytes = json_dumps(data).encode("utf-8")
     if len(json_bytes) > _COMPRESS_THRESHOLD:
         compressed = zlib.compress(json_bytes, level=6)
@@ -231,33 +248,102 @@ async def run_backtest(
     request: Request,
     body: BacktestRunRequest,
 ):
-    try:
+    cache_key = "%s:%s:%s:%s" % (body.symbol, body.strategy_type, body.start_date, body.end_date)
+    cached_entry = _backtest_result_cache.get(cache_key)
+    if cached_entry is not None:
+        ts, cached_data = cached_entry
+        if time.monotonic() - ts < _BACKTEST_CACHE_TTL:
+            return _compressed_response({"success": True, "data": cached_data, "cached": True})
+
+    from core.async_utils import backtest_result_cache, CACHE_TTL
+    bt_cached = await backtest_result_cache.get(cache_key)
+    if bt_cached is not None:
+        return _compressed_response({"success": True, "data": bt_cached, "cached": True})
+
+    fetcher = request.app.state.fetcher
+    df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
+    if df is None or df.empty:
+        return _json_response(False, error=f"无法获取 {body.symbol} 的历史数据")
+
+    result = await _run_single_or_adaptive(body.strategy_type, body.symbol, body.start_date, body.end_date, body.initial_capital, df)
+
+    if isinstance(result, dict) and "error" in result:
+        return _json_response(False, error=result["error"])
+
+    if len(_backtest_result_cache) >= _BACKTEST_CACHE_MAX:
+        oldest_key = min(_backtest_result_cache, key=lambda k: _backtest_result_cache[k][0])
+        del _backtest_result_cache[oldest_key]
+    _backtest_result_cache[cache_key] = (time.monotonic(), result)
+    await backtest_result_cache.set(cache_key, result, CACHE_TTL["backtest_result"])
+
+    return _compressed_response({"success": True, "data": result})
+
+
+@backtest_router.post("/backtest/run/stream")
+async def run_backtest_stream(
+    request: Request,
+    body: BacktestRunRequest,
+):
+    async def generate():
         cache_key = "%s:%s:%s:%s" % (body.symbol, body.strategy_type, body.start_date, body.end_date)
-        cached_entry = _backtest_result_cache.get(cache_key)
-        if cached_entry is not None:
-            ts, cached_data = cached_entry
-            if time.monotonic() - ts < _BACKTEST_CACHE_TTL:
-                return _compressed_response({"success": True, "data": cached_data, "cached": True})
+        from core.async_utils import backtest_result_cache, CACHE_TTL
+        bt_cached = await backtest_result_cache.get(cache_key)
+        if bt_cached is not None:
+            yield f"data: {json_dumps({'type': 'result', 'data': bt_cached, 'cached': True})}\n\n"
+            return
+
+        yield f"data: {json_dumps({'type': 'log', 'message': 'Fetching historical data...'})}\n\n"
 
         fetcher = request.app.state.fetcher
         df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
-            return _json_response(False, error=f"无法获取 {body.symbol} 的历史数据")
+            yield f"data: {json_dumps({'type': 'error', 'message': f'无法获取 {body.symbol} 的历史数据'})}\n\n"
+            return
 
-        result = await _run_single_or_adaptive(body.strategy_type, body.symbol, body.start_date, body.end_date, body.initial_capital, df)
+        yield f"data: {json_dumps({'type': 'log', 'message': f'Loaded {len(df)} bars, running backtest...'})}\n\n"
 
-        if "error" in result:
-            return _json_response(False, error=result["error"])
+        loop = asyncio.get_running_loop()
+        result_queue: asyncio.Queue = asyncio.Queue()
 
-        if len(_backtest_result_cache) >= _BACKTEST_CACHE_MAX:
-            oldest_key = min(_backtest_result_cache, key=lambda k: _backtest_result_cache[k][0])
-            del _backtest_result_cache[oldest_key]
-        _backtest_result_cache[cache_key] = (time.monotonic(), result)
+        def progress_callback(msg: str):
+            loop.call_soon_threadsafe(result_queue.put_nowait, {"type": "log", "message": msg})
 
-        return _compressed_response({"success": True, "data": result})
-    except Exception as e:
-        logger.error("backtest run error: %s", e, exc_info=True)
-        return _json_response(False, error=safe_error(e))
+        def run_backtest_sync():
+            try:
+                import pandas as pd
+                from core.backtest import run_backtest as run_bt
+                work_df = df.copy()
+                if "date" in work_df.columns:
+                    work_df["date"] = pd.to_datetime(work_df["date"], errors="coerce")
+                    work_df = work_df.dropna(subset=["date"])
+                    work_df = work_df[(work_df["date"] >= body.start_date) & (work_df["date"] <= body.end_date)].reset_index(drop=True)
+                result = run_bt(body.symbol, body.strategy_type, body.start_date, body.end_date, body.initial_capital, None, work_df)
+                loop.call_soon_threadsafe(result_queue.put_nowait, {"type": "result", "data": result})
+            except Exception as e:
+                loop.call_soon_threadsafe(result_queue.put_nowait, {"type": "error", "message": str(e)})
+
+        future = loop.run_in_executor(None, run_backtest_sync)
+
+        while True:
+            try:
+                msg = await asyncio.wait_for(result_queue.get(), timeout=120.0)
+                yield f"data: {json_dumps(msg)}\n\n"
+                if msg.get("type") in ("result", "error"):
+                    break
+            except asyncio.TimeoutError:
+                yield f"data: {json_dumps({'type': 'error', 'message': 'Backtest timeout'})}\n\n"
+                break
+
+        await future
+
+        try:
+            result_data = msg.get("data", {})
+            if msg.get("type") == "result" and result_data:
+                await backtest_result_cache.set(cache_key, _sanitize_numpy(result_data), CACHE_TTL["backtest_result"])
+        except Exception:
+            pass
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @backtest_router.get("/backtest/result/{task_id}")

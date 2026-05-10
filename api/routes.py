@@ -672,6 +672,12 @@ _manager = ConnectionManager()
 
 _api_response_cache = ThreadSafeLRU(maxsize=10000, ttl=90)
 
+_WS_SEND_TIMEOUT = 1.0
+
+
+async def _safe_ws_send(ws: WebSocket, msg: str) -> None:
+    await asyncio.wait_for(ws.send_text(msg), timeout=_WS_SEND_TIMEOUT)
+
 _MAX_PUSH_SYMBOLS = 30
 
 _PRIORITY_POSITION = "position"
@@ -5440,21 +5446,30 @@ async def push_realtime_data(fetcher: SmartDataFetcher):
                 _symbol_priority.pop(s, None)
 
             quotes_data = {}
-            for symbol in list(subscribed)[:_MAX_PUSH_SYMBOLS]:
+            subscribed_list = list(subscribed)[:_MAX_PUSH_SYMBOLS]
+            now = time.time()
+            fetch_tasks = []
+            fetch_symbols = []
+            for symbol in subscribed_list:
                 priority = _classify_symbol_priority(symbol)
                 interval = _PRIORITY_INTERVALS.get(priority, 10)
                 last_push = _symbol_last_push.get(symbol, 0)
                 if now - last_push < interval:
                     continue
-                try:
-                    rt = await fetcher.get_realtime(symbol)
+                fetch_tasks.append(fetcher.get_realtime(symbol))
+                fetch_symbols.append(symbol)
+            if fetch_tasks:
+                results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+                for symbol, result in zip(fetch_symbols, results):
+                    if isinstance(result, Exception):
+                        logger.debug("Push quote fetch failed for %s: %s", symbol, result)
+                        continue
+                    rt = result
                     if rt:
                         price_str = f"{rt.get('price', 0)}_{rt.get('change_pct', 0)}"
                         if price_str != last_quote_hash_snapshot.get(symbol, ""):
                             quotes_data[symbol] = rt
                             _symbol_last_push[symbol] = now
-                except Exception as e:
-                    logger.debug("Push quote fetch failed for %s: %s", symbol, e)
 
             await _check_price_alerts(quotes_data)
 
@@ -5478,9 +5493,10 @@ async def push_realtime_data(fetcher: SmartDataFetcher):
                         "mean_value": sa.mean_value,
                         "std_value": sa.std_value,
                     })
-                    for ws in (await _manager.get_connections_snapshot()):
-                        with contextlib.suppress(Exception):
-                            await ws.send_text(msg)
+                    connections = await _manager.get_connections_snapshot()
+                    if connections:
+                        tasks = [_safe_ws_send(ws, msg) for ws in connections]
+                        await asyncio.gather(*tasks, return_exceptions=True)
 
             msg_data: dict = {}
             async with _push_state_lock:
@@ -5522,15 +5538,15 @@ async def push_realtime_data(fetcher: SmartDataFetcher):
 
             if msg_data:
                 msg_str = _build_message("quote_update", msg_data)
-                disconnected = []
-                for ws in (await _manager.get_connections_snapshot()):
-                    try:
-                        await ws.send_text(msg_str)
-                    except Exception as e:
-                        logger.debug("WebSocket send failed: %s", e)
-                        disconnected.append(ws)
-                for ws in disconnected:
-                    await _manager.disconnect(ws)
+                connections = await _manager.get_connections_snapshot()
+                if connections:
+                    send_tasks = []
+                    for ws in connections:
+                        send_tasks.append(_safe_ws_send(ws, msg_str))
+                    results = await asyncio.gather(*send_tasks, return_exceptions=True)
+                    dead = [ws for ws, r in zip(connections, results) if isinstance(r, Exception)]
+                    for ws in dead:
+                        await _manager.disconnect(ws)
 
             await asyncio.sleep(2)
         except Exception as e:

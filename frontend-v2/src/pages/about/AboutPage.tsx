@@ -9,21 +9,28 @@ export function AboutPage() {
     {
       title: 'REAL-TIME DATA',
       subtitle: '实时数据引擎',
-      desc: '全市场行情实时推送，覆盖A股/港股/美股，毫秒级数据更新，六大指数同步监控，板块热力图全景展示',
+      desc: '全市场行情实时推送，覆盖A股/港股/美股，毫秒级数据更新，六大指数同步监控，板块热力图全景展示，WebSocket无轮询',
       icon: icons.chart,
     },
     {
       title: 'STRATEGY ENGINE',
       subtitle: '策略引擎',
-      desc: '39种量化策略，支持任意股票任意时间段回测，终端日志风格运行状态，净值曲线与回撤可视化',
+      desc: '39种量化策略，支持任意股票任意时间段回测，终端日志风格运行状态，净值曲线与回撤可视化，Canvas高效渲染',
       icon: icons.gear,
     },
     {
       title: 'RISK CONTROL',
       subtitle: '风控系统',
-      desc: '组合风险分析，VaR/CVaR计算，相关性矩阵，风险贡献度分解，实时监控与预警',
+      desc: '组合风险分析，VaR/CVaR计算，相关性矩阵，风险贡献度分解，实时监控与预警，一键风控急停(KillSwitch)',
       icon: icons.shield,
     },
+  ];
+
+  const infoLayers = [
+    { level: 'L1', name: '决策层', route: '/', desc: '3秒内获取收益/风险/仓位/市场状态/AI建议', color: '#C9A96E' },
+    { level: 'L2', name: '分析层', route: '/risk', desc: '因子分析/Alpha分解/波动率/风险暴露/相关性矩阵', color: '#6B8FB5' },
+    { level: 'L3', name: '执行层', route: '/terminal', desc: 'OrderBook/成交队列/滑点/VWAP/TWAP/执行质量/TCA', color: '#4E9E6E' },
+    { level: 'L4', name: '系统层', route: '/', desc: '数据源健康度/API状态/系统延迟/策略节点状态', color: '#9B7DB8' },
   ];
 
   const features = [
@@ -217,6 +224,65 @@ export function AboutPage() {
             fontWeight: 400,
             margin: '0 0 48px',
           }}>
+            四层信息架构
+          </h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
+            {infoLayers.map(layer => (
+              <div key={layer.level} style={{
+                ...cardBase,
+                padding: '24px',
+                borderTop: `2px solid ${layer.color}`,
+              }}>
+                <div style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: '10px',
+                  color: layer.color,
+                  letterSpacing: '0.1em',
+                  marginBottom: '4px',
+                }}>
+                  {layer.level}
+                </div>
+                <div style={{
+                  fontFamily: "'Cormorant Garamond', serif",
+                  fontSize: '18px',
+                  color: '#F0EBE3',
+                  fontWeight: 500,
+                  marginBottom: '12px',
+                }}>
+                  {layer.name}
+                </div>
+                <div style={{
+                  fontFamily: "system-ui, -apple-system, sans-serif",
+                  fontSize: '12px',
+                  color: '#5E5854',
+                  lineHeight: 1.6,
+                }}>
+                  {layer.desc}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section style={{ padding: '80px 0' }}>
+        <div style={{ maxWidth: '960px', margin: '0 auto', padding: '0 24px' }}>
+          <div style={{
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: '10px',
+            color: '#C9A96E',
+            letterSpacing: '0.1em',
+            marginBottom: '8px',
+          }}>
+            03
+          </div>
+          <h2 style={{
+            fontFamily: "'Cormorant Garamond', serif",
+            fontSize: '32px',
+            color: '#F0EBE3',
+            fontWeight: 400,
+            margin: '0 0 48px',
+          }}>
             产品特性
           </h2>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
@@ -271,7 +337,7 @@ export function AboutPage() {
             letterSpacing: '0.1em',
             marginBottom: '8px',
           }}>
-            03
+            04
           </div>
           <h2 style={{
             fontFamily: "'Cormorant Garamond', serif",
@@ -332,7 +398,7 @@ export function AboutPage() {
             letterSpacing: '0.1em',
             marginBottom: '8px',
           }}>
-            04
+            05
           </div>
           <h2 style={{
             fontFamily: "'Cormorant Garamond', serif",
