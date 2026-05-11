@@ -200,7 +200,7 @@ const PortfolioDashboardPanel = memo(function PortfolioDashboardPanel() {
   if (!data) return null;
 
   if (!('risk_metrics' in data)) {
-    const positions = (data as unknown as Array<{ symbol: string; name: string; price: number; change_pct: number; market: string }>);
+    const positions = data as Array<{ symbol: string; name: string; price: number; change_pct: number; market: string }>;
     if (positions.length === 0) {
       return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 120, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>暂无持仓数据</div>;
     }
@@ -278,20 +278,8 @@ const PortfolioDashboardPanel = memo(function PortfolioDashboardPanel() {
   );
 });
 
-const MarketBreadthPanel = memo(function MarketBreadthPanel() {
-  const [data, setData] = useState<MarketOverviewData | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    apiGet<MarketOverviewData>('/market/overview').then(d => {
-      if (!cancelled) { setData(d); setLoading(false); }
-    }).catch(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, []);
-
-  if (loading) return <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>LOADING...</span></div>;
-  if (!data?.market_breadth) return null;
+const MarketBreadthPanel = memo(function MarketBreadthPanel({ data }: { data: MarketOverviewData | null }) {
+  if (!data?.market_breadth) return <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>NO DATA</span></div>;
 
   const { up, down, flat } = data.market_breadth;
   const total = up + down + flat;
@@ -325,20 +313,8 @@ const MarketBreadthPanel = memo(function MarketBreadthPanel() {
   );
 });
 
-const GlobalIndicesPanel = memo(function GlobalIndicesPanel() {
-  const [data, setData] = useState<MarketOverviewData | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    apiGet<MarketOverviewData>('/market/overview').then(d => {
-      if (!cancelled) { setData(d); setLoading(false); }
-    }).catch(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, []);
-
-  if (loading) return <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>LOADING...</span></div>;
-  if (!data) return null;
+const GlobalIndicesPanel = memo(function GlobalIndicesPanel({ data }: { data: MarketOverviewData | null }) {
+  if (!data) return <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>NO DATA</span></div>;
 
   const allIndices = [
     ...Object.entries(data.cn_indices ?? {}).map(([k, v]) => ({ ...v, code: k })),
@@ -615,6 +591,28 @@ const SignalList = memo(function SignalList({ signals }: { signals: SignalItem[]
           </div>
         </div>
       ))}
+      <div style={{
+        padding: '8px var(--s5)',
+        borderTop: '1px solid var(--separator)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+      }}>
+        <span style={{
+          fontFamily: 'var(--font-mono)',
+          fontSize: 9,
+          padding: '2px 6px',
+          borderRadius: 'var(--r-xs)',
+          background: 'rgba(255,145,0,0.12)',
+          color: 'var(--orange)',
+          letterSpacing: '0.04em',
+        }}>
+          ⚠
+        </span>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--label-quaternary)', letterSpacing: '0.03em' }}>
+          Client-derived signals — verify T-1 alignment
+        </span>
+      </div>
     </div>
   );
 });
@@ -688,6 +686,7 @@ export function DashboardPage() {
   const watchlistSymbols = useWatchlistStore(s => s.symbols);
   const [displayIndices, setDisplayIndices] = useState<IndexQuote[]>(DEFAULT_INDICES);
   const [signals, setSignals] = useState<SignalItem[]>([]);
+  const [marketData, setMarketData] = useState<MarketOverviewData | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -698,6 +697,14 @@ export function DashboardPage() {
     load();
     return () => { cancelled = true; };
   }, [fetchIndices, fetchStocks, fetchSectors, fetchBreadth]);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiGet<MarketOverviewData>('/market/overview').then(d => {
+      if (!cancelled) setMarketData(d);
+    }).catch(() => { /* silent */ });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (indices.length > 0) setDisplayIndices(indices);
@@ -751,7 +758,7 @@ export function DashboardPage() {
           </div>
           <div style={{ ...GLASS_PANEL }}>
             <div style={SECTION_LABEL}>市场广度</div>
-            <MarketBreadthPanel />
+            <MarketBreadthPanel data={marketData} />
           </div>
         </div>
 
@@ -784,7 +791,7 @@ export function DashboardPage() {
       <div style={{ padding: '0 24px 24px' }}>
         <div style={{ ...GLASS_PANEL, display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div style={SECTION_LABEL}>全球指数</div>
-          <GlobalIndicesPanel />
+          <GlobalIndicesPanel data={marketData} />
         </div>
       </div>
 

@@ -2,6 +2,18 @@ import { create } from 'zustand';
 import { apiGet } from '@/api/client';
 import type { StrategyInfo, BacktestResult } from '@/types';
 
+export function isBacktestResult(x: unknown): x is BacktestResult {
+  if (typeof x !== 'object' || x === null) return false;
+  const obj = x as Record<string, unknown>;
+  return (
+    typeof obj.total_return === 'number' &&
+    typeof obj.annual_return === 'number' &&
+    typeof obj.sharpe_ratio === 'number' &&
+    typeof obj.max_drawdown === 'number' &&
+    Array.isArray(obj.equity_curve)
+  );
+}
+
 type CategorizedStrategies = Record<string, StrategyInfo[]>;
 
 interface StrategyState {
@@ -127,9 +139,9 @@ export const useStrategyStore = create<StrategyState>((set, get) => ({
               if (parsed.type === 'log' && typeof parsed.message === 'string') {
                 addLog(parsed.message);
               } else if (parsed.type === 'result' && parsed.data) {
-                set({ backtestResult: parsed.data as BacktestResult });
+                if (isBacktestResult(parsed.data)) set({ backtestResult: parsed.data });
               } else if (parsed.total_trades !== undefined) {
-                set({ backtestResult: parsed as BacktestResult });
+                if (isBacktestResult(parsed)) set({ backtestResult: parsed });
               }
             } catch {
               addLog(payload);
@@ -147,9 +159,9 @@ export const useStrategyStore = create<StrategyState>((set, get) => ({
           try {
             const parsed = JSON.parse(payload);
             if (parsed.type === 'result' && parsed.data) {
-              set({ backtestResult: parsed.data as BacktestResult });
+              if (isBacktestResult(parsed.data)) set({ backtestResult: parsed.data });
             } else if (parsed.total_trades !== undefined) {
-              set({ backtestResult: parsed as BacktestResult });
+              if (isBacktestResult(parsed)) set({ backtestResult: parsed });
             }
           } catch {
             addLog(payload);

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { apiGet } from '@/api/client';
+import { dedup } from '@/utils/dedup';
 import type { StockQuote, IndexQuote, SectorData, BreadthData } from '@/types';
 
 interface MarketState {
@@ -30,8 +31,10 @@ export const useMarketStore = create<MarketState>((set, get) => ({
   loading: false,
 
   fetchIndices: async () => {
+    const { wsConnected } = get();
+    if (wsConnected) return;
     try {
-      const data = await apiGet<Record<string, unknown>>('/market/overview');
+      const data = await dedup('market:overview', () => apiGet<Record<string, unknown>>('/market/overview'));
       const cnIndices = (data?.cn_indices ?? {}) as Record<string, IndexQuote>;
       const northbound = data?.northbound as Record<string, unknown> | undefined;
       const northFlow = northbound && typeof northbound === 'object' && 'net_inflow' in northbound
@@ -49,9 +52,14 @@ export const useMarketStore = create<MarketState>((set, get) => ({
   },
 
   fetchStocks: async () => {
+    const { wsConnected } = get();
+    if (wsConnected) {
+      set({ loading: false });
+      return;
+    }
     set({ loading: true });
     try {
-      const data = await apiGet<StockQuote[]>('/market/stocks');
+      const data = await dedup('market:stocks', () => apiGet<StockQuote[]>('/market/stocks'));
       set({ stocks: Array.isArray(data) ? data : [], loading: false });
     } catch {
       set({ stocks: [], loading: false });

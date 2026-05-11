@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { apiGet } from '@/api/client';
+import { dedup } from '@/utils/dedup';
 import type { RiskLevel, RiskAlert, RiskMetrics } from '@/types';
 
 interface RiskState {
@@ -48,7 +49,7 @@ export const useRiskStore = create<RiskState>((set) => ({
   resetKillSwitch: () => set({ killSwitchActive: false }),
   fetchMetrics: async () => {
     try {
-      const data = await apiGet<RiskMetrics>('/risk/metrics');
+      const data = await dedup('risk:metrics', () => apiGet<RiskMetrics>('/risk/metrics'));
       if (data) set({
         metrics: data,
         riskLevel: data.riskLevel,

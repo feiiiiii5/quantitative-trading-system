@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 
 interface VirtualScrollOptions {
   itemCount: number;
@@ -8,14 +8,32 @@ interface VirtualScrollOptions {
 
 export function useVirtualScroll({ itemCount, itemHeight, overscan = 5 }: VirtualScrollOptions) {
   const [scrollTop, setScrollTop] = useState(0);
+  const [containerHeight, setContainerHeight] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    setContainerHeight(el.clientHeight);
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerHeight(entry.contentRect.height);
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const totalHeight = itemCount * itemHeight;
 
-  const startIdx = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
-  const endIdx = Math.min(itemCount, Math.ceil((scrollTop + (containerRef.current?.clientHeight ?? 600)) / itemHeight) + overscan);
+  const startIdx = containerHeight === 0
+    ? 0
+    : Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
+  const endIdx = containerHeight === 0
+    ? 0
+    : Math.min(itemCount, Math.ceil((scrollTop + containerHeight) / itemHeight) + overscan);
 
-  const visibleItems = Array.from({ length: endIdx - startIdx }, (_, i) => startIdx + i);
+  const visibleItems = containerHeight === 0 ? [] : Array.from({ length: endIdx - startIdx }, (_, i) => startIdx + i);
 
   const onScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     setScrollTop(e.currentTarget.scrollTop);

@@ -52,6 +52,10 @@ export interface BacktestResult {
   total_trades: number;
   equity_curve: Array<{ date: string; value: number }>;
   trades: Array<Record<string, unknown>>;
+  walk_forward?: Array<{ period: string; is_return: number; oos_return: number }>;
+  benchmark_curve?: Array<{ date: string; value: number }>;
+  confidence_upper?: number[];
+  confidence_lower?: number[];
 }
 
 export interface SectorData {

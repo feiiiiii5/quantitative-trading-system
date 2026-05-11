@@ -434,10 +434,21 @@ const BacktestHistoryPanel = memo(function BacktestHistoryPanel() {
   );
 });
 
-const EquityCanvas = memo(function EquityCanvas({ data, showDrawdown }: { data: Array<{ date: string; value: number }>; showDrawdown: boolean }) {
+const REGIME_COLORS: Record<string, string> = {
+  BULL: 'rgba(255,23,68,0.04)',
+  BEAR: 'rgba(0,200,83,0.04)',
+  VOLATILE: 'rgba(255,145,0,0.05)',
+  CHOP: 'transparent',
+};
+
+const EquityCanvas = memo(function EquityCanvas({ data, showDrawdown, benchmarkCurve, confidenceUpper, confidenceLower, regimeHistory }: { data: Array<{ date: string; value: number }>; showDrawdown: boolean; benchmarkCurve?: Array<{ date: string; value: number }>; confidenceUpper?: number[]; confidenceLower?: number[]; regimeHistory?: Array<{ start: string; end: string; regime: 'BULL' | 'BEAR' | 'CHOP' | 'VOLATILE' }> }) {
   const draw = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
     if (data.length < 2) return;
     const pad = { top: 20, right: 20, bottom: 32, left: 20 };
+    const sharpeRatio = 0.22;
+    const mainH = (h - pad.top - pad.bottom) * (1 - sharpeRatio);
+    const sharpeH = (h - pad.top - pad.bottom) * sharpeRatio;
+    const sharpeTop = pad.top + mainH + 4;
     const values = data.map(d => d.value);
     const minVal = Math.min(...values);
     const maxVal = Math.max(...values);
@@ -447,11 +458,72 @@ const EquityCanvas = memo(function EquityCanvas({ data, showDrawdown }: { data: 
     ctx.strokeStyle = 'rgba(255,255,255,0.06)';
     ctx.lineWidth = 1;
     for (let i = 0; i <= 4; i++) {
-      const y = pad.top + (i / 4) * (h - pad.top - pad.bottom);
+      const y = pad.top + (i / 4) * mainH;
       ctx.beginPath();
       ctx.moveTo(pad.left, y);
       ctx.lineTo(w - pad.right, y);
       ctx.stroke();
+    }
+
+    if (regimeHistory && regimeHistory.length > 0) {
+      const chartW = w - pad.left - pad.right;
+      const startDate = data[0]?.date;
+      const endDate = data[data.length - 1]?.date;
+      if (startDate && endDate) {
+        const startTs = new Date(startDate).getTime();
+        const endTs = new Date(endDate).getTime();
+        const totalRange = endTs - startTs || 1;
+        for (const period of regimeHistory) {
+          const color = REGIME_COLORS[period.regime];
+          if (color === 'transparent') continue;
+          const pStart = new Date(period.start).getTime();
+          const pEnd = new Date(period.end).getTime();
+          const x1 = pad.left + Math.max(0, (pStart - startTs) / totalRange) * chartW;
+          const x2 = pad.left + Math.min(1, (pEnd - startTs) / totalRange) * chartW;
+          ctx.fillStyle = color;
+          ctx.fillRect(x1, pad.top, x2 - x1, mainH);
+        }
+      }
+    }
+
+    if (confidenceUpper && confidenceLower && confidenceUpper.length === values.length) {
+      const bandMin = Math.min(...confidenceLower);
+      const bandMax = Math.max(...confidenceUpper);
+      const bandRange = bandMax - bandMin || 1;
+      ctx.beginPath();
+      for (let i = 0; i < values.length; i++) {
+        const x = pad.left + (i / (values.length - 1)) * (w - pad.left - pad.right);
+        const y = pad.top + (1 - (confidenceUpper[i]! - bandMin) / bandRange) * mainH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      for (let i = values.length - 1; i >= 0; i--) {
+        const x = pad.left + (i / (values.length - 1)) * (w - pad.left - pad.right);
+        const y = pad.top + (1 - (confidenceLower[i]! - bandMin) / bandRange) * mainH;
+        ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(10,132,255,0.07)';
+      ctx.fill();
+    }
+
+    if (benchmarkCurve && benchmarkCurve.length > 1) {
+      const bmValues = benchmarkCurve.map(d => d.value);
+      const bmMin = Math.min(...bmValues);
+      const bmMax = Math.max(...bmValues);
+      const bmRange = bmMax - bmMin || 1;
+      ctx.beginPath();
+      for (let i = 0; i < bmValues.length; i++) {
+        const x = pad.left + (i / (bmValues.length - 1)) * (w - pad.left - pad.right);
+        const y = pad.top + (1 - (bmValues[i]! - bmMin) / bmRange) * mainH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     const isPositive = values[values.length - 1]! >= values[0]!;
@@ -459,17 +531,17 @@ const EquityCanvas = memo(function EquityCanvas({ data, showDrawdown }: { data: 
     const fillTop = isPositive ? 'rgba(255,23,68,0.10)' : 'rgba(0,200,83,0.10)';
     const fillBot = isPositive ? 'rgba(255,23,68,0)' : 'rgba(0,200,83,0)';
 
-    const gradient = ctx.createLinearGradient(0, pad.top, 0, h - pad.bottom);
+    const gradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + mainH);
     gradient.addColorStop(0, fillTop);
     gradient.addColorStop(1, fillBot);
     ctx.beginPath();
-    ctx.moveTo(pad.left, h - pad.bottom);
+    ctx.moveTo(pad.left, pad.top + mainH);
     for (let i = 0; i < values.length; i++) {
       const x = pad.left + (i / (values.length - 1)) * (w - pad.left - pad.right);
-      const y = pad.top + (1 - (values[i]! - minVal) / range) * (h - pad.top - pad.bottom);
+      const y = pad.top + (1 - (values[i]! - minVal) / range) * mainH;
       ctx.lineTo(x, y);
     }
-    ctx.lineTo(pad.left + (w - pad.left - pad.right), h - pad.bottom);
+    ctx.lineTo(pad.left + (w - pad.left - pad.right), pad.top + mainH);
     ctx.closePath();
     ctx.fillStyle = gradient;
     ctx.fill();
@@ -477,7 +549,7 @@ const EquityCanvas = memo(function EquityCanvas({ data, showDrawdown }: { data: 
     ctx.beginPath();
     for (let i = 0; i < values.length; i++) {
       const x = pad.left + (i / (values.length - 1)) * (w - pad.left - pad.right);
-      const y = pad.top + (1 - (values[i]! - minVal) / range) * (h - pad.top - pad.bottom);
+      const y = pad.top + (1 - (values[i]! - minVal) / range) * mainH;
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
@@ -492,21 +564,79 @@ const EquityCanvas = memo(function EquityCanvas({ data, showDrawdown }: { data: 
         return (v - peak) / peak;
       });
       const ddMin = Math.min(...drawdowns);
-      const ddGradient = ctx.createLinearGradient(0, pad.top, 0, h - pad.bottom);
+      const ddGradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + mainH);
       ddGradient.addColorStop(0, 'rgba(0,200,83,0)');
       ddGradient.addColorStop(1, 'rgba(0,200,83,0.08)');
       ctx.beginPath();
-      const baseline = pad.top + (1 - 0) * (h - pad.top - pad.bottom);
+      const baseline = pad.top + (1 - 0) * mainH;
       ctx.moveTo(pad.left, baseline);
       for (let i = 0; i < drawdowns.length; i++) {
         const x = pad.left + (i / (drawdowns.length - 1)) * (w - pad.left - pad.right);
-        const y = pad.top + (1 - drawdowns[i]! / ddMin) * (h - pad.top - pad.bottom) * 0.3 + baseline * 0.7;
+        const y = pad.top + (1 - drawdowns[i]! / ddMin) * mainH * 0.3 + baseline * 0.7;
         ctx.lineTo(x, y);
       }
       ctx.lineTo(pad.left + (w - pad.left - pad.right), baseline);
       ctx.closePath();
       ctx.fillStyle = ddGradient;
       ctx.fill();
+    }
+
+    const window = 60;
+    const returns = values.slice(1).map((v, i) => (v - values[i]!) / values[i]!);
+    const rollingSharpe: number[] = [];
+    for (let i = 0; i < returns.length; i++) {
+      if (i < window - 1) { rollingSharpe.push(0); continue; }
+      const slice = returns.slice(i - window + 1, i + 1);
+      const mean = slice.reduce((a, b) => a + b, 0) / slice.length;
+      const std = Math.sqrt(slice.reduce((a, b) => a + (b - mean) ** 2, 0) / slice.length);
+      rollingSharpe.push(std > 0 ? (mean / std) * Math.sqrt(252) : 0);
+    }
+
+    if (rollingSharpe.length > 1) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pad.left, sharpeTop);
+      ctx.lineTo(w - pad.right, sharpeTop);
+      ctx.stroke();
+
+      const srMax = Math.max(Math.max(...rollingSharpe), 2);
+      const srMin = Math.min(Math.min(...rollingSharpe), -1);
+      const srRange = srMax - srMin || 1;
+
+      const sr1Y = sharpeTop + (1 - (1 - srMin) / srRange) * sharpeH;
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(pad.left, sr1Y);
+      ctx.lineTo(w - pad.right, sr1Y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.font = '8px SF Mono, JetBrains Mono, monospace';
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.textAlign = 'left';
+      ctx.fillText('SR=1', pad.left + 2, sr1Y - 2);
+
+      ctx.beginPath();
+      for (let i = 0; i < rollingSharpe.length; i++) {
+        const x = pad.left + ((i + 1) / (values.length - 1)) * (w - pad.left - pad.right);
+        const y = sharpeTop + (1 - (rollingSharpe[i]! - srMin) / srRange) * sharpeH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.lineWidth = 1.5;
+      for (let i = 1; i < rollingSharpe.length; i++) {
+        const x0 = pad.left + (i / (values.length - 1)) * (w - pad.left - pad.right);
+        const x1 = pad.left + ((i + 1) / (values.length - 1)) * (w - pad.left - pad.right);
+        const y0 = sharpeTop + (1 - (rollingSharpe[i - 1]! - srMin) / srRange) * sharpeH;
+        const y1 = sharpeTop + (1 - (rollingSharpe[i]! - srMin) / srRange) * sharpeH;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.strokeStyle = rollingSharpe[i]! > 1 ? '#00C853' : rollingSharpe[i]! > 0 ? '#FF9100' : '#FF1744';
+        ctx.stroke();
+      }
     }
 
     const dateLabels = [0, Math.floor(values.length / 4), Math.floor(values.length / 2), Math.floor(values.length * 3 / 4), values.length - 1];
@@ -518,10 +648,36 @@ const EquityCanvas = memo(function EquityCanvas({ data, showDrawdown }: { data: 
       ctx.fillStyle = 'rgba(255,255,255,0.20)';
       ctx.fillText(dateStr, x, h - 8);
     }
-  }, [data, showDrawdown]);
 
-  const { ref } = useCanvas(draw, [data, showDrawdown]);
-  return <canvas ref={ref} style={{ width: '100%', height: 320 }} />;
+    if (benchmarkCurve && benchmarkCurve.length > 1) {
+      const legendX = w - pad.right - 160;
+      const legendY = pad.top + 8;
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.beginPath();
+      ctx.roundRect(legendX, legendY, 155, 38, 6);
+      ctx.fill();
+
+      ctx.fillStyle = lineColor;
+      ctx.fillRect(legendX + 8, legendY + 8, 16, 3);
+      ctx.font = '9px SF Mono, JetBrains Mono, monospace';
+      ctx.fillStyle = 'rgba(255,255,255,0.6)';
+      ctx.textAlign = 'left';
+      ctx.fillText('Strategy', legendX + 30, legendY + 13);
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(legendX + 8, legendY + 26);
+      ctx.lineTo(legendX + 24, legendY + 26);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillText('Benchmark', legendX + 30, legendY + 29);
+    }
+  }, [data, showDrawdown, benchmarkCurve, confidenceUpper, confidenceLower, regimeHistory]);
+
+  const { ref } = useCanvas(draw, [data, showDrawdown, benchmarkCurve, confidenceUpper, confidenceLower, regimeHistory]);
+  return <canvas ref={ref} style={{ width: '100%', height: 420 }} />;
 });
 
 const TradeTable = memo(function TradeTable({ trades }: { trades: Array<Record<string, unknown>> }) {
@@ -582,7 +738,144 @@ const TradeTable = memo(function TradeTable({ trades }: { trades: Array<Record<s
   );
 });
 
-const BacktestResults = memo(function BacktestResults({ result, showDrawdown, onToggleDrawdown, onBack }: { result: BacktestResult; showDrawdown: boolean; onToggleDrawdown: () => void; onBack: () => void }) {
+const BiasAuditPanel = memo(function BiasAuditPanel({ result }: { result: BacktestResult }) {
+  const suspicious = result.sharpe_ratio > 2.5 || result.win_rate > 0.68 || result.total_return > 2.0;
+  if (!suspicious && !result.walk_forward) return null;
+
+  return (
+    <div style={{
+      background: 'rgba(255,145,0,0.06)',
+      border: '1px solid rgba(255,145,0,0.20)',
+      borderRadius: 'var(--r-md)',
+      padding: '16px 20px',
+      marginBottom: 24,
+    }}>
+      {suspicious && (
+        <div style={{
+          fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--orange)',
+          marginBottom: result.walk_forward ? 16 : 0, lineHeight: 1.6,
+        }}>
+          ⚠ Results may reflect look-ahead bias or overfitting. Validate with walk-forward analysis.
+        </div>
+      )}
+      {result.walk_forward && result.walk_forward.length > 0 && (
+        <div>
+          <div style={{
+            fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase',
+            letterSpacing: '0.08em', color: 'var(--label-tertiary)', marginBottom: 10,
+          }}>
+            WALK-FORWARD AUDIT
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {result.walk_forward.map((wf, i) => {
+              const isOverfit = wf.is_return > wf.oos_return * 1.5 && wf.oos_return < wf.is_return * 0.5;
+              return (
+                <div key={i} style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '4px 0',
+                }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--label-tertiary)', width: 80 }}>
+                    {wf.period}
+                  </span>
+                  <div style={{ flex: 1, display: 'flex', gap: 4, alignItems: 'center' }}>
+                    <div style={{
+                      width: `${Math.min(Math.abs(wf.is_return) * 100, 100)}%`,
+                      height: 8,
+                      background: 'var(--accent)',
+                      borderRadius: 'var(--r-xs)',
+                      minWidth: 4,
+                    }} />
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--label-tertiary)', width: 50, fontVariantNumeric: 'tabular-nums' }}>
+                      IS {(wf.is_return * 100).toFixed(1)}%
+                    </span>
+                    <div style={{
+                      width: `${Math.min(Math.abs(wf.oos_return) * 100, 100)}%`,
+                      height: 8,
+                      background: wf.oos_return >= 0 ? 'var(--green)' : 'var(--red)',
+                      borderRadius: 'var(--r-xs)',
+                      minWidth: 4,
+                    }} />
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--label-tertiary)', width: 50, fontVariantNumeric: 'tabular-nums' }}>
+                      OOS {(wf.oos_return * 100).toFixed(1)}%
+                    </span>
+                    {isOverfit && (
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--red)', letterSpacing: '0.04em' }}>
+                        OVERFIT
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+const TransactionCostPanel = memo(function TransactionCostPanel({ result, commissionRate, slippage, initialCapital }: { result: BacktestResult; commissionRate: number; slippage: number; initialCapital: number }) {
+  const commissions = result.total_trades * initialCapital * commissionRate * 2;
+  const slippageCost = result.total_trades * initialCapital * slippage * 2;
+  const totalFriction = commissions + slippageCost;
+  const frictionDrag = totalFriction / initialCapital;
+  const grossReturn = result.total_return + frictionDrag;
+
+  return (
+    <div style={{
+      background: 'var(--bg-elevated)',
+      borderRadius: 'var(--r-md)',
+      border: '1px solid var(--separator)',
+      overflow: 'hidden',
+      marginTop: 24,
+    }}>
+      <div style={{
+        padding: '12px 20px',
+        borderBottom: '1px solid var(--separator)',
+        fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase',
+        letterSpacing: '0.08em', color: 'var(--label-secondary)',
+      }}>
+        TRANSACTION COST IMPACT
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr>
+            {['Item', 'Cost', 'Drag'].map(h => (
+              <th key={h} style={{
+                padding: '8px 16px', textAlign: 'left',
+                fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase',
+                letterSpacing: '0.06em', color: 'var(--label-tertiary)',
+                borderBottom: '1px solid var(--separator)',
+              }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          <tr style={{ borderBottom: '1px solid var(--separator)' }}>
+            <td style={{ padding: '8px 16px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--label-primary)' }}>Commissions</td>
+            <td style={{ padding: '8px 16px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--label-secondary)', fontVariantNumeric: 'tabular-nums' }}>¥{commissions.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}</td>
+            <td style={{ padding: '8px 16px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--orange)', fontVariantNumeric: 'tabular-nums' }}>{(frictionDrag * 100).toFixed(2)}%</td>
+          </tr>
+          <tr style={{ borderBottom: '1px solid var(--separator)' }}>
+            <td style={{ padding: '8px 16px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--label-primary)' }}>Slippage</td>
+            <td style={{ padding: '8px 16px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--label-secondary)', fontVariantNumeric: 'tabular-nums' }}>¥{slippageCost.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}</td>
+            <td style={{ padding: '8px 16px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--orange)', fontVariantNumeric: 'tabular-nums' }}>{(slippageCost / initialCapital * 100).toFixed(2)}%</td>
+          </tr>
+          <tr style={{ fontWeight: 600 }}>
+            <td style={{ padding: '8px 16px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--label-primary)' }}>Total Friction</td>
+            <td style={{ padding: '8px 16px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--label-primary)', fontVariantNumeric: 'tabular-nums' }}>¥{totalFriction.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}</td>
+            <td style={{ padding: '8px 16px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--red)', fontVariantNumeric: 'tabular-nums' }}>{(frictionDrag * 100).toFixed(2)}%</td>
+          </tr>
+        </tbody>
+      </table>
+      <div style={{ padding: '10px 16px', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--label-tertiary)', borderTop: '1px solid var(--separator)' }}>
+        Gross return: {(grossReturn * 100).toFixed(2)}% → Net return: {(result.total_return * 100).toFixed(2)}% after friction
+      </div>
+    </div>
+  );
+});
+
+const BacktestResults = memo(function BacktestResults({ result, showDrawdown, onToggleDrawdown, onBack, commissionRate, slippage, initialCapital }: { result: BacktestResult; showDrawdown: boolean; onToggleDrawdown: () => void; onBack: () => void; commissionRate: number; slippage: number; initialCapital: number }) {
   const metrics: Array<[string, string, string]> = [
     ['TOTAL RETURN', formatRatio(result.total_return), result.total_return >= 0 ? '#FF1744' : '#00C853'],
     ['ANNUAL RETURN', formatRatio(result.annual_return), result.annual_return >= 0 ? '#FF1744' : '#00C853'],
@@ -621,6 +914,7 @@ const BacktestResults = memo(function BacktestResults({ result, showDrawdown, on
           </div>
         ))}
       </div>
+      <BiasAuditPanel result={result} />
       {result.equity_curve && result.equity_curve.length > 0 && (
         <div style={{ background: 'var(--bg-elevated)', borderRadius: 'var(--r-md)', overflow: 'hidden' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px', borderBottom: '1px solid var(--separator)' }}>
@@ -641,13 +935,14 @@ const BacktestResults = memo(function BacktestResults({ result, showDrawdown, on
             </button>
           </div>
           <div style={{ padding: '8px 4px 4px' }}>
-            <EquityCanvas data={result.equity_curve} showDrawdown={showDrawdown} />
+            <EquityCanvas data={result.equity_curve} showDrawdown={showDrawdown} benchmarkCurve={result.benchmark_curve} confidenceUpper={result.confidence_upper} confidenceLower={result.confidence_lower} />
           </div>
         </div>
       )}
       {result.trades && result.trades.length > 0 && (
         <TradeTable trades={result.trades} />
       )}
+      <TransactionCostPanel result={result} commissionRate={commissionRate} slippage={slippage} initialCapital={initialCapital} />
     </div>
   );
 });
@@ -759,6 +1054,7 @@ export function StrategyPage() {
   const [commissionRate, setCommissionRate] = useState('0.0003');
   const [slippage, setSlippage] = useState('0.001');
   const [leverage, setLeverage] = useState('1');
+  const [executionDelay, setExecutionDelay] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ BASIC: true, PRO: true, EXPERT: true });
   const [factorData, setFactorData] = useState<FactorInfo[] | null>(null);
   const [paramSpecs, setParamSpecs] = useState<Record<string, ParamSpec> | null>(null);
@@ -1047,6 +1343,22 @@ export function StrategyPage() {
                   <label style={labelStyle}>LEVERAGE</label>
                   <input value={leverage} onChange={e => setLeverage(e.target.value)} style={inputStyle} />
                 </div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+                  <input
+                    type="checkbox"
+                    checked={executionDelay}
+                    onChange={e => setExecutionDelay(e.target.checked)}
+                    style={{ accentColor: 'var(--accent)', width: 14, height: 14 }}
+                  />
+                  <div>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--label-primary)' }}>
+                      Enforce T+1 execution delay
+                    </span>
+                    <span style={{ display: 'block', fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--label-quaternary)', marginTop: 2 }}>
+                      Prevents same-bar fill bias
+                    </span>
+                  </div>
+                </label>
               </div>
             )}
           </div>
@@ -1127,7 +1439,7 @@ export function StrategyPage() {
             <span style={{ opacity: cursorVisible ? 1 : 0, transition: 'opacity 100ms' }}>▌</span>
           </div>
         ) : backtestResult ? (
-          <BacktestResults result={backtestResult} showDrawdown={showDrawdown} onToggleDrawdown={toggleDrawdown} onBack={handleBackFromResults} />
+          <BacktestResults result={backtestResult} showDrawdown={showDrawdown} onToggleDrawdown={toggleDrawdown} onBack={handleBackFromResults} commissionRate={Number(commissionRate)} slippage={Number(slippage)} initialCapital={Number(capital)} />
         ) : factorData ? (
           factorTab === 'registry' ? <FactorRegistryPanel factors={factorData} /> :
           factorTab === 'alpha' ? <AlphaFactorPanel /> :

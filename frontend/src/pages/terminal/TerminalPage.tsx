@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef, memo } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import { useCanvas } from '@/hooks/useCanvas';
 import { useTerminalStore } from '@/stores/terminal';
 import { useRiskStore } from '@/stores/risk';
@@ -35,62 +35,123 @@ const OrderBookCanvas = memo(function OrderBookCanvas({ bids, asks }: { bids: Or
       ctx.fillText('NO DATA', w / 2, h / 2);
       return;
     }
-    const maxQty = Math.max(
-      ...bids.map((b) => b.quantity),
-      ...asks.map((b) => b.quantity),
+
+    const cumulativeBids: number[] = [];
+    const cumulativeAsks: number[] = [];
+    let sum = 0;
+    for (const b of bids) { sum += b.quantity; cumulativeBids.push(sum); }
+    sum = 0;
+    for (const a of asks) { sum += a.quantity; cumulativeAsks.push(sum); }
+
+    const maxCumulative = Math.max(
+      cumulativeBids[cumulativeBids.length - 1] ?? 1,
+      cumulativeAsks[cumulativeAsks.length - 1] ?? 1,
       1,
     );
-    const padding = { left: 72, right: 64, top: 8, bottom: 8 };
-    const rowHeight = (h - padding.top - padding.bottom - 22) / 20;
+
+    const padding = { left: 72, right: 64, top: 8, bottom: 32 };
+    const midGap = 22;
+    const rowHeight = (h - padding.top - padding.bottom - midGap) / 20;
     const barMaxWidth = w - padding.left - padding.right;
 
     for (let i = 0; i < 10; i++) {
       const y = padding.top + i * rowHeight;
       const ask = asks[i];
       if (!ask) continue;
-      const barW = (ask.quantity / maxQty) * barMaxWidth;
+      const cumQty = cumulativeAsks[i] ?? 0;
+      const barW = (cumQty / maxCumulative) * barMaxWidth;
+      const isBest = i === 0;
 
-      ctx.fillStyle = 'rgba(255,23,68,0.15)';
+      ctx.fillStyle = isBest ? 'rgba(255,23,68,0.25)' : 'rgba(255,23,68,0.12)';
       ctx.fillRect(padding.left, y, barW, rowHeight - 2);
 
-      ctx.font = '11px SF Mono, JetBrains Mono, monospace';
-      ctx.fillStyle = '#FF1744';
+      ctx.font = isBest ? 'bold 14px SF Mono, JetBrains Mono, monospace' : '11px SF Mono, JetBrains Mono, monospace';
+      ctx.fillStyle = isBest ? '#FF1744' : 'rgba(255,23,68,0.75)';
       ctx.textAlign = 'right';
       ctx.fillText(formatPrice(ask.price), padding.left - 8, y + rowHeight * 0.72);
       ctx.textAlign = 'left';
-      ctx.fillStyle = 'rgba(255,255,255,0.55)';
-      ctx.fillText(String(ask.quantity), padding.left + barW + 6, y + rowHeight * 0.72);
+      ctx.fillStyle = isBest ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.45)';
+      ctx.fillText(String(cumQty), padding.left + barW + 6, y + rowHeight * 0.72);
     }
 
     const spreadY = padding.top + 10 * rowHeight;
-    ctx.font = '10px SF Mono, JetBrains Mono, monospace';
-    ctx.fillStyle = '#0A84FF';
-    ctx.textAlign = 'center';
     const firstAsk = asks[0];
     const firstBid = bids[0];
     if (firstAsk && firstBid) {
       const spread = firstAsk.price - firstBid.price;
       const midPrice = (firstAsk.price + firstBid.price) / 2;
       const spreadPct = midPrice !== 0 ? ((spread / midPrice) * 100).toFixed(2) : '0.00';
-      ctx.fillText(`SPREAD: ${spread.toFixed(2)} (${spreadPct}%)`, w / 2, spreadY + 14);
+
+      const pillW = 120;
+      const pillH = 18;
+      const pillX = (w - pillW) / 2;
+      const pillY = spreadY + (midGap - pillH) / 2;
+      ctx.fillStyle = 'rgba(10,132,255,0.12)';
+      ctx.beginPath();
+      ctx.roundRect(pillX, pillY, pillW, pillH, 9);
+      ctx.fill();
+      ctx.font = '10px SF Mono, JetBrains Mono, monospace';
+      ctx.fillStyle = '#0A84FF';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${midPrice.toFixed(2)}`, w / 2, pillY + 13);
+
+      ctx.font = '9px SF Mono, JetBrains Mono, monospace';
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.textAlign = 'center';
+      ctx.fillText(`SPREAD ${spread.toFixed(2)} (${spreadPct}%)`, w / 2, spreadY + midGap - 1);
     }
 
     for (let i = 0; i < 10; i++) {
-      const y = spreadY + 22 + i * rowHeight;
+      const y = spreadY + midGap + i * rowHeight;
       const bid = bids[i];
       if (!bid) continue;
-      const barW = (bid.quantity / maxQty) * barMaxWidth;
+      const cumQty = cumulativeBids[i] ?? 0;
+      const barW = (cumQty / maxCumulative) * barMaxWidth;
+      const isBest = i === 0;
 
-      ctx.fillStyle = 'rgba(0,200,83,0.15)';
+      ctx.fillStyle = isBest ? 'rgba(0,200,83,0.25)' : 'rgba(0,200,83,0.12)';
       ctx.fillRect(padding.left, y, barW, rowHeight - 2);
 
-      ctx.font = '11px SF Mono, JetBrains Mono, monospace';
-      ctx.fillStyle = '#00C853';
+      ctx.font = isBest ? 'bold 14px SF Mono, JetBrains Mono, monospace' : '11px SF Mono, JetBrains Mono, monospace';
+      ctx.fillStyle = isBest ? '#00C853' : 'rgba(0,200,83,0.75)';
       ctx.textAlign = 'right';
       ctx.fillText(formatPrice(bid.price), padding.left - 8, y + rowHeight * 0.72);
       ctx.textAlign = 'left';
-      ctx.fillStyle = 'rgba(255,255,255,0.55)';
-      ctx.fillText(String(bid.quantity), padding.left + barW + 6, y + rowHeight * 0.72);
+      ctx.fillStyle = isBest ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.45)';
+      ctx.fillText(String(cumQty), padding.left + barW + 6, y + rowHeight * 0.72);
+    }
+
+    const totalBid = cumulativeBids[cumulativeBids.length - 1] ?? 0;
+    const totalAsk = cumulativeAsks[cumulativeAsks.length - 1] ?? 0;
+    const total = totalBid + totalAsk;
+    if (total > 0) {
+      const imbalance = (totalBid - totalAsk) / total;
+      const barY = h - padding.bottom + 8;
+      const barH = 6;
+      const barW = w - padding.left - padding.right;
+      const midX = padding.left + barW / 2;
+
+      ctx.fillStyle = 'rgba(255,255,255,0.04)';
+      ctx.fillRect(padding.left, barY, barW, barH);
+
+      const imbalanceW = Math.abs(imbalance) * (barW / 2);
+      if (imbalance >= 0) {
+        ctx.fillStyle = Math.abs(imbalance) > 0.3 ? 'rgba(255,23,68,0.6)' : 'rgba(255,23,68,0.3)';
+        ctx.fillRect(midX, barY, imbalanceW, barH);
+      } else {
+        ctx.fillStyle = Math.abs(imbalance) > 0.3 ? 'rgba(0,200,83,0.6)' : 'rgba(0,200,83,0.3)';
+        ctx.fillRect(midX - imbalanceW, barY, imbalanceW, barH);
+      }
+
+      ctx.font = '8px SF Mono, JetBrains Mono, monospace';
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.textAlign = 'left';
+      ctx.fillText('BID', padding.left, barY + barH + 10);
+      ctx.textAlign = 'right';
+      ctx.fillText('ASK', padding.left + barW, barY + barH + 10);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = Math.abs(imbalance) > 0.3 ? 'var(--orange)' : 'rgba(255,255,255,0.35)';
+      ctx.fillText(`PRESSURE ${(imbalance * 100).toFixed(0)}%`, midX, barY + barH + 10);
     }
   }, [bids, asks]);
 
@@ -199,24 +260,53 @@ const QuickOrderPanel = memo(function QuickOrderPanel() {
   const [price, setPrice] = useState('12.50');
   const [quantity, setQuantity] = useState(0);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [direction, setDirection] = useState<'BUY' | 'SELL'>('BUY');
+  const [sizeAck, setSizeAck] = useState(false);
+  const { killSwitchActive } = useRiskStore();
 
   const totalAmount = orderType === 'limit' ? +price * quantity : 0;
+  const changePct = 0;
+  const SIZE_LIMIT = 5_000_000;
+
+  const preTradeChecks = useMemo(() => {
+    const checks: Array<{ id: string; level: 'block' | 'warn'; message: string }> = [];
+    if (killSwitchActive) {
+      checks.push({ id: 'kill', level: 'block', message: 'Kill switch active — all trading disabled' });
+    }
+    if (totalAmount > SIZE_LIMIT) {
+      checks.push({ id: 'size', level: 'warn', message: `Single order exceeds ¥${(SIZE_LIMIT / 1e4).toFixed(0)}万 size limit` });
+    }
+    if (changePct > 9.8 && direction === 'BUY') {
+      checks.push({ id: 'limitup', level: 'warn', message: 'Limit-up — fill unlikely' });
+    }
+    if (changePct < -9.8 && direction === 'SELL') {
+      checks.push({ id: 'limitdown', level: 'warn', message: 'Limit-down — fill unlikely' });
+    }
+    return checks;
+  }, [killSwitchActive, totalAmount, changePct, direction]);
+
+  const hasBlock = preTradeChecks.some(c => c.level === 'block');
+  const hasWarn = preTradeChecks.some(c => c.level === 'warn');
 
   const handleQuantityAdd = useCallback((delta: number) => {
     setQuantity((prev) => Math.max(0, prev + delta));
   }, []);
 
   const handleSubmit = useCallback(() => {
+    if (hasBlock) return;
+    console.debug('[PRE-TRADE]', { symbol, direction, qty: quantity, price: +price, checks: preTradeChecks.map(c => c.id) });
     setShowConfirm(true);
-  }, []);
+  }, [hasBlock, symbol, direction, quantity, price, preTradeChecks]);
 
   const handleConfirm = useCallback(() => {
     setShowConfirm(false);
     setQuantity(0);
+    setSizeAck(false);
   }, []);
 
   const handleCancel = useCallback(() => {
     setShowConfirm(false);
+    setSizeAck(false);
   }, []);
 
   const inputStyle: React.CSSProperties = {
@@ -241,6 +331,45 @@ const QuickOrderPanel = memo(function QuickOrderPanel() {
         onChange={(e) => setSymbol(e.target.value)}
         placeholder="代码"
       />
+
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button
+          onClick={() => setDirection('BUY')}
+          style={{
+            flex: 1,
+            height: 32,
+            background: direction === 'BUY' ? 'var(--rise-bg)' : 'var(--bg-overlay)',
+            border: direction === 'BUY' ? '1px solid rgba(0,200,83,0.3)' : '1px solid var(--separator)',
+            borderRadius: 'var(--r-md)',
+            color: direction === 'BUY' ? 'var(--signal-rise)' : 'var(--label-tertiary)',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: 'pointer',
+            transition: 'all var(--dur-fast) var(--ease-apple)',
+          }}
+        >
+          BUY
+        </button>
+        <button
+          onClick={() => setDirection('SELL')}
+          style={{
+            flex: 1,
+            height: 32,
+            background: direction === 'SELL' ? 'var(--fall-bg)' : 'var(--bg-overlay)',
+            border: direction === 'SELL' ? '1px solid rgba(255,23,68,0.3)' : '1px solid var(--separator)',
+            borderRadius: 'var(--r-md)',
+            color: direction === 'SELL' ? 'var(--signal-fall)' : 'var(--label-tertiary)',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: 'pointer',
+            transition: 'all var(--dur-fast) var(--ease-apple)',
+          }}
+        >
+          SELL
+        </button>
+      </div>
 
       <div style={{ display: 'flex', gap: 8 }}>
         <button
@@ -340,26 +469,55 @@ const QuickOrderPanel = memo(function QuickOrderPanel() {
         </div>
       )}
 
+      {preTradeChecks.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {preTradeChecks.map((check) => (
+            <div
+              key={check.id}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '6px 12px',
+                background: check.level === 'block' ? 'rgba(255,23,68,0.08)' : 'rgba(255,171,0,0.08)',
+                border: `1px solid ${check.level === 'block' ? 'rgba(255,23,68,0.20)' : 'rgba(255,171,0,0.20)'}`,
+                borderRadius: 'var(--r-md)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 11,
+                color: check.level === 'block' ? '#FF1744' : '#FFAB00',
+              }}
+            >
+              <span style={{ fontWeight: 700, letterSpacing: '0.04em' }}>
+                {check.level === 'block' ? '⛔' : '⚠️'}
+              </span>
+              {check.message}
+            </div>
+          ))}
+        </div>
+      )}
+
       <button
         onClick={handleSubmit}
+        disabled={hasBlock}
         style={{
           width: '100%',
           height: 44,
-          background: 'var(--accent)',
+          background: hasBlock ? 'rgba(255,255,255,0.06)' : 'var(--accent)',
           border: 'none',
           borderRadius: 'var(--r-md)',
-          color: '#FFFFFF',
+          color: hasBlock ? 'var(--label-quaternary)' : '#FFFFFF',
           fontFamily: 'var(--font-sans)',
           fontSize: 14,
           fontWeight: 600,
-          cursor: 'pointer',
+          cursor: hasBlock ? 'not-allowed' : 'pointer',
           letterSpacing: '0.02em',
+          opacity: hasBlock ? 0.5 : 1,
           transition: 'opacity var(--dur-fast) var(--ease-apple)',
         }}
-        onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.85'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.opacity = '1'; }}
+        onMouseEnter={(e) => { if (!hasBlock) e.currentTarget.style.opacity = '0.85'; }}
+        onMouseLeave={(e) => { if (!hasBlock) e.currentTarget.style.opacity = '1'; }}
       >
-        SUBMIT
+        {hasBlock ? 'BLOCKED' : 'SUBMIT'}
       </button>
 
       {showConfirm && (
@@ -396,20 +554,51 @@ const QuickOrderPanel = memo(function QuickOrderPanel() {
             <span style={{ fontFamily: 'var(--font-sans)', fontSize: 18, color: 'var(--label-primary)', fontWeight: 600 }}>
               确认下单？
             </span>
+            {hasWarn && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, width: '100%' }}>
+                {preTradeChecks.filter(c => c.level === 'warn').map(check => (
+                  <div key={check.id} style={{
+                    padding: '8px 12px',
+                    background: 'rgba(255,171,0,0.08)',
+                    border: '1px solid rgba(255,171,0,0.20)',
+                    borderRadius: 'var(--r-md)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 11,
+                    color: '#FFAB00',
+                  }}>
+                    ⚠️ {check.message}
+                  </div>
+                ))}
+                {totalAmount > SIZE_LIMIT && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+                    <input
+                      type="checkbox"
+                      checked={sizeAck}
+                      onChange={e => setSizeAck(e.target.checked)}
+                      style={{ accentColor: 'var(--accent)' }}
+                    />
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--label-secondary)' }}>
+                      I acknowledge the size risk
+                    </span>
+                  </label>
+                )}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 16 }}>
               <button
                 onClick={handleConfirm}
+                disabled={hasWarn && !sizeAck}
                 style={{
                   width: 100,
                   height: 40,
-                  background: 'var(--accent)',
+                  background: (hasWarn && !sizeAck) ? 'rgba(255,255,255,0.06)' : 'var(--accent)',
                   border: 'none',
                   borderRadius: 'var(--r-md)',
-                  color: '#FFFFFF',
+                  color: (hasWarn && !sizeAck) ? 'var(--label-quaternary)' : '#FFFFFF',
                   fontFamily: 'var(--font-sans)',
                   fontSize: 13,
                   fontWeight: 600,
-                  cursor: 'pointer',
+                  cursor: (hasWarn && !sizeAck) ? 'not-allowed' : 'pointer',
                   transition: 'opacity var(--dur-fast) var(--ease-apple)',
                 }}
               >

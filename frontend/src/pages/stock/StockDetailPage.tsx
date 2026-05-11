@@ -1342,6 +1342,160 @@ const KlineChart = memo(function KlineChart({ symbol }: { symbol: string }) {
   return <div ref={containerRef} style={{ width: '100%', height: '480px' }} />;
 });
 
+interface IndicatorData {
+  macd?: Array<{ time: string; macd: number; signal: number; histogram: number }>;
+  rsi?: Array<{ time: string; value: number }>;
+}
+
+const IndicatorPanel = memo(function IndicatorPanel({ symbol }: { symbol: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [data, setData] = useState<IndicatorData>({});
+  const macdContainerRef = useRef<HTMLDivElement>(null);
+  const rsiContainerRef = useRef<HTMLDivElement>(null);
+  const macdChartRef = useRef<IChartApi | null>(null);
+  const rsiChartRef = useRef<IChartApi | null>(null);
+
+  useEffect(() => {
+    if (!expanded) return;
+    let cancelled = false;
+    apiGet<IndicatorData>('/market/indicators', { symbol, indicators: 'macd,rsi' })
+      .then(d => { if (!cancelled) setData(d ?? {}); })
+      .catch(() => { /* indicators optional */ });
+    return () => { cancelled = true; };
+  }, [symbol, expanded]);
+
+  useEffect(() => {
+    if (!expanded || !data.macd?.length) return;
+    if (!macdContainerRef.current) return;
+
+    if (macdChartRef.current) { macdChartRef.current.remove(); macdChartRef.current = null; }
+
+    const chart = createChart(macdContainerRef.current, {
+      width: macdContainerRef.current.clientWidth,
+      height: 140,
+      layout: { background: { color: 'transparent' as const }, textColor: 'rgba(255,255,255,0.30)' },
+      grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.04)' } },
+      rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)' },
+      timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: false },
+    });
+    macdChartRef.current = chart;
+
+    const macdLine = chart.addSeries(CandlestickSeries, {
+      color: '#0A84FF',
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    } as never);
+    const signalLine = chart.addSeries(CandlestickSeries, {
+      color: '#FF9100',
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    } as never);
+    const histSeries = chart.addSeries(HistogramSeries, {
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
+    const macdData = data.macd.map(d => ({ time: d.time as Time, value: d.macd }));
+    const signalData = data.macd.map(d => ({ time: d.time as Time, value: d.signal }));
+    const histData = data.macd.map(d => ({
+      time: d.time as Time,
+      value: d.histogram,
+      color: d.histogram >= 0 ? 'rgba(255,23,68,0.4)' : 'rgba(0,200,83,0.4)',
+    }));
+
+    (macdLine as unknown as { setData: (d: unknown[]) => void }).setData(macdData);
+    (signalLine as unknown as { setData: (d: unknown[]) => void }).setData(signalData);
+    histSeries.setData(histData);
+    chart.timeScale().fitContent();
+
+    const onResize = () => {
+      if (macdContainerRef.current) chart.applyOptions({ width: macdContainerRef.current.clientWidth });
+    };
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      chart.remove();
+      macdChartRef.current = null;
+    };
+  }, [expanded, data.macd]);
+
+  useEffect(() => {
+    if (!expanded || !data.rsi?.length) return;
+    if (!rsiContainerRef.current) return;
+
+    if (rsiChartRef.current) { rsiChartRef.current.remove(); rsiChartRef.current = null; }
+
+    const chart = createChart(rsiContainerRef.current, {
+      width: rsiContainerRef.current.clientWidth,
+      height: 120,
+      layout: { background: { color: 'transparent' as const }, textColor: 'rgba(255,255,255,0.30)' },
+      grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.04)' } },
+      rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)' },
+      timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: false },
+    });
+    rsiChartRef.current = chart;
+
+    const rsiLine = chart.addSeries(CandlestickSeries, {
+      color: '#0A84FF',
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    } as never);
+
+    const rsiData = data.rsi.map(d => ({ time: d.time as Time, value: d.value }));
+    (rsiLine as unknown as { setData: (d: unknown[]) => void }).setData(rsiData);
+    chart.timeScale().fitContent();
+
+    const onResize = () => {
+      if (rsiContainerRef.current) chart.applyOptions({ width: rsiContainerRef.current.clientWidth });
+    };
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      chart.remove();
+      rsiChartRef.current = null;
+    };
+  }, [expanded, data.rsi]);
+
+  return (
+    <div style={{ borderTop: '1px solid var(--separator)' }}>
+      <button
+        onClick={() => setExpanded(v => !v)}
+        style={{
+          width: '100%',
+          padding: '8px 16px',
+          background: 'transparent',
+          border: 'none',
+          color: 'var(--label-tertiary)',
+          fontFamily: 'var(--font-mono)',
+          fontSize: 10,
+          textTransform: 'uppercase' as const,
+          letterSpacing: '0.08em',
+          cursor: 'pointer',
+          textAlign: 'left' as const,
+          transition: 'color var(--dur-fast) var(--ease-apple)',
+        }}
+      >
+        {expanded ? '▾' : '▸'} MACD / RSI INDICATORS
+      </button>
+      {expanded && (
+        <div style={{ padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--label-quaternary)', marginBottom: 4, letterSpacing: '0.06em' }}>MACD</div>
+            <div ref={macdContainerRef} style={{ width: '100%', height: 140 }} />
+          </div>
+          <div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--label-quaternary)', marginBottom: 4, letterSpacing: '0.06em' }}>RSI</div>
+            <div ref={rsiContainerRef} style={{ width: '100%', height: 120 }} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
 function formatPePb(n: number | undefined | null): string {
   if (n === undefined || n === null || Number.isNaN(n) || !Number.isFinite(n)) return '—';
   return n.toFixed(2);
@@ -1629,7 +1783,12 @@ export function StockDetailPage() {
             ))}
           </div>
 
-          {activeTab === 'kline' && <KlineChart symbol={quote.symbol} />}
+          {activeTab === 'kline' && (
+            <>
+              <KlineChart symbol={quote.symbol} />
+              <IndicatorPanel symbol={quote.symbol} />
+            </>
+          )}
           {activeTab === 'moneyflow' && (
             <div style={{ padding: 'var(--s5)' }}>
               <MoneyFlowTab symbol={quote.symbol} />

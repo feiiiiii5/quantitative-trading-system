@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { apiGet } from '@/api/client';
+import { dedup } from '@/utils/dedup';
 import type { OrderBookEntry, TradeRecord, ExecutionStats } from '@/types';
 
 interface TerminalState {
@@ -27,13 +28,13 @@ export const useTerminalStore = create<TerminalState>((set) => ({
   setSelectedSymbol: (symbol) => set({ selectedSymbol: symbol }),
   fetchOrderBook: async (symbol) => {
     try {
-      const data = await apiGet<{ bids: OrderBookEntry[]; asks: OrderBookEntry[] }>('/terminal/orderbook', { symbol });
+      const data = await dedup(`terminal:orderbook:${symbol}`, () => apiGet<{ bids: OrderBookEntry[]; asks: OrderBookEntry[] }>('/terminal/orderbook', { symbol }));
       if (data) set({ orderBook: data });
     } catch { /* fallback handled by page */ }
   },
   fetchTrades: async (symbol) => {
     try {
-      const data = await apiGet<TradeRecord[]>('/terminal/trades', { symbol });
+      const data = await dedup(`terminal:trades:${symbol}`, () => apiGet<TradeRecord[]>('/terminal/trades', { symbol }));
       if (Array.isArray(data)) set({ trades: data.slice(0, 50) });
     } catch { /* fallback handled by page */ }
   },

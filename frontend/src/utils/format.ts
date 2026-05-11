@@ -21,17 +21,21 @@ export function formatPrice(n: number): string {
 
 export function formatVolume(n: number): string {
   if (Number.isNaN(n) || !Number.isFinite(n)) return '—';
-  if (n >= 1e8) return `${(n / 1e8).toFixed(2)}亿`;
-  if (n >= 1e4) return `${(n / 1e4).toFixed(2)}万`;
-  return n.toLocaleString();
+  const abs = Math.abs(n);
+  const sign = n < 0 ? '-' : '';
+  if (abs >= 1e8) return `${sign}${(abs / 1e8).toFixed(2)}亿`;
+  if (abs >= 1e4) return `${sign}${(abs / 1e4).toFixed(2)}万`;
+  return `${sign}${abs.toLocaleString()}`;
 }
 
 export function formatAmount(n: number): string {
   if (Number.isNaN(n) || !Number.isFinite(n)) return '—';
-  if (n >= 1e12) return `${(n / 1e12).toFixed(2)}万亿`;
-  if (n >= 1e8) return `${(n / 1e8).toFixed(2)}亿`;
-  if (n >= 1e4) return `${(n / 1e4).toFixed(2)}万`;
-  return n.toLocaleString();
+  const abs = Math.abs(n);
+  const sign = n < 0 ? '-' : '';
+  if (abs >= 1e12) return `${sign}${(abs / 1e12).toFixed(2)}万亿`;
+  if (abs >= 1e8) return `${sign}${(abs / 1e8).toFixed(2)}亿`;
+  if (abs >= 1e4) return `${sign}${(abs / 1e4).toFixed(2)}万`;
+  return `${sign}${abs.toLocaleString()}`;
 }
 
 export function priceColor(change: number): string {

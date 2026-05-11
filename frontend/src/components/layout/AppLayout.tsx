@@ -4,7 +4,12 @@ import { Sidebar } from '@/components/layout/Sidebar';
 import { Topbar } from '@/components/layout/Topbar';
 import { SearchModal } from '@/components/ui/SearchModal';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
+import { ToastContainer } from '@/components/ui/ToastContainer';
 import { useHotkeys } from '@/hooks/useHotkeys';
+import { wsManager } from '@/services/websocket';
+import { useMarketStore } from '@/stores/market';
+import { useToastStore } from '@/stores/toast';
+import type { WSMessage, QuoteMessage, IndexMessage } from '@/types/websocket';
 import '@/styles/base.css';
 
 function LayoutHotkeys({ onSearchOpen }: { onSearchOpen: () => void }) {
@@ -38,6 +43,44 @@ export const AppLayout = memo(function AppLayout() {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
+  useEffect(() => {
+    const wsUrl = `ws://${window.location.host}/ws/market`;
+    wsManager.connect(wsUrl);
+
+    const unsubQuote = wsManager.subscribe('quote', (msg) => {
+      const m = msg as QuoteMessage;
+      if (m.symbol) {
+        useMarketStore.getState().updateStock(m.symbol, m as Parameters<typeof useMarketStore.getState().updateStock>[1]);
+      }
+    });
+
+    const unsubIndex = wsManager.subscribe('index', (msg) => {
+      const m = msg as IndexMessage;
+      if (m.data) {
+        useMarketStore.getState().updateIndices(m.data);
+      }
+    });
+
+    const unsubConn = wsManager.onConnectionChange((connected) => {
+      useMarketStore.getState().setWsConnected(connected);
+      if (!connected) {
+        useToastStore.getState().addToast({
+          type: 'warn',
+          title: 'WebSocket Disconnected',
+          body: 'Real-time data feed interrupted. Falling back to REST polling.',
+          duration: 5000,
+        });
+      }
+    });
+
+    return () => {
+      unsubQuote();
+      unsubIndex();
+      unsubConn();
+      wsManager.disconnect();
+    };
+  }, []);
+
   return (
     <div
       style={{
@@ -68,8 +111,9 @@ export const AppLayout = memo(function AppLayout() {
           }}
         >
           <ErrorBoundary>
-            <Outlet />
-          </ErrorBoundary>
+        <Outlet />
+      </ErrorBoundary>
+      <ToastContainer />
         </main>
       </div>
       <SearchModal open={searchOpen} onClose={onSearchClose} />

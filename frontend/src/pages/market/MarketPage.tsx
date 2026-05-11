@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, useRef, memo } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef, memo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi, type CandlestickData, type Time } from 'lightweight-charts';
 import { useMarketStore } from '@/stores/market';
@@ -1230,14 +1230,34 @@ export function MarketPage() {
     return result;
   }, [stocks, activeTab, filter, changeRangeIdx, sectorFilter]);
 
-  const sorted = useMemo(() => {
-    return [...filtered].sort((a, b) => {
-      const av = a[sortKey] ?? (typeof a[sortKey] === 'string' ? '' : 0);
-      const bv = b[sortKey] ?? (typeof b[sortKey] === 'string' ? '' : 0);
-      if (typeof av === 'string' && typeof bv === 'string') {
-        return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
-      }
-      return sortDir === 'asc' ? (av as number) - (bv as number) : (bv as number) - (av as number);
+  const [sorted, setSorted] = useState<StockQuote[]>([]);
+  const [sorting, setSorting] = useState(false);
+  const workerRef = useRef<Worker | null>(null);
+
+  useEffect(() => {
+    workerRef.current = new Worker(
+      new URL('@/workers/sortWorker.ts', import.meta.url),
+      { type: 'module' },
+    );
+    workerRef.current.onmessage = (e: MessageEvent<StockQuote[]>) => {
+      setSorted(e.data);
+      setSorting(false);
+    };
+    return () => {
+      workerRef.current?.terminate();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (filtered.length === 0) {
+      setSorted([]);
+      return;
+    }
+    setSorting(true);
+    workerRef.current?.postMessage({
+      items: filtered,
+      key: sortKey,
+      dir: sortDir,
     });
   }, [filtered, sortKey, sortDir]);
 

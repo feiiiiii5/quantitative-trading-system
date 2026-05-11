@@ -27,7 +27,11 @@ export function useCanvas(
     const onResize = () => redraw();
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
-  }, [redraw, ...deps]);
+  }, [redraw]);
+
+  useEffect(() => {
+    redraw();
+  }, deps);
 
   return { ref, redraw };
 }

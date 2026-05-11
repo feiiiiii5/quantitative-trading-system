@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, memo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiGet } from '@/api/client';
 import { formatPrice, formatPercent, priceColor } from '@/utils/format';
@@ -184,8 +184,25 @@ export const SearchModal = memo(function SearchModal({ open, onClose }: SearchMo
     [addToRecent, navigate, onClose],
   );
 
+  const grouped = useMemo(
+    () => results.length > 0 ? groupByMarket(results) : [],
+    [results],
+  );
+
+  const flattenedItems = useMemo(() => {
+    const items: Array<{ type: 'header'; group: string; flatIdx: number } | { type: 'stock'; stock: SearchResult; flatIdx: number }> = [];
+    let idx = 0;
+    for (const { group, items: stocks } of grouped) {
+      items.push({ type: 'header', group, flatIdx: idx++ });
+      for (const stock of stocks) {
+        items.push({ type: 'stock', stock, flatIdx: idx++ });
+      }
+    }
+    return items;
+  }, [grouped]);
+
   const flatCount = results.length > 0
-    ? results.length + groupByMarket(results).length
+    ? flattenedItems.length
     : recentSearches.length;
 
   useHotkeys(
@@ -195,10 +212,11 @@ export const SearchModal = memo(function SearchModal({ open, onClose }: SearchMo
           arrowdown: () => setSelectedIdx((i) => Math.min(i + 1, flatCount - 1)),
           arrowup: () => setSelectedIdx((i) => Math.max(i - 1, 0)),
           enter: () => {
-            const grouped = groupByMarket(results);
-            const offset = grouped.length;
-            if (results.length > 0 && results[selectedIdx - offset]) {
-              handleSelect(results[selectedIdx - offset]!.symbol);
+            if (results.length > 0) {
+              const item = flattenedItems.find(it => it.flatIdx === selectedIdx && it.type === 'stock');
+              if (item && item.type === 'stock') {
+                handleSelect(item.stock.symbol);
+              }
             } else if (recentSearches[selectedIdx]) {
               handleSelect(recentSearches[selectedIdx]!);
             }
@@ -234,9 +252,6 @@ export const SearchModal = memo(function SearchModal({ open, onClose }: SearchMo
   }, []);
 
   if (!open) return null;
-
-  const grouped = results.length > 0 ? groupByMarket(results) : [];
-  let flatIdx = 0;
 
   return (
     <div
@@ -425,99 +440,101 @@ export const SearchModal = memo(function SearchModal({ open, onClose }: SearchMo
             </div>
           )}
 
-          {grouped.map(({ group, items }) => (
-            <div key={group}>
-              <div
-                style={{
-                  padding: 'var(--s3) var(--s5) 6px',
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: '9px',
-                  color: 'var(--label-tertiary)',
-                  letterSpacing: '0.08em',
-                  textTransform: 'uppercase',
-                  borderTop: flatIdx > 0 ? '1px solid var(--separator)' : 'none',
-                }}
-              >
-                {group}
-              </div>
-              {items.map((stock) => {
-                const currentIdx = flatIdx++;
-                const hasPrice = stock.price !== undefined && stock.price > 0;
-                const isSel = currentIdx === selectedIdx;
-                return (
+          {flattenedItems.map((item) => {
+            if (item.type === 'header') {
+              return (
+                <div key={`header-${item.group}`}>
                   <div
-                    key={stock.symbol}
-                    data-selected={isSel}
                     style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      height: '48px',
-                      padding: '0 var(--s5)',
-                      gap: 'var(--s3)',
-                      background: isSel ? 'var(--accent-soft)' : 'transparent',
-                      borderLeft: isSel ? '3px solid var(--accent)' : '3px solid transparent',
-                      cursor: 'pointer',
-                      transition: 'background var(--dur-fast) var(--ease-apple), border-color var(--dur-fast) var(--ease-apple)',
+                      padding: 'var(--s3) var(--s5) 6px',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '9px',
+                      color: 'var(--label-tertiary)',
+                      letterSpacing: '0.08em',
+                      textTransform: 'uppercase',
+                      borderTop: item.flatIdx > 0 ? '1px solid var(--separator)' : 'none',
                     }}
-                    onMouseEnter={() => setSelectedIdx(currentIdx)}
-                    onClick={() => handleSelect(stock.symbol)}
                   >
+                    {item.group}
+                  </div>
+                </div>
+              );
+            }
+            const stock = item.stock;
+            const hasPrice = stock.price !== undefined && stock.price > 0;
+            const isSel = item.flatIdx === selectedIdx;
+            return (
+              <div
+                key={stock.symbol}
+                data-selected={isSel}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  height: '48px',
+                  padding: '0 var(--s5)',
+                  gap: 'var(--s3)',
+                  background: isSel ? 'var(--accent-soft)' : 'transparent',
+                  borderLeft: isSel ? '3px solid var(--accent)' : '3px solid transparent',
+                  cursor: 'pointer',
+                  transition: 'background var(--dur-fast) var(--ease-apple), border-color var(--dur-fast) var(--ease-apple)',
+                }}
+                onMouseEnter={() => setSelectedIdx(item.flatIdx)}
+                onClick={() => handleSelect(stock.symbol)}
+              >
+                <span
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '13px',
+                    color: 'var(--accent)',
+                    width: '80px',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}
+                >
+                  {stock.symbol}
+                </span>
+                <span
+                  style={{
+                    fontFamily: 'var(--font-sans)',
+                    fontSize: '13px',
+                    color: 'var(--label-primary)',
+                    flex: 1,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {stock.name}
+                </span>
+                <MarketTag market={stock.market} symbol={stock.symbol} />
+                {hasPrice && (
+                  <>
                     <span
                       style={{
                         fontFamily: 'var(--font-mono)',
                         fontSize: '13px',
-                        color: 'var(--accent)',
-                        width: '80px',
+                        color: priceColor(stock.change_pct ?? 0),
                         fontVariantNumeric: 'tabular-nums',
                       }}
                     >
-                      {stock.symbol}
+                      {formatPrice(stock.price!)}
                     </span>
                     <span
                       style={{
-                        fontFamily: 'var(--font-sans)',
-                        fontSize: '13px',
-                        color: 'var(--label-primary)',
-                        flex: 1,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '11px',
+                        color: priceColor(stock.change_pct ?? 0),
+                        fontVariantNumeric: 'tabular-nums',
+                        width: '70px',
+                        textAlign: 'right',
                       }}
                     >
-                      {stock.name}
+                      {stock.change_pct !== undefined ? formatPercent(stock.change_pct) : ''}
                     </span>
-                    <MarketTag market={stock.market} symbol={stock.symbol} />
-                    {hasPrice && (
-                      <>
-                        <span
-                          style={{
-                            fontFamily: 'var(--font-mono)',
-                            fontSize: '13px',
-                            color: priceColor(stock.change_pct ?? 0),
-                            fontVariantNumeric: 'tabular-nums',
-                          }}
-                        >
-                          {formatPrice(stock.price!)}
-                        </span>
-                        <span
-                          style={{
-                            fontFamily: 'var(--font-mono)',
-                            fontSize: '11px',
-                            color: priceColor(stock.change_pct ?? 0),
-                            fontVariantNumeric: 'tabular-nums',
-                            width: '70px',
-                            textAlign: 'right',
-                          }}
-                        >
-                          {stock.change_pct !== undefined ? formatPercent(stock.change_pct) : ''}
-                        </span>
-                      </>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          ))}
+                  </>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
