@@ -9,6 +9,7 @@ class WSManager {
   private subscribers = new Map<string, Set<MessageHandler>>();
   private connected = false;
   private listeners = new Set<(connected: boolean) => void>();
+  private pendingSubscriptions = new Set<string>();
 
   private static instance: WSManager | null = null;
 
@@ -33,6 +34,7 @@ class WSManager {
         this.connected = true;
         this.reconnectDelay = 1000;
         this.notifyConnection(true);
+        this.flushPendingSubscriptions();
       };
       this.ws.onclose = () => {
         this.connected = false;
@@ -59,6 +61,15 @@ class WSManager {
     } catch { this.scheduleReconnect(); }
   }
 
+  private flushPendingSubscriptions(): void {
+    if (this.pendingSubscriptions.size > 0 && this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        type: 'subscribe',
+        symbols: [...this.pendingSubscriptions],
+      }));
+    }
+  }
+
   private scheduleReconnect(): void {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = setTimeout(() => {
@@ -77,6 +88,20 @@ class WSManager {
     };
   }
 
+  subscribeSymbols(symbols: string[]): void {
+    for (const s of symbols) this.pendingSubscriptions.add(s);
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'subscribe', symbols }));
+    }
+  }
+
+  unsubscribeSymbols(symbols: string[]): void {
+    for (const s of symbols) this.pendingSubscriptions.delete(s);
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'unsubscribe', symbols }));
+    }
+  }
+
   onConnectionChange(cb: (connected: boolean) => void): () => void {
     this.listeners.add(cb);
     return () => { this.listeners.delete(cb); };
@@ -90,6 +115,10 @@ class WSManager {
 
   isConnected(): boolean {
     return this.connected;
+  }
+
+  getSubscribedSymbols(): string[] {
+    return [...this.pendingSubscriptions];
   }
 
   private notifyConnection(v: boolean): void {

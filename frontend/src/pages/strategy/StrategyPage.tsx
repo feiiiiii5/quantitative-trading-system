@@ -2,6 +2,8 @@ import { useEffect, useState, useRef, useCallback, memo, useMemo } from 'react';
 import { useStrategyStore } from '@/stores/strategy';
 import { useStrategyList, useStrategyParamSpecs, useFactorRegistry, useAlphaList, useBacktestHistory } from '@/hooks/queries';
 import { useCanvas } from '@/hooks/useCanvas';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { EmptyState } from '@/components/ui/EmptyState';
 import { formatRatio, formatPrice } from '@/utils/format';
 import type { BacktestResult } from '@/types';
 
@@ -176,35 +178,78 @@ const ALPHA_CATEGORY_LABELS: Record<string, string> = {
   efficiency: '效率',
 };
 
+const CENTER_CONTAINER: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', justifyContent: 'center', height: '200px',
+};
+
+const LOADING_TEXT: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)', fontSize: 12, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em',
+};
+
+const ALPHA_CARD: React.CSSProperties = {
+  background: 'var(--bg-elevated)', borderRadius: 'var(--r-md)',
+  border: '1px solid var(--separator)', padding: '14px 16px',
+  transition: 'border-color var(--dur-fast)',
+};
+
+const ALPHA_CARD_HEADER: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6,
+};
+
+const ALPHA_NAME: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 500,
+  color: 'var(--accent)',
+};
+
+const ALPHA_CATEGORY_BADGE: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)', fontSize: 9, padding: '2px 6px',
+  borderRadius: 'var(--r-xs)', background: 'rgba(10,132,255,0.1)',
+  color: 'var(--accent)',
+};
+
+const ALPHA_EXPRESSION: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)', fontSize: 10,
+  color: 'rgba(255,255,255,0.5)',
+  background: 'rgba(0,0,0,0.3)', borderRadius: 'var(--r-xs)',
+  padding: '6px 8px', marginBottom: 6,
+  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+};
+
+const ALPHA_DESCRIPTION: React.CSSProperties = {
+  fontSize: 11, color: 'rgba(255,255,255,0.4)', lineHeight: 1.5,
+};
+
+const ERROR_CONTAINER: React.CSSProperties = {
+  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '200px', gap: 8,
+};
+
 const AlphaFactorPanel = memo(function AlphaFactorPanel() {
   const { data: alphas = [], isLoading: loading, isError: error } = useAlphaList();
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
 
-  const grouped = alphas.reduce<Record<string, AlphaFactor[]>>((acc, a) => {
+  const grouped = useMemo(() => alphas.reduce<Record<string, AlphaFactor[]>>((acc, a) => {
     (acc[a.category] ??= []).push(a);
     return acc;
-  }, {});
+  }, {}), [alphas]);
 
-  const filtered = alphas.filter(a => {
+  const filtered = useMemo(() => alphas.filter(a => {
     const matchSearch = !search || a.name.toLowerCase().includes(search.toLowerCase()) || a.expression.toLowerCase().includes(search.toLowerCase()) || a.description.includes(search);
     const matchCat = !activeCategory || a.category === activeCategory;
     return matchSearch && matchCat;
-  });
+  }), [alphas, search, activeCategory]);
 
   if (loading) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '200px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>LOADING...</span>
+      <div style={CENTER_CONTAINER}>
+        <span style={LOADING_TEXT}>LOADING...</span>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '200px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>Alpha 因子数据暂无</span>
-      </div>
+      <EmptyState title="Alpha 因子数据暂无" description="请检查网络连接或稍后重试" size="md" />
     );
   }
 
@@ -257,46 +302,27 @@ const AlphaFactorPanel = memo(function AlphaFactorPanel() {
 
       <div style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
         {filtered.length === 0 && (
-          <div style={{ textAlign: 'center', padding: '40px 0' }}>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'rgba(255,255,255,0.35)' }}>无匹配因子</span>
-          </div>
+          <EmptyState title="无匹配因子" description="尝试调整搜索条件或切换分类" size="sm" />
         )}
         {filtered.map(alpha => (
           <div
             key={alpha.name}
-            style={{
-              background: 'var(--bg-elevated)', borderRadius: 'var(--r-md)',
-              border: '1px solid var(--separator)', padding: '14px 16px',
-              transition: 'border-color var(--dur-fast)',
-            }}
+            style={ALPHA_CARD}
             onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.borderColor = 'rgba(10,132,255,0.3)'; }}
             onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--separator)'; }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-              <span style={{
-                fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 500,
-                color: 'var(--accent)',
-              }}>
+            <div style={ALPHA_CARD_HEADER}>
+              <span style={ALPHA_NAME}>
                 {alpha.name}
               </span>
-              <span style={{
-                fontFamily: 'var(--font-mono)', fontSize: 9, padding: '2px 6px',
-                borderRadius: 'var(--r-xs)', background: 'rgba(10,132,255,0.1)',
-                color: 'var(--accent)',
-              }}>
+              <span style={ALPHA_CATEGORY_BADGE}>
                 {ALPHA_CATEGORY_LABELS[alpha.category] ?? alpha.category}
               </span>
             </div>
-            <div style={{
-              fontFamily: 'var(--font-mono)', fontSize: 10,
-              color: 'rgba(255,255,255,0.5)',
-              background: 'rgba(0,0,0,0.3)', borderRadius: 'var(--r-xs)',
-              padding: '6px 8px', marginBottom: 6,
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            }}>
+            <div style={ALPHA_EXPRESSION}>
               {alpha.expression}
             </div>
-            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', lineHeight: 1.5 }}>
+            <div style={ALPHA_DESCRIPTION}>
               {alpha.description}
             </div>
           </div>
@@ -306,13 +332,37 @@ const AlphaFactorPanel = memo(function AlphaFactorPanel() {
   );
 });
 
+const BT_TD: React.CSSProperties = {
+  padding: '10px 12px', fontFamily: 'var(--font-mono)', fontSize: 11,
+};
+
+const BT_TD_RIGHT: React.CSSProperties = {
+  ...BT_TD, textAlign: 'right', fontVariantNumeric: 'tabular-nums',
+};
+
+const BT_ROW: React.CSSProperties = {
+  borderBottom: '1px solid rgba(255,255,255,0.04)',
+};
+
+const BT_TH: React.CSSProperties = {
+  padding: '8px 12px', textAlign: 'left',
+  fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase',
+  letterSpacing: '0.06em', color: 'var(--label-tertiary)',
+  background: 'var(--bg-elevated)', borderBottom: '1px solid var(--separator)',
+  cursor: 'pointer', userSelect: 'none',
+};
+
+const BT_TH_RIGHT: React.CSSProperties = {
+  ...BT_TH, textAlign: 'right',
+};
+
 const BacktestHistoryPanel = memo(function BacktestHistoryPanel() {
   const { data: historyData, isLoading: loading, isError: error } = useBacktestHistory();
   const history = Array.isArray(historyData) ? historyData : [];
   const [sortKey, setSortKey] = useState<'sharpe_ratio' | 'total_return' | 'created_at'>('created_at');
   const [sortAsc, setSortAsc] = useState(false);
 
-  const sorted = [...history].sort((a, b) => {
+  const sorted = useMemo(() => [...history].sort((a, b) => {
     let aVal: number, bVal: number;
     if (sortKey === 'created_at') {
       aVal = new Date(a.created_at).getTime();
@@ -322,32 +372,21 @@ const BacktestHistoryPanel = memo(function BacktestHistoryPanel() {
       bVal = b[sortKey] as number;
     }
     return sortAsc ? aVal - bVal : bVal - aVal;
-  });
+  }), [history, sortKey, sortAsc]);
 
   if (loading) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '200px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>LOADING...</span>
+      <div style={CENTER_CONTAINER}>
+        <span style={LOADING_TEXT}>LOADING...</span>
       </div>
     );
   }
 
   if (error || history.length === 0) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '200px', gap: 8 }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>回测历史暂无</span>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'rgba(255,255,255,0.2)' }}>运行策略回测后将显示历史记录</span>
-      </div>
+      <EmptyState title="回测历史暂无" description="运行策略回测后将显示历史记录" size="md" />
     );
   }
-
-  const thStyle: React.CSSProperties = {
-    padding: '8px 12px', textAlign: 'left',
-    fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase',
-    letterSpacing: '0.06em', color: 'var(--label-tertiary)',
-    background: 'var(--bg-elevated)', borderBottom: '1px solid var(--separator)',
-    cursor: 'pointer', userSelect: 'none',
-  };
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -360,45 +399,45 @@ const BacktestHistoryPanel = memo(function BacktestHistoryPanel() {
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr>
-              <th style={thStyle} onClick={() => { setSortKey('created_at'); setSortAsc(p => !p); }}>
+              <th style={BT_TH} onClick={() => { setSortKey('created_at'); setSortAsc(p => !p); }}>
                 时间 {sortKey === 'created_at' ? (sortAsc ? '↑' : '↓') : ''}
               </th>
-              <th style={thStyle}>策略</th>
-              <th style={thStyle}>标的</th>
-              <th style={{ ...thStyle, textAlign: 'right' }} onClick={() => { setSortKey('sharpe_ratio'); setSortAsc(p => !p); }}>
+              <th style={BT_TH}>策略</th>
+              <th style={BT_TH}>标的</th>
+              <th style={BT_TH_RIGHT} onClick={() => { setSortKey('sharpe_ratio'); setSortAsc(p => !p); }}>
                 夏普 {sortKey === 'sharpe_ratio' ? (sortAsc ? '↑' : '↓') : ''}
               </th>
-              <th style={{ ...thStyle, textAlign: 'right' }} onClick={() => { setSortKey('total_return'); setSortAsc(p => !p); }}>
+              <th style={BT_TH_RIGHT} onClick={() => { setSortKey('total_return'); setSortAsc(p => !p); }}>
                 总收益 {sortKey === 'total_return' ? (sortAsc ? '↑' : '↓') : ''}
               </th>
-              <th style={{ ...thStyle, textAlign: 'right' }}>最大回撤</th>
-              <th style={{ ...thStyle, textAlign: 'right' }}>交易次数</th>
+              <th style={BT_TH_RIGHT}>最大回撤</th>
+              <th style={BT_TH_RIGHT}>交易次数</th>
             </tr>
           </thead>
           <tbody>
             {sorted.slice(0, 100).map((entry) => {
               const result = entry.result;
               return (
-                <tr key={entry.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                  <td style={{ padding: '10px 12px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--label-tertiary)' }}>
+                <tr key={entry.id} style={BT_ROW}>
+                  <td style={{ ...BT_TD, color: 'var(--label-tertiary)' }}>
                     {entry.created_at.slice(0, 16)}
                   </td>
-                  <td style={{ padding: '10px 12px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--accent)' }}>
+                  <td style={{ ...BT_TD, color: 'var(--accent)' }}>
                     {entry.strategy_name}
                   </td>
-                  <td style={{ padding: '10px 12px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>
+                  <td style={{ ...BT_TD, color: 'rgba(255,255,255,0.6)' }}>
                     {entry.symbol}
                   </td>
-                  <td style={{ padding: '10px 12px', fontFamily: 'var(--font-mono)', fontSize: 11, textAlign: 'right', color: entry.sharpe_ratio >= 1 ? '#00C853' : entry.sharpe_ratio >= 0.5 ? '#FF9100' : '#FF1744', fontVariantNumeric: 'tabular-nums' }}>
+                  <td style={{ ...BT_TD_RIGHT, color: entry.sharpe_ratio >= 1 ? '#00C853' : entry.sharpe_ratio >= 0.5 ? '#FF9100' : '#FF1744' }}>
                     {entry.sharpe_ratio.toFixed(2)}
                   </td>
-                  <td style={{ padding: '10px 12px', fontFamily: 'var(--font-mono)', fontSize: 11, textAlign: 'right', color: entry.total_return >= 0 ? '#FF1744' : '#00C853', fontVariantNumeric: 'tabular-nums' }}>
+                  <td style={{ ...BT_TD_RIGHT, color: entry.total_return >= 0 ? '#FF1744' : '#00C853' }}>
                     {entry.total_return >= 0 ? '+' : ''}{(entry.total_return * 100).toFixed(1)}%
                   </td>
-                  <td style={{ padding: '10px 12px', fontFamily: 'var(--font-mono)', fontSize: 11, textAlign: 'right', color: '#00C853', fontVariantNumeric: 'tabular-nums' }}>
+                  <td style={{ ...BT_TD_RIGHT, color: '#00C853' }}>
                     {(entry.max_drawdown * 100).toFixed(1)}%
                   </td>
-                  <td style={{ padding: '10px 12px', fontFamily: 'var(--font-mono)', fontSize: 11, textAlign: 'right', color: 'rgba(255,255,255,0.5)', fontVariantNumeric: 'tabular-nums' }}>
+                  <td style={{ ...BT_TD_RIGHT, color: 'rgba(255,255,255,0.5)' }}>
                     {result?.total_trades ?? '—'}
                   </td>
                 </tr>
@@ -657,6 +696,75 @@ const EquityCanvas = memo(function EquityCanvas({ data, showDrawdown, benchmarkC
   return <canvas ref={ref} style={{ width: '100%', height: 420 }} />;
 });
 
+const MonthlyReturnsHeatmap = memo(function MonthlyReturnsHeatmap({ equityCurve }: { equityCurve: Array<{ date: string; value: number }> }) {
+  const monthlyReturns = useMemo(() => {
+    if (!equityCurve || equityCurve.length < 2) return {};
+    const byMonth: Record<string, { start: number; end: number }> = {};
+    for (const point of equityCurve) {
+      const key = point.date.slice(0, 7);
+      if (!byMonth[key]) byMonth[key] = { start: point.value, end: point.value };
+      byMonth[key].end = point.value;
+    }
+    const returns: Record<string, number> = {};
+    for (const [key, val] of Object.entries(byMonth)) {
+      returns[key] = (val.end - val.start) / val.start;
+    }
+    return returns;
+  }, [equityCurve]);
+
+  const months = Object.entries(monthlyReturns);
+  if (months.length === 0) return null;
+
+  const years = [...new Set(months.map(([k]) => k.slice(0, 4)))].sort();
+  const MONTH_LABELS = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ fontSize: 11, color: 'var(--label-secondary)', marginBottom: 6, fontFamily: 'var(--font-sans)' }}>月度收益</div>
+      <div style={{ display: 'flex', gap: 2 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 18 }}>
+          {years.map(y => (
+            <div key={y} style={{ height: 20, display: 'flex', alignItems: 'center', fontSize: 9, color: 'var(--label-tertiary)', fontFamily: 'var(--font-mono)' }}>{y}</div>
+          ))}
+        </div>
+        <div>
+          <div style={{ display: 'flex', gap: 2, marginBottom: 2 }}>
+            {MONTH_LABELS.map(m => (
+              <div key={m} style={{ width: 28, textAlign: 'center', fontSize: 8, color: 'var(--label-quaternary)', fontFamily: 'var(--font-mono)' }}>{m.slice(0, 1)}</div>
+            ))}
+          </div>
+          {years.map(y => (
+            <div key={y} style={{ display: 'flex', gap: 2, marginBottom: 2 }}>
+              {Array.from({ length: 12 }, (_, mi) => {
+                const key = `${y}-${String(mi + 1).padStart(2, '0')}`;
+                const ret = monthlyReturns[key];
+                const hasData = ret !== undefined;
+                const bg = !hasData ? 'var(--glass-3)' :
+                  ret >= 0.05 ? 'rgba(255,23,68,0.7)' :
+                  ret >= 0.02 ? 'rgba(255,23,68,0.4)' :
+                  ret > 0 ? 'rgba(255,23,68,0.15)' :
+                  ret > -0.02 ? 'rgba(0,200,83,0.15)' :
+                  ret > -0.05 ? 'rgba(0,200,83,0.4)' :
+                  'rgba(0,200,83,0.7)';
+                return (
+                  <div key={mi} title={hasData ? `${key}: ${(ret * 100).toFixed(1)}%` : ''} style={{
+                    width: 28, height: 20, borderRadius: 2, background: bg,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 8, fontFamily: 'var(--font-mono)', fontVariantNumeric: 'tabular-nums',
+                    color: hasData ? 'var(--label-primary)' : 'transparent',
+                  }}>
+                    {hasData ? `${(ret * 100).toFixed(0)}` : ''}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+});
+
 const TradeTable = memo(function TradeTable({ trades }: { trades: Array<Record<string, unknown>> }) {
   if (!trades || trades.length === 0) return null;
   return (
@@ -912,7 +1020,12 @@ const BacktestResults = memo(function BacktestResults({ result, showDrawdown, on
             </button>
           </div>
           <div style={{ padding: '8px 4px 4px' }}>
-            <EquityCanvas data={result.equity_curve} showDrawdown={showDrawdown} benchmarkCurve={result.benchmark_curve} confidenceUpper={result.confidence_upper} confidenceLower={result.confidence_lower} />
+            <ErrorBoundary fallback={<div style={{ color: 'var(--label-tertiary)', padding: 16 }}>Chart unavailable</div>}>
+              <EquityCanvas data={result.equity_curve} showDrawdown={showDrawdown} benchmarkCurve={result.benchmark_curve} confidenceUpper={result.confidence_upper} confidenceLower={result.confidence_lower} />
+            </ErrorBoundary>
+          </div>
+          <div style={{ padding: '0 20px 16px' }}>
+            <MonthlyReturnsHeatmap equityCurve={result.equity_curve} />
           </div>
         </div>
       )}
@@ -961,14 +1074,15 @@ const StrategyDetailPanel = memo(function StrategyDetailPanel({ name, descriptio
   );
 });
 
+const FACTOR_CATEGORY_ORDER = ['value', 'momentum', 'quality', 'volatility', 'growth', 'technical'];
+
 const FactorRegistryPanel = memo(function FactorRegistryPanel({ factors }: { factors: FactorInfo[] }) {
-  const grouped = factors.reduce<Record<string, FactorInfo[]>>((acc, f) => {
+  const grouped = useMemo(() => factors.reduce<Record<string, FactorInfo[]>>((acc, f) => {
     (acc[f.category] ??= []).push(f);
     return acc;
-  }, {});
+  }, {}), [factors]);
 
-  const categoryOrder = ['value', 'momentum', 'quality', 'volatility', 'growth', 'technical'];
-  const sortedCategories = categoryOrder.filter(c => grouped[c]);
+  const sortedCategories = useMemo(() => FACTOR_CATEGORY_ORDER.filter(c => grouped[c]), [grouped]);
 
   return (
     <div style={{ height: '100%', overflow: 'auto' }}>
@@ -1020,7 +1134,13 @@ const FactorRegistryPanel = memo(function FactorRegistryPanel({ factors }: { fac
 });
 
 export function StrategyPage() {
-  const { selectedStrategy, backtestResult, backtestRunning, backtestLogs, selectStrategy, runBacktest, clearResult } = useStrategyStore();
+  const selectedStrategy = useStrategyStore(s => s.selectedStrategy);
+  const backtestResult = useStrategyStore(s => s.backtestResult);
+  const backtestRunning = useStrategyStore(s => s.backtestRunning);
+  const backtestLogs = useStrategyStore(s => s.backtestLogs);
+  const selectStrategy = useStrategyStore(s => s.selectStrategy);
+  const runBacktest = useStrategyStore(s => s.runBacktest);
+  const clearResult = useStrategyStore(s => s.clearResult);
   const { data: strategiesData } = useStrategyList();
   const strategies = strategiesData?.strategies ?? [];
   const { data: factors } = useFactorRegistry();
@@ -1090,10 +1210,13 @@ export function StrategyPage() {
 
   const currentStrategy = strategies.find(s => s.name === selectedStrategy);
 
-  const grouped: Record<Difficulty, typeof strategies> = { BASIC: [], PRO: [], EXPERT: [] };
-  for (const s of strategies) {
-    grouped[getDifficulty(s.name)].push(s);
-  }
+  const grouped = useMemo<Record<Difficulty, typeof strategies>>(() => {
+    const g: Record<Difficulty, typeof strategies> = { BASIC: [], PRO: [], EXPERT: [] };
+    for (const s of strategies) {
+      g[getDifficulty(s.name)].push(s);
+    }
+    return g;
+  }, [strategies]);
 
   const inputStyle: React.CSSProperties = {
     width: '100%', height: 40, background: 'var(--bg-overlay)',

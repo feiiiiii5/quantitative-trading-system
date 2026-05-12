@@ -58,7 +58,7 @@ def analyze_seasonality(
     if "close" not in df.columns or len(df) < 20:
         return SeasonalReport(symbol=symbol, period=period)
 
-    closes = df["close"].values.astype(float)
+    closes = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
     dates = df["date"].values if "date" in df.columns else None
 
     returns = np.diff(closes) / np.where(closes[:-1] > 0, closes[:-1], 1)

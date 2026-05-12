@@ -148,7 +148,7 @@ CACHE_TTL = {
     "search_index": 3600.0,
     "fundamental": 3600.0,
     "market_breadth": 5.0,
-    "backtest_result": float("inf"),
+    "backtest_result": 3600.0,
     "northbound": 180.0,
     "limit_up": 45.0,
     "dragon_tiger": 600.0,

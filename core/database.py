@@ -504,7 +504,8 @@ class SQLiteStore:
                 except sqlite3.DatabaseError:
                     try:
                         conn.close()
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("Connection close failed after DatabaseError: %s", e)
                         pass
         return self._create_read_conn()
 
@@ -518,12 +519,13 @@ class SQLiteStore:
                 except sqlite3.DatabaseError:
                     try:
                         conn.close()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Connection close failed after DatabaseError: %s", e)
                 return
         try:
             conn.close()
-        except Exception:
+        except Exception as e:
+            logger.debug("Connection close failed on pool full: %s", e)
             pass
 
     async def query_async(self, sql: str, params: tuple = ()) -> list[dict]:

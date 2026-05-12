@@ -89,7 +89,8 @@ class BacktestEngine:
             if preprocessed.is_valid and len(preprocessed.df) >= MIN_BARS_REQUIRED:
                 df = preprocessed.df
             self._preprocessing_report = preprocessed.quality_report
-        except Exception:
+        except Exception as e:
+            logger.debug("Preprocessing failed: %s", e)
             self._preprocessing_report = {}
 
         strategy.reset()

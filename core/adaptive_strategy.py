@@ -549,15 +549,15 @@ class AdaptiveStrategyEngine:
 
         regimes = classify_market_regime(df)
 
-        c = df["close"].values.astype(float)
-        h = df["high"].values.astype(float)
-        low_arr = df["low"].values.astype(float)
-        opens = df["open"].values.astype(float) if "open" in df.columns else c
+        c = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
+        h = pd.to_numeric(df["high"], errors="coerce").dropna().values.astype(float)
+        low_arr = pd.to_numeric(df["low"], errors="coerce").dropna().values.astype(float)
+        opens = pd.to_numeric(df["open"], errors="coerce").dropna().values.astype(float) if "open" in df.columns else c
         dates_col = df["date"].values if "date" in df.columns else np.arange(len(c))
         atr_full = calc_atr(h, low_arr, c, period=14)
         chandelier_long, chandelier_short = self._calc_chandelier(h, low_arr, c, atr_full)
-        volumes = df["volume"].values.astype(float) if "volume" in df.columns else None
-        amounts_col = df["amount"].values.astype(float) if "amount" in df.columns else None
+        volumes = pd.to_numeric(df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in df.columns else None
+        amounts_col = pd.to_numeric(df["amount"], errors="coerce").dropna().values.astype(float) if "amount" in df.columns else None
 
         strategy_instances = {}
         for regime, alloc in STRATEGY_ALLOCATION.items():
@@ -1035,7 +1035,7 @@ class AdaptiveStrategyEngine:
             dates_out = dates_list
 
         kline_with_signals = []
-        vols = df["volume"].values.astype(float) if "volume" in df.columns else np.zeros(len(c))
+        vols = pd.to_numeric(df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in df.columns else np.zeros(len(c))
         for idx in range(len(c)):
             item = {
                 "date": dates_list[idx] if idx < len(dates_list) else "",

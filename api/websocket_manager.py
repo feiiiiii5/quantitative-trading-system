@@ -127,7 +127,8 @@ class OptimizedWSManager:
         payload = json.dumps(data)
         try:
             await asyncio.wait_for(ws.send_text(payload), timeout=self.SEND_TIMEOUT)
-        except Exception:
+        except Exception as e:
+            logger.debug("WebSocket send failed, disconnecting: %s", e)
             await self.disconnect(ws)
 
     async def _safe_send(self, ws: WebSocket, payload: str) -> None:
@@ -143,7 +144,8 @@ class OptimizedWSManager:
         for ws in stale:
             try:
                 await ws.close(code=1000, reason="Idle timeout")
-            except Exception:
+            except Exception as e:
+                logger.debug("Failed to close stale WebSocket: %s", e)
                 pass
             await self.disconnect(ws)
         return len(stale)

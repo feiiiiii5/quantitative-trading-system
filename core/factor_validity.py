@@ -343,7 +343,8 @@ def _simplified_adf(series: np.ndarray | pd.Series, significance: float = 0.05) 
             "test_statistic": round(t_stat, 4),
             "method": "simplified_adf",
         }
-    except Exception:
+    except Exception as e:
+        logger.debug("ADF test fallback: %s", e)
         return {"is_stationary": False, "p_value": 1.0, "test_statistic": 0.0, "method": "fallback"}
 
 
@@ -370,5 +371,6 @@ def half_life(series: np.ndarray | pd.Series) -> float:
         if lam >= 0 or abs(lam) < 1e-12:
             return float("inf")
         return round(-np.log(2) / lam, 2)
-    except Exception:
+    except Exception as e:
+        logger.debug("Half-life calculation fallback: %s", e)
         return float("inf")

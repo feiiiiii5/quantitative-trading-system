@@ -62,7 +62,8 @@ async def get_market_overview(request: Request):
         try:
             breadth = await fetcher.get_market_breadth()
             data["market_breadth"] = breadth
-        except Exception:
+        except Exception as e:
+            logger.debug("Market breadth fetch failed: %s", e)
             data["market_breadth"] = None
         return _json_response(True, data=data)
     except Exception as e:

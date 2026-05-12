@@ -1,8 +1,10 @@
 import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import { useCanvas } from '@/hooks/useCanvas';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useTerminalStore } from '@/stores/terminal';
 import { useRiskStore } from '@/stores/risk';
 import { useTradingHistory } from '@/hooks/queries';
+import { usePnLWebSocket } from '@/hooks/usePnLWebSocket';
 import { apiPost } from '@/api/client';
 import { formatPrice, formatVolume, formatAmount } from '@/utils/format';
 import type { OrderBookEntry, TradeRecord } from '@/types';
@@ -37,16 +39,19 @@ const OrderBookCanvas = memo(function OrderBookCanvas({ bids, asks }: { bids: Or
       return;
     }
 
-    const cumulativeBids: number[] = [];
-    const cumulativeAsks: number[] = [];
-    let sum = 0;
-    for (const b of bids) { sum += b.quantity; cumulativeBids.push(sum); }
-    sum = 0;
-    for (const a of asks) { sum += a.quantity; cumulativeAsks.push(sum); }
+    const rootStyle = getComputedStyle(document.documentElement);
+    const numPositive = rootStyle.getPropertyValue('--num-positive').trim() || '#FF3B5C';
+    const numNegative = rootStyle.getPropertyValue('--num-negative').trim() || '#00D9A0';
+    const hexToRgba = (hex: string, a: number) => {
+      const r = parseInt(hex.slice(1, 3), 16);
+      const g = parseInt(hex.slice(3, 5), 16);
+      const b = parseInt(hex.slice(5, 7), 16);
+      return `rgba(${r},${g},${b},${a})`;
+    };
 
-    const maxCumulative = Math.max(
-      cumulativeBids[cumulativeBids.length - 1] ?? 1,
-      cumulativeAsks[cumulativeAsks.length - 1] ?? 1,
+    const maxVolume = Math.max(
+      ...bids.map(b => b.quantity),
+      ...asks.map(a => a.quantity),
       1,
     );
 
@@ -59,20 +64,19 @@ const OrderBookCanvas = memo(function OrderBookCanvas({ bids, asks }: { bids: Or
       const y = padding.top + i * rowHeight;
       const ask = asks[i];
       if (!ask) continue;
-      const cumQty = cumulativeAsks[i] ?? 0;
-      const barW = (cumQty / maxCumulative) * barMaxWidth;
       const isBest = i === 0;
+      const volBarW = (ask.quantity / maxVolume) * barMaxWidth;
 
-      ctx.fillStyle = isBest ? 'rgba(255,23,68,0.25)' : 'rgba(255,23,68,0.12)';
-      ctx.fillRect(padding.left, y, barW, rowHeight - 2);
+      ctx.fillStyle = isBest ? hexToRgba(numNegative, 0.25) : 'rgba(0,200,83,0.12)';
+      ctx.fillRect(padding.left, y, volBarW, rowHeight - 2);
 
       ctx.font = isBest ? 'bold 14px SF Mono, JetBrains Mono, monospace' : '11px SF Mono, JetBrains Mono, monospace';
-      ctx.fillStyle = isBest ? '#FF1744' : 'rgba(255,23,68,0.75)';
+      ctx.fillStyle = isBest ? numNegative : 'rgba(0,200,83,0.75)';
       ctx.textAlign = 'right';
       ctx.fillText(formatPrice(ask.price), padding.left - 8, y + rowHeight * 0.72);
       ctx.textAlign = 'left';
       ctx.fillStyle = isBest ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.45)';
-      ctx.fillText(String(cumQty), padding.left + barW + 6, y + rowHeight * 0.72);
+      ctx.fillText(String(ask.quantity), padding.left + volBarW + 6, y + rowHeight * 0.72);
     }
 
     const spreadY = padding.top + 10 * rowHeight;
@@ -106,24 +110,23 @@ const OrderBookCanvas = memo(function OrderBookCanvas({ bids, asks }: { bids: Or
       const y = spreadY + midGap + i * rowHeight;
       const bid = bids[i];
       if (!bid) continue;
-      const cumQty = cumulativeBids[i] ?? 0;
-      const barW = (cumQty / maxCumulative) * barMaxWidth;
       const isBest = i === 0;
+      const volBarW = (bid.quantity / maxVolume) * barMaxWidth;
 
-      ctx.fillStyle = isBest ? 'rgba(0,200,83,0.25)' : 'rgba(0,200,83,0.12)';
-      ctx.fillRect(padding.left, y, barW, rowHeight - 2);
+      ctx.fillStyle = isBest ? hexToRgba(numPositive, 0.25) : 'rgba(255,23,68,0.12)';
+      ctx.fillRect(padding.left, y, volBarW, rowHeight - 2);
 
       ctx.font = isBest ? 'bold 14px SF Mono, JetBrains Mono, monospace' : '11px SF Mono, JetBrains Mono, monospace';
-      ctx.fillStyle = isBest ? '#00C853' : 'rgba(0,200,83,0.75)';
+      ctx.fillStyle = isBest ? numPositive : 'rgba(255,23,68,0.75)';
       ctx.textAlign = 'right';
       ctx.fillText(formatPrice(bid.price), padding.left - 8, y + rowHeight * 0.72);
       ctx.textAlign = 'left';
       ctx.fillStyle = isBest ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.45)';
-      ctx.fillText(String(cumQty), padding.left + barW + 6, y + rowHeight * 0.72);
+      ctx.fillText(String(bid.quantity), padding.left + volBarW + 6, y + rowHeight * 0.72);
     }
 
-    const totalBid = cumulativeBids[cumulativeBids.length - 1] ?? 0;
-    const totalAsk = cumulativeAsks[cumulativeAsks.length - 1] ?? 0;
+    const totalBid = bids.reduce((s, b) => s + b.quantity, 0);
+    const totalAsk = asks.reduce((s, a) => s + a.quantity, 0);
     const total = totalBid + totalAsk;
     if (total > 0) {
       const imbalance = (totalBid - totalAsk) / total;
@@ -255,6 +258,20 @@ const ExecutionQualityPanel = memo(function ExecutionQualityPanel() {
   );
 });
 
+const ORDER_INPUT: React.CSSProperties = {
+  width: '100%',
+  height: 36,
+  background: 'var(--bg-overlay)',
+  border: '1px solid var(--separator)',
+  borderRadius: 'var(--r-md)',
+  color: 'var(--label-primary)',
+  fontFamily: 'var(--font-mono)',
+  fontSize: 13,
+  padding: '0 12px',
+  outline: 'none',
+  boxSizing: 'border-box',
+};
+
 const QuickOrderPanel = memo(function QuickOrderPanel() {
   const [symbol, setSymbol] = useState('600519.SH');
   const [orderType, setOrderType] = useState<'limit' | 'market'>('limit');
@@ -263,7 +280,7 @@ const QuickOrderPanel = memo(function QuickOrderPanel() {
   const [showConfirm, setShowConfirm] = useState(false);
   const [direction, setDirection] = useState<'BUY' | 'SELL'>('BUY');
   const [sizeAck, setSizeAck] = useState(false);
-  const { killSwitchActive } = useRiskStore();
+  const killSwitchActive = useRiskStore(s => s.killSwitchActive);
 
   const totalAmount = orderType === 'limit' ? +price * quantity : 0;
   const changePct = 0;
@@ -310,24 +327,10 @@ const QuickOrderPanel = memo(function QuickOrderPanel() {
     setSizeAck(false);
   }, []);
 
-  const inputStyle: React.CSSProperties = {
-    width: '100%',
-    height: 36,
-    background: 'var(--bg-overlay)',
-    border: '1px solid var(--separator)',
-    borderRadius: 'var(--r-md)',
-    color: 'var(--label-primary)',
-    fontFamily: 'var(--font-mono)',
-    fontSize: 13,
-    padding: '0 12px',
-    outline: 'none',
-    boxSizing: 'border-box',
-  };
-
   return (
     <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
       <input
-        style={inputStyle}
+        style={ORDER_INPUT}
         value={symbol}
         onChange={(e) => setSymbol(e.target.value)}
         placeholder="代码"
@@ -411,7 +414,7 @@ const QuickOrderPanel = memo(function QuickOrderPanel() {
 
       {orderType === 'limit' && (
         <input
-          style={inputStyle}
+          style={ORDER_INPUT}
           type="number"
           step="0.01"
           value={price}
@@ -422,7 +425,7 @@ const QuickOrderPanel = memo(function QuickOrderPanel() {
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <input
-          style={{ ...inputStyle, flex: 1 }}
+          style={{ ...ORDER_INPUT, flex: 1 }}
           type="number"
           value={quantity || ''}
           onChange={(e) => setQuantity(Math.max(0, +e.target.value))}
@@ -631,7 +634,9 @@ const QuickOrderPanel = memo(function QuickOrderPanel() {
 });
 
 const KillSwitchPanel = memo(function KillSwitchPanel() {
-  const { killSwitchActive, triggerKillSwitch, resetKillSwitch } = useRiskStore();
+  const killSwitchActive = useRiskStore(s => s.killSwitchActive);
+  const triggerKillSwitch = useRiskStore(s => s.triggerKillSwitch);
+  const resetKillSwitch = useRiskStore(s => s.resetKillSwitch);
   const [showDialog, setShowDialog] = useState(false);
   const [reason, setReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -876,8 +881,11 @@ const KillSwitchPanel = memo(function KillSwitchPanel() {
 });
 
 export function TerminalPage() {
-  const { orderBook, selectedSymbol, fetchOrderBook } = useTerminalStore();
+  const orderBook = useTerminalStore(s => s.orderBook);
+  const selectedSymbol = useTerminalStore(s => s.selectedSymbol);
+  const fetchOrderBook = useTerminalStore(s => s.fetchOrderBook);
   const { data: tradesData } = useTradingHistory();
+  const { pnlData, connected: pnlConnected, refresh: refreshPnL } = usePnLWebSocket([]);
 
   const trades: TradeRecord[] = useMemo(() => {
     if (!tradesData?.trades) return [];
@@ -907,14 +915,51 @@ export function TerminalPage() {
             {selectedSymbol || '000001.SZ'}
           </span>
         </div>
-        <KillSwitchPanel />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            onClick={refreshPnL}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '4px 10px',
+              background: 'transparent',
+              border: '1px solid var(--separator)',
+              borderRadius: 'var(--r-xs)',
+              color: 'var(--label-tertiary)',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 10,
+              cursor: 'pointer',
+              transition: 'all var(--dur-fast) var(--ease-apple)',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--separator)'; e.currentTarget.style.color = 'var(--label-tertiary)'; }}
+          >
+            <span style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: pnlConnected ? '#00C853' : '#FF1744',
+              transition: 'background var(--dur-fast) var(--ease-apple)',
+            }} />
+            PnL
+          </button>
+          {pnlData && (
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontVariantNumeric: 'tabular-nums', color: pnlData.summary.total_pnl >= 0 ? 'var(--signal-rise)' : 'var(--signal-fall)' }}>
+              {pnlData.summary.total_pnl >= 0 ? '+' : ''}{pnlData.summary.total_pnl.toFixed(2)}
+            </span>
+          )}
+          <KillSwitchPanel />
+        </div>
       </div>
       <div style={{ display: 'flex', gap: 16, height: 'calc(100vh - 48px - 52px - 56px)' }}>
         <div style={{ width: '60%', display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div style={{ ...panelStyle, height: 320, display: 'flex', flexDirection: 'column' }}>
             <div style={panelTitleStyle}>委托簿</div>
             <div style={{ flex: 1, minHeight: 0 }}>
-              <OrderBookCanvas bids={orderBook.bids} asks={orderBook.asks} />
+              <ErrorBoundary fallback={<div style={{ color: 'var(--label-tertiary)', padding: 16 }}>Chart unavailable</div>}>
+                <OrderBookCanvas bids={orderBook.bids} asks={orderBook.asks} />
+              </ErrorBoundary>
             </div>
           </div>
 

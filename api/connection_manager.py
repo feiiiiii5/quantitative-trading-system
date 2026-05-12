@@ -220,7 +220,8 @@ class TopicConnectionManager:
             try:
                 await _safe_ws_send(ws, data)
                 count += 1
-            except Exception:
+            except Exception as e:
+                logger.debug("Broadcast send failed, unsubscribing: %s", e)
                 await self.unsubscribe(ws, {topic})
         return count
 

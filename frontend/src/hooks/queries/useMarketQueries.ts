@@ -1,4 +1,4 @@
-import { useQuery, useQueries } from '@tanstack/react-query';
+import { useQuery, useQueries, queryOptions } from '@tanstack/react-query';
 import { apiGet } from '@/api/client';
 import type { IndexData, StockData } from '@/types';
 
@@ -11,26 +11,38 @@ export const marketKeys = {
   breadth: (symbols: string) => [...marketKeys.all, 'breadth', symbols] as const,
 };
 
-export function useMarketOverview() {
-  return useQuery({
+export const marketOptions = {
+  overview: () => queryOptions({
     queryKey: marketKeys.overview(),
     queryFn: () => apiGet<{
-      indices: IndexData[];
-      market_breadth: { up: number; down: number; flat: number };
-      total_volume: number;
-      turnover: number;
-      sentiment: string;
+      cn_indices: Record<string, { name: string; price: number; change_pct: number; change: number }>;
+      hk_indices: Record<string, { name: string; price: number; change_pct: number; change: number }>;
+      us_indices: Record<string, { name: string; price: number; change_pct: number; change: number }>;
+      northbound: { total_net: number; sh_buy: number; sh_sell: number; sz_buy: number; sz_sell: number; top_stocks: unknown[] } | null;
+      temperature: number;
+      timestamp: number;
+      market_breadth: { up: number; down: number; flat: number; advance_count: number; decline_count: number; total_amount: number; timestamp: number } | null;
     }>('/market/overview'),
     staleTime: 15_000,
-  });
-}
-
-export function useMarketStocks(market: string = 'A') {
-  return useQuery({
+  }),
+  stocks: (market: string = 'A') => queryOptions({
     queryKey: marketKeys.stocks(market),
     queryFn: () => apiGet<StockData[]>('/market/stocks', { market }),
     staleTime: 30_000,
-  });
+  }),
+  sectors: () => queryOptions({
+    queryKey: marketKeys.sectors(),
+    queryFn: () => apiGet<Record<string, { name: string; change_pct: number; stocks: string[] }>>('/market/heatmap'),
+    staleTime: 60_000,
+  }),
+};
+
+export function useMarketOverview() {
+  return useQuery(marketOptions.overview());
+}
+
+export function useMarketStocks(market: string = 'A') {
+  return useQuery(marketOptions.stocks(market));
 }
 
 export function useMarketIndices() {
@@ -43,11 +55,7 @@ export function useMarketIndices() {
 }
 
 export function useMarketSectors() {
-  return useQuery({
-    queryKey: marketKeys.sectors(),
-    queryFn: () => apiGet<Record<string, { name: string; change_pct: number; stocks: string[] }>>('/market/heatmap'),
-    staleTime: 60_000,
-  });
+  return useQuery(marketOptions.sectors());
 }
 
 export function useMarketBreadth(symbols: string) {
@@ -62,9 +70,9 @@ export function useMarketBreadth(symbols: string) {
 export function useBatchMarketData() {
   return useQueries({
     queries: [
-      { queryKey: marketKeys.overview(), queryFn: () => apiGet('/market/overview'), staleTime: 15_000 },
-      { queryKey: marketKeys.stocks('A'), queryFn: () => apiGet('/market/stocks', { market: 'A' }), staleTime: 30_000 },
-      { queryKey: marketKeys.sectors(), queryFn: () => apiGet('/market/heatmap'), staleTime: 60_000 },
+      marketOptions.overview(),
+      marketOptions.stocks('A'),
+      marketOptions.sectors(),
     ],
   });
 }

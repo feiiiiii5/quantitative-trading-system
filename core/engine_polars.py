@@ -229,10 +229,10 @@ class PolarsBacktestAccelerator:
         equity = np.ones(n) * initial_capital
         cash = np.full(n, initial_capital)
         trades: list[dict] = []
-        close_arr = df["close"].values.astype(float)
-        high_arr = df.get("high", close_arr).values.astype(float)
-        low_arr = df.get("low", close_arr).values.astype(float)
-        volume_arr = df.get("volume", np.zeros(n)).values.astype(float)
+        close_arr = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
+        high_arr = pd.to_numeric(df.get("high", close_arr), errors="coerce").dropna().values.astype(float) if "high" in df else close_arr
+        low_arr = pd.to_numeric(df.get("low", close_arr), errors="coerce").dropna().values.astype(float) if "low" in df else close_arr
+        volume_arr = pd.to_numeric(df.get("volume", np.zeros(n)), errors="coerce").dropna().values.astype(float) if "volume" in df else np.zeros(n)
 
         signal_bar_to_type = {}
         for sig in signals:

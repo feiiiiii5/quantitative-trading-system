@@ -132,7 +132,8 @@ class UserMemory:
                 try:
                     db = self._get_db()
                     db.execute("DELETE FROM config WHERE key = ?", (f"{_MEMORY_KEY_PREFIX}{key}",))
-                except Exception:
+                except Exception as e:
+                    logger.debug("Memory cache DB delete failed: %s", e)
                     pass
 
 

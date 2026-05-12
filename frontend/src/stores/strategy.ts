@@ -190,7 +190,7 @@ export const useStrategyStore = create<StrategyState>()(devtools((set, get) => (
                 } else if (parsed.type === 'result' && parsed.data) {
                   if (isBacktestResult(parsed.data)) set({ backtestResult: parsed.data });
                 } else if (parsed.type === 'error') {
-                  addLog(`[ERROR] ${parsed.message}`);
+                  addLog(`[ERROR] ${parsed.message ?? 'Unknown error'}`);
                 } else if (parsed.total_trades !== undefined) {
                   if (isBacktestResult(parsed)) set({ backtestResult: parsed });
                 }
@@ -226,7 +226,7 @@ export const useStrategyStore = create<StrategyState>()(devtools((set, get) => (
           addLog(`[${new Date().toLocaleTimeString()}] Done.`);
         }
       } finally {
-        reader.releaseLock();
+        try { reader.releaseLock(); } catch { /* already released */ }
       }
     } catch (e) {
       if (ac.signal.aborted) return;

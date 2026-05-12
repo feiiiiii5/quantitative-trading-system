@@ -9,7 +9,7 @@ import { useHotkeys } from '@/hooks/useHotkeys';
 import { wsManager } from '@/services/websocket';
 import { useMarketStore } from '@/stores/market';
 import { useToastStore } from '@/stores/toast';
-import type { WSMessage, QuoteMessage, IndexMessage } from '@/types/websocket';
+import type { QuoteMessage, IndexMessage } from '@/types/websocket';
 import '@/styles/base.css';
 
 function LayoutHotkeys({ onSearchOpen }: { onSearchOpen: () => void }) {
@@ -44,7 +44,7 @@ export const AppLayout = memo(function AppLayout() {
   }, []);
 
   useEffect(() => {
-    const wsUrl = `ws://${window.location.host}/ws/market`;
+    const wsUrl = `ws://${window.location.host}/ws/realtime`;
     wsManager.connect(wsUrl);
 
     const unsubQuote = wsManager.subscribe('quote', (msg) => {
@@ -63,7 +63,12 @@ export const AppLayout = memo(function AppLayout() {
 
     const unsubConn = wsManager.onConnectionChange((connected) => {
       useMarketStore.getState().setWsConnected(connected);
-      if (!connected) {
+      if (connected) {
+        const symbols = wsManager.getSubscribedSymbols();
+        if (symbols.length > 0) {
+          wsManager.subscribeSymbols(symbols);
+        }
+      } else {
         useToastStore.getState().addToast({
           type: 'warn',
           title: 'WebSocket Disconnected',

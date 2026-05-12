@@ -1653,8 +1653,8 @@ class SmartDataFetcher:
                 srcs = list(results.keys())
                 len_min = min(len(dfs[0]), len(dfs[1]))
                 if len_min > 0:
-                    close_a = dfs[0]["close"].iloc[-len_min:].values.astype(float)
-                    close_b = dfs[1]["close"].iloc[-len_min:].values.astype(float)
+                    close_a = pd.to_numeric(dfs[0]["close"].iloc[-len_min:], errors="coerce").dropna().values.astype(float)
+                    close_b = pd.to_numeric(dfs[1]["close"].iloc[-len_min:], errors="coerce").dropna().values.astype(float)
                     diff_pct = np.mean(np.abs(close_a - close_b) / np.maximum(close_a, 1e-8))
                     if diff_pct > 0.05:
                         price_cols = [c for c in ["open", "high", "low", "close"] if c in dfs[0].columns and c in dfs[1].columns]
@@ -2267,7 +2267,8 @@ class DataSourceRouter:
                 latency_ms = (time.monotonic() - start) * 1000
                 self.record_success(source_name, market, data_type, latency_ms)
                 return result
-            except Exception:
+            except Exception as e:
+                logger.debug("Fetch from source %s failed: %s", source_name, e)
                 self.record_failure(source_name, market, data_type)
         return None
 

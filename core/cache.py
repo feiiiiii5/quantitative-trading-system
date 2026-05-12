@@ -41,7 +41,8 @@ def get_adaptive_ttl(cache_name: str, is_trading: bool | None = None) -> int:
         status = MarketHours.get_market_status("A")
         if status.get("is_open"):
             return config["ttl_trading"]
-    except Exception:
+    except Exception as e:
+        logger.debug("Market hours check failed: %s", e)
         pass
     return config["ttl_non_trading"]
 

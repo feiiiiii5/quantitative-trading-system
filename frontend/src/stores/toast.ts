@@ -17,12 +17,21 @@ interface ToastState {
 
 let nextId = 0;
 
+const MAX_TOASTS = 5;
+
 export const useToastStore = create<ToastState>((set) => ({
   toasts: [],
   addToast: (toast) => {
     const id = String(++nextId);
     const createdAt = Date.now();
-    set((s) => ({ toasts: [...s.toasts, { ...toast, id, createdAt }] }));
+    set((s) => {
+      const duplicate = s.toasts.some(
+        (t) => t.title === toast.title && t.type === toast.type,
+      );
+      if (duplicate) return s;
+      const next = [...s.toasts, { ...toast, id, createdAt }];
+      return { toasts: next.length > MAX_TOASTS ? next.slice(-MAX_TOASTS) : next };
+    });
   },
   removeToast: (id) => {
     set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));

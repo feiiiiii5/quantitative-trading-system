@@ -126,9 +126,11 @@ export const SearchModal = memo(function SearchModal({ open, onClose }: SearchMo
       return;
     }
     setLoading(true);
+    const ac = new AbortController();
     const timer = setTimeout(async () => {
       try {
         const data = await apiGet<SearchResult[]>('/search', { q: query });
+        if (ac.signal.aborted) return;
         const searchResults = Array.isArray(data) ? data : [];
         if (searchResults.length > 0 && cachedStocks.length > 0) {
           const priceMap = new Map<string, StockQuote>();
@@ -145,7 +147,7 @@ export const SearchModal = memo(function SearchModal({ open, onClose }: SearchMo
         } else if (searchResults.length > 0) {
           try {
             const stocksData = await apiGet<StockQuote[]>('/market/stocks');
-            if (Array.isArray(stocksData)) {
+            if (!ac.signal.aborted && Array.isArray(stocksData)) {
               const priceMap = new Map<string, StockQuote>();
               for (const s of stocksData) {
                 priceMap.set(s.symbol, s);
@@ -160,14 +162,16 @@ export const SearchModal = memo(function SearchModal({ open, onClose }: SearchMo
             }
           } catch { /* price enrichment optional */ }
         }
-        setResults(searchResults);
-        setSelectedIdx(0);
+        if (!ac.signal.aborted) {
+          setResults(searchResults);
+          setSelectedIdx(0);
+        }
       } catch {
-        setResults([]);
+        if (!ac.signal.aborted) setResults([]);
       }
-      setLoading(false);
+      if (!ac.signal.aborted) setLoading(false);
     }, 200);
-    return () => clearTimeout(timer);
+    return () => { clearTimeout(timer); ac.abort(); };
   }, [query]);
 
   const addToRecent = useCallback((symbol: string) => {

@@ -231,3 +231,95 @@ class FeatureFlagRegisterRequest(BaseModel):
     description: str = Field(..., description="功能开关描述")
     enabled: bool = Field(True, description="初始状态")
     tags: list[str] = Field([], description="标签列表")
+
+
+class ReadinessCheckResponse(BaseModel):
+    status: str = Field(..., description="ready / not_ready / degraded")
+    checks: dict[str, str] = Field(..., description="各子系统状态")
+    timestamp: str = Field(..., description="ISO格式时间戳")
+
+
+class StrategyHealthReport(BaseModel):
+    strategy: str
+    status: str = Field(..., description="healthy / degraded / error")
+    sharpe: float = 0.0
+    max_drawdown: float = 0.0
+    total_return: float = 0.0
+    win_rate: float = 0.0
+    total_trades: int = 0
+    issues: list[str] = Field([], description="健康问题列表")
+    error: str = ""
+
+
+class StrategyHealthResponse(BaseModel):
+    symbol: str
+    total_strategies: int
+    healthy: int
+    degraded: int
+    errors: int
+    reports: list[StrategyHealthReport]
+
+
+class WalkForwardResponse(BaseModel):
+    n_windows: int = 0
+    is_median_sharpe: float = 0.0
+    oos_median_sharpe: float = 0.0
+    wfa_efficiency: float = 0.0
+    oos_profitable_pct: float = 0.0
+    is_oos_ratio: str = ""
+    curve_fitted: bool = False
+
+
+class DiagnoseRequest(BaseModel):
+    strategy: str = Field(..., min_length=1, max_length=100, description="策略名称")
+    symbol: str = Field("000001", max_length=20, description="股票代码")
+
+
+class AnalyzeBacktestRequest(BaseModel):
+    strategy: dict = Field(default_factory=dict, description="策略定义数据")
+    result: dict = Field(default_factory=dict, description="回测结果数据")
+
+
+class WalkForwardRequest(BaseModel):
+    strategy: str = Field(..., min_length=1, max_length=100, description="策略名称")
+    symbol: str = Field("000001", max_length=20, description="股票代码")
+    is_window: int = Field(252, ge=20, description="样本内窗口")
+    oos_window: int = Field(63, ge=5, description="样本外窗口")
+    base_params: dict | None = Field(None, description="基础参数")
+    param_ranges: dict | None = Field(None, description="参数搜索范围")
+    metric: str = Field("sharpe_ratio", max_length=50, description="优化指标")
+    anchored: bool = Field(False, description="是否锚定回测")
+
+
+class AutoOptimizeRequest(BaseModel):
+    strategy: str = Field(..., min_length=1, max_length=100, description="策略名称")
+    symbol: str = Field("000001", max_length=20, description="股票代码")
+    is_window: int = Field(252, ge=20, description="样本内窗口")
+    oos_window: int = Field(63, ge=5, description="样本外窗口")
+    metric: str = Field("sharpe_ratio", max_length=50, description="优化指标")
+    param_ranges: dict | None = Field(None, description="参数搜索范围")
+
+
+class CompareStrategiesRequest(BaseModel):
+    strategies: list[str] = Field(..., min_length=1, max_length=20, description="策略列表")
+    symbol: str = Field("000001", max_length=20, description="股票代码")
+    period: str = Field("1y", max_length=10, description="回测周期")
+
+
+class SensitivityHeatmapRequest(BaseModel):
+    strategy: str = Field(..., min_length=1, max_length=100, description="策略名称")
+    symbol: str = Field("000001", max_length=20, description="股票代码")
+    param_x: str = Field(..., min_length=1, max_length=50, description="X轴参数名")
+    param_x_values: list[float] = Field(..., min_length=2, max_length=20, description="X轴参数值列表")
+    param_y: str = Field(..., min_length=1, max_length=50, description="Y轴参数名")
+    param_y_values: list[float] = Field(..., min_length=2, max_length=20, description="Y轴参数值列表")
+    metric: str = Field("sharpe_ratio", max_length=50, description="热力图指标")
+    period: str = Field("1y", max_length=10, description="回测周期")
+
+
+class SignalReplayRequest(BaseModel):
+    strategy: str = Field(..., min_length=1, max_length=100, description="策略名称")
+    symbol: str = Field("000001", max_length=20, description="股票代码")
+    start_bar: int = Field(0, ge=0, description="起始bar索引")
+    end_bar: int = Field(50, ge=1, le=500, description="结束bar索引")
+    params: dict | None = Field(None, description="策略参数覆盖")

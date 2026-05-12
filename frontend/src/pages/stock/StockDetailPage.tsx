@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState, useCallback, memo } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, memo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { createChart, CandlestickSeries, HistogramSeries, type IChartApi, type CandlestickData, type HistogramData, type Time } from 'lightweight-charts';
-import { useStockRealtime, useStockHistory, useStockIndicators, useStockAnalysis } from '@/hooks/queries/useStockQueries';
+import { createChart, CandlestickSeries, LineSeries, HistogramSeries, type IChartApi, type CandlestickData, type HistogramData, type Time } from 'lightweight-charts';
+import { useStockRealtime, useStockHistory, useStockIndicators } from '@/hooks/queries/useStockQueries';
+import { useApiGet } from '@/hooks/useApi';
 import { useChipDistribution, useStockNews, useNewsSentiment, useGarchVolatility, useHmmRegime, useRollingRisk, useSeasonality } from '@/hooks/queries/useStockDetailQueries';
 import { useCanvas } from '@/hooks/useCanvas';
+import { useSSEQuote } from '@/hooks/useSSEQuote';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { formatPrice, formatPercent, formatVolume, formatAmount } from '@/utils/format';
 import type { StockQuote } from '@/types';
 
@@ -171,8 +174,7 @@ function msToTime(ts: number): Time {
 }
 
 const MoneyFlowTab = memo(function MoneyFlowTab({ symbol }: { symbol: string }) {
-  const { data, isLoading, isError } = useStockAnalysis(symbol);
-  const flowData = data as unknown as MoneyFlowData | undefined;
+  const { data: flowData, isLoading, isError } = useApiGet<MoneyFlowData>(`/moneyflow/stock/${symbol}`);
 
   const { ref: chartRef, redraw: redrawChart } = useCanvas(
     useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
@@ -1174,12 +1176,47 @@ const SeasonalityTab = memo(function SeasonalityTab({ symbol }: { symbol: string
   );
 });
 
-const KlineChart = memo(function KlineChart({ symbol }: { symbol: string }) {
+const ChartTooltip = memo(function ChartTooltip({ bar }: { bar: { open: number; high: number; low: number; close: number; volume: number } | null }) {
+  if (!bar) return null;
+  return (
+    <div style={{
+      position: 'absolute', top: 12, left: 12, zIndex: 10,
+      background: 'var(--glass-2)', border: '1px solid var(--border-default)',
+      borderRadius: 8, padding: '8px 12px',
+      display: 'grid', gridTemplateColumns: '1fr 1fr',
+      gap: '2px 16px', pointerEvents: 'none',
+    }}>
+      {[['开', bar.open], ['高', bar.high], ['低', bar.low], ['收', bar.close]].map(([label, val]) => (
+        <div key={label as string} style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+          <span style={{ fontSize: 9, color: 'var(--label-quaternary)', fontFamily: 'var(--font-mono)' }}>{label}</span>
+          <span style={{ fontSize: 12, color: 'var(--label-primary)', fontFamily: 'var(--font-mono)', fontVariantNumeric: 'tabular-nums' }}>
+            {formatPrice(val as number)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+});
+
+const TIME_PERIODS = [
+  { key: '1D', label: '1D', count: 1, period: '1min' },
+  { key: '1W', label: '1W', count: 5, period: 'daily' },
+  { key: '1M', label: '1M', count: 22, period: 'daily' },
+  { key: '3M', label: '3M', count: 66, period: 'daily' },
+  { key: '1Y', label: '1Y', count: 250, period: 'daily' },
+  { key: 'ALL', label: 'ALL', count: 0, period: 'daily' },
+] as const;
+
+type TimePeriodKey = typeof TIME_PERIODS[number]['key'];
+
+const KlineChart = memo(function KlineChart({ symbol, period }: { symbol: string; period: TimePeriodKey }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ReturnType<IChartApi['addSeries']> | null>(null);
   const volumeSeriesRef = useRef<ReturnType<IChartApi['addSeries']> | null>(null);
+  const [tooltipBar, setTooltipBar] = useState<{ open: number; high: number; low: number; close: number; volume: number } | null>(null);
 
+  const periodConfig = TIME_PERIODS.find(p => p.key === period) ?? TIME_PERIODS[2];
   const { data: klineRaw } = useStockHistory(symbol);
   const klineData = klineRaw as unknown as KlineRaw[] | undefined;
 
@@ -1198,7 +1235,7 @@ const KlineChart = memo(function KlineChart({ symbol }: { symbol: string }) {
       },
       crosshair: { mode: 0 },
       rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)' },
-      timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: false },
+      timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: periodConfig.period === '1min' },
     });
     chartRef.current = chart;
 
@@ -1222,6 +1259,26 @@ const KlineChart = memo(function KlineChart({ symbol }: { symbol: string }) {
       scaleMargins: { top: 0.85, bottom: 0 },
     });
 
+    chart.subscribeCrosshairMove((param) => {
+      if (!param.time || !param.seriesData || param.seriesData.size === 0) {
+        setTooltipBar(null);
+        return;
+      }
+      const data = param.seriesData.get(candleSeries) as { open?: number; high?: number; low?: number; close?: number } | undefined;
+      const volData = param.seriesData.get(volumeSeries) as { value?: number } | undefined;
+      if (data && data.open !== undefined) {
+        setTooltipBar({
+          open: data.open,
+          high: data.high ?? data.open,
+          low: data.low ?? data.open,
+          close: data.close ?? data.open,
+          volume: volData?.value ?? 0,
+        });
+      } else {
+        setTooltipBar(null);
+      }
+    });
+
     const onResize = () => {
       if (containerRef.current) {
         chart.applyOptions({ width: containerRef.current.clientWidth });
@@ -1235,7 +1292,7 @@ const KlineChart = memo(function KlineChart({ symbol }: { symbol: string }) {
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
     };
-  }, [symbol]);
+  }, [symbol, periodConfig.period]);
 
   useEffect(() => {
     if (!klineData || !candleSeriesRef.current || !volumeSeriesRef.current || !chartRef.current) return;
@@ -1260,7 +1317,12 @@ const KlineChart = memo(function KlineChart({ symbol }: { symbol: string }) {
     }
   }, [klineData]);
 
-  return <div ref={containerRef} style={{ width: '100%', height: '480px' }} />;
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '480px' }}>
+      <ChartTooltip bar={tooltipBar} />
+      <div ref={containerRef} style={{ width: '100%', height: '480px' }} />
+    </div>
+  );
 });
 
 interface IndicatorData {
@@ -1293,18 +1355,18 @@ const IndicatorPanel = memo(function IndicatorPanel({ symbol }: { symbol: string
     });
     macdChartRef.current = chart;
 
-    const macdLine = chart.addSeries(CandlestickSeries, {
+    const macdLine = chart.addSeries(LineSeries, {
       color: '#0A84FF',
       lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false,
-    } as never);
-    const signalLine = chart.addSeries(CandlestickSeries, {
+    });
+    const signalLine = chart.addSeries(LineSeries, {
       color: '#FF9100',
       lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false,
-    } as never);
+    });
     const histSeries = chart.addSeries(HistogramSeries, {
       priceLineVisible: false,
       lastValueVisible: false,
@@ -1350,12 +1412,12 @@ const IndicatorPanel = memo(function IndicatorPanel({ symbol }: { symbol: string
     });
     rsiChartRef.current = chart;
 
-    const rsiLine = chart.addSeries(CandlestickSeries, {
+    const rsiLine = chart.addSeries(LineSeries, {
       color: '#0A84FF',
       lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false,
-    } as never);
+    });
 
     const rsiData = data.rsi.map(d => ({ time: d.time as Time, value: d.value }));
     (rsiLine as unknown as { setData: (d: unknown[]) => void }).setData(rsiData);
@@ -1450,9 +1512,16 @@ export function StockDetailPage() {
   const { symbol } = useParams<{ symbol: string }>();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<ChartTab>('kline');
+  const [chartPeriod, setChartPeriod] = useState<TimePeriodKey>('3M');
 
   const { data: quoteRaw, isLoading, isError } = useStockRealtime(symbol ?? '');
   const quote = quoteRaw ? (quoteRaw as unknown as StockQuote) : null;
+
+  const { quote: sseQuote } = useSSEQuote(symbol ?? '');
+  const liveQuote = useMemo(() => {
+    if (!sseQuote || !quote) return quote;
+    return { ...quote, price: sseQuote.price, change: sseQuote.change, change_pct: sseQuote.change_pct, volume: sseQuote.volume };
+  }, [quote, sseQuote]);
 
   const handleBack = useCallback(() => {
     navigate(-1);
@@ -1495,27 +1564,27 @@ export function StockDetailPage() {
     );
   }
 
-  const isRise = quote.change_pct >= 0;
+  const isRise = liveQuote.change_pct >= 0;
   const priceClr = isRise ? '#FF1744' : '#00C853';
   const changeBg = isRise ? 'rgba(255,23,68,0.12)' : 'rgba(0,200,83,0.12)';
 
-  const prevClose = quote.last_close ?? quote.close ?? quote.price - quote.change;
-  const amplitude = prevClose > 0 ? ((quote.high ?? quote.price) - (quote.low ?? quote.price)) / prevClose * 100 : 0;
+  const prevClose = liveQuote.last_close ?? liveQuote.close ?? liveQuote.price - liveQuote.change;
+  const amplitude = prevClose > 0 ? ((liveQuote.high ?? liveQuote.price) - (liveQuote.low ?? liveQuote.price)) / prevClose * 100 : 0;
 
-  const turnoverDisplay = quote.turnover_rate ?? quote.turnover;
+  const turnoverDisplay = liveQuote.turnover_rate ?? liveQuote.turnover;
   const metricsLeft = [
-    { label: '今开', value: quote.open !== undefined ? formatPrice(quote.open) : '—' },
-    { label: '最高', value: quote.high !== undefined ? formatPrice(quote.high) : '—', color: '#FF1744' },
-    { label: '成交量', value: formatVolume(quote.volume) },
-    { label: '市盈率', value: formatPePb(quote.pe) },
+    { label: '今开', value: liveQuote.open !== undefined ? formatPrice(liveQuote.open) : '—' },
+    { label: '最高', value: liveQuote.high !== undefined ? formatPrice(liveQuote.high) : '—', color: '#FF1744' },
+    { label: '成交量', value: formatVolume(liveQuote.volume) },
+    { label: '市盈率', value: formatPePb(liveQuote.pe) },
     { label: '换手率', value: turnoverDisplay !== undefined ? `${turnoverDisplay.toFixed(2)}%` : '—' },
   ];
 
   const metricsRight = [
     { label: '昨收', value: prevClose !== undefined ? formatPrice(prevClose) : '—' },
-    { label: '最低', value: quote.low !== undefined ? formatPrice(quote.low) : '—', color: '#00C853' },
-    { label: '成交额', value: formatAmount(quote.amount) },
-    { label: '市净率', value: formatPePb(quote.pb) },
+    { label: '最低', value: liveQuote.low !== undefined ? formatPrice(liveQuote.low) : '—', color: '#00C853' },
+    { label: '成交额', value: formatAmount(liveQuote.amount) },
+    { label: '市净率', value: formatPePb(liveQuote.pb) },
     { label: '振幅', value: `${amplitude.toFixed(2)}%` },
   ];
 
@@ -1549,10 +1618,10 @@ export function StockDetailPage() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', flex: '0 0 auto' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s3)' }}>
               <span style={{ fontFamily: 'var(--font-sans)', fontSize: '24px', fontWeight: 700, color: 'rgba(255,255,255,0.95)', lineHeight: 1.2 }}>
-                {quote.name}
+                {liveQuote.name}
               </span>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: '#0A84FF', fontVariantNumeric: 'tabular-nums' }}>
-                {quote.symbol}
+                {liveQuote.symbol}
               </span>
               {marketTag && (
                 <span
@@ -1580,7 +1649,7 @@ export function StockDetailPage() {
                 fontVariantNumeric: 'tabular-nums',
                 lineHeight: 1,
               }}>
-                {formatPrice(quote.price)}
+                {formatPrice(liveQuote.price)}
               </span>
               <span style={{
                 fontFamily: 'var(--font-mono)',
@@ -1589,7 +1658,7 @@ export function StockDetailPage() {
                 fontVariantNumeric: 'tabular-nums',
                 fontWeight: 500,
               }}>
-                {quote.change >= 0 ? '+' : ''}{formatPrice(quote.change)}
+                {liveQuote.change >= 0 ? '+' : ''}{formatPrice(liveQuote.change)}
               </span>
               <span style={{
                 fontFamily: 'var(--font-mono)',
@@ -1601,7 +1670,7 @@ export function StockDetailPage() {
                 borderRadius: 'var(--r-xs)',
                 background: changeBg,
               }}>
-                {isRise ? '+' : ''}{formatPercent(quote.change_pct)}
+                {isRise ? '+' : ''}{formatPercent(liveQuote.change_pct)}
               </span>
             </div>
           </div>
@@ -1648,7 +1717,31 @@ export function StockDetailPage() {
 
           {activeTab === 'kline' && (
             <>
-              <KlineChart symbol={quote.symbol} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '8px 16px', borderBottom: '1px solid var(--separator)' }}>
+                {TIME_PERIODS.map(tp => (
+                  <button
+                    key={tp.key}
+                    onClick={() => setChartPeriod(tp.key)}
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '11px',
+                      fontWeight: chartPeriod === tp.key ? 600 : 400,
+                      color: chartPeriod === tp.key ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.35)',
+                      background: chartPeriod === tp.key ? 'rgba(10,132,255,0.12)' : 'transparent',
+                      border: 'none',
+                      borderRadius: '4px',
+                      padding: '4px 10px',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease',
+                    }}
+                  >
+                    {tp.label}
+                  </button>
+                ))}
+              </div>
+              <ErrorBoundary fallback={<div style={{ color: 'var(--label-tertiary)', padding: 16 }}>Chart unavailable</div>}>
+                <KlineChart symbol={quote.symbol} period={chartPeriod} />
+              </ErrorBoundary>
               <IndicatorPanel symbol={quote.symbol} />
             </>
           )}
@@ -1689,14 +1782,14 @@ export function StockDetailPage() {
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: '9px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.08em', marginBottom: 'var(--s3)', textTransform: 'uppercase' }}>
               价格区间
             </div>
-            <PriceRangeBar high={quote.high ?? quote.price} low={quote.low ?? quote.price} current={quote.price} prevClose={prevClose} />
+            <PriceRangeBar high={liveQuote.high ?? liveQuote.price} low={liveQuote.low ?? liveQuote.price} current={liveQuote.price} prevClose={prevClose} />
           </div>
 
           <div style={{ ...GLASS, padding: 'var(--s5)' }}>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: '9px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.08em', marginBottom: 'var(--s3)', textTransform: 'uppercase' }}>
               成交概览
             </div>
-            <VolumeOverview volume={quote.volume} amount={quote.amount} turnover={quote.turnover} />
+            <VolumeOverview volume={liveQuote.volume} amount={liveQuote.amount} turnover={liveQuote.turnover} />
           </div>
         </div>
 

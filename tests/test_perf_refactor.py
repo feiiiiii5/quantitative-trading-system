@@ -352,6 +352,60 @@ def test_risk_metrics_endpoint_exists():
     assert resp.status_code == 200
     result = resp.json()
     assert result["success"] is True
+
+
+def test_backtest_progress_sse_endpoint():
+    from main import app
+    routes = [r.path for r in app.routes if hasattr(r, "path")]
+    assert "/api/backtest/progress" in routes
+
+
+def test_backtest_progress_event_bus_wiring():
+    import asyncio
+    from core.events import Event, EventType, get_event_bus
+
+    bus = get_event_bus()
+    received: list[Event] = []
+
+    def handler(event: Event):
+        received.append(event)
+
+    for et in (EventType.BACKTEST_STARTED, EventType.BACKTEST_PROGRESS,
+               EventType.BACKTEST_COMPLETED, EventType.BACKTEST_ERROR):
+        bus.subscribe(et, handler)
+
+    bus.publish(Event(EventType.BACKTEST_STARTED, {"strategy": "test"}))
+    bus.publish(Event(EventType.BACKTEST_PROGRESS, {"pct": 0.5}))
+    bus.publish(Event(EventType.BACKTEST_COMPLETED, {"result": "done"}))
+
+    assert len(received) == 3
+    assert received[0].event_type == EventType.BACKTEST_STARTED
+    assert received[1].event_type == EventType.BACKTEST_PROGRESS
+    assert received[2].event_type == EventType.BACKTEST_COMPLETED
+
+    for et in (EventType.BACKTEST_STARTED, EventType.BACKTEST_PROGRESS,
+               EventType.BACKTEST_COMPLETED, EventType.BACKTEST_ERROR):
+        bus.unsubscribe(et, handler)
+
+
+def test_auto_optimize_route_registered():
+    from main import app
+    routes = [r.path for r in app.routes if hasattr(r, "path")]
+    assert "/api/quantlab/auto-optimize" in routes
+
+
+def test_strategy_health_route_registered():
+    from main import app
+    routes = [r.path for r in app.routes if hasattr(r, "path")]
+    assert "/api/quantlab/strategy-health" in routes
+
+
+def test_risk_metrics_data_structure():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+    resp = client.get("/api/risk/metrics")
+    result = resp.json()
     data = result["data"]
     assert "riskLevel" in data
     assert data["riskLevel"] in ("LOW", "MEDIUM", "HIGH", "CRITICAL")
@@ -463,3 +517,75 @@ def test_market_overview_includes_breadth():
         data = result["data"]
         assert "cn_indices" in data
         assert "market_breadth" in data
+
+
+def test_sensitivity_heatmap_route_registered():
+    from fastapi.testclient import TestClient
+    from main import app
+    routes = [r.path for r in app.routes]
+    assert "/api/quantlab/sensitivity-heatmap" in routes
+
+
+def test_sensitivity_heatmap_request_model():
+    from api.routers.models import SensitivityHeatmapRequest
+    req = SensitivityHeatmapRequest(
+        strategy="dual_ma",
+        symbol="000001",
+        param_x="short_window",
+        param_x_values=[5, 10, 15],
+        param_y="long_window",
+        param_y_values=[20, 30, 40],
+        metric="sharpe_ratio",
+    )
+    assert req.strategy == "dual_ma"
+    assert req.param_x == "short_window"
+    assert len(req.param_x_values) == 3
+    assert len(req.param_y_values) == 3
+
+
+def test_sensitivity_heatmap_request_validation():
+    from api.routers.models import SensitivityHeatmapRequest
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        SensitivityHeatmapRequest(
+            strategy="",
+            symbol="000001",
+            param_x="short_window",
+            param_x_values=[5],
+            param_y="long_window",
+            param_y_values=[20],
+        )
+
+
+def test_signal_replay_route_registered():
+    from fastapi.testclient import TestClient
+    from main import app
+    routes = [r.path for r in app.routes]
+    assert "/api/quantlab/signal-replay" in routes
+
+
+def test_signal_replay_request_model():
+    from api.routers.models import SignalReplayRequest
+    req = SignalReplayRequest(
+        strategy="dual_ma",
+        symbol="000001",
+        start_bar=0,
+        end_bar=50,
+        params={"short_window": 5, "long_window": 20},
+    )
+    assert req.strategy == "dual_ma"
+    assert req.start_bar == 0
+    assert req.end_bar == 50
+    assert req.params is not None
+
+
+def test_signal_replay_request_validation():
+    from api.routers.models import SignalReplayRequest
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        SignalReplayRequest(
+            strategy="",
+            symbol="000001",
+            start_bar=-1,
+            end_bar=0,
+        )

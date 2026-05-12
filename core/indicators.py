@@ -49,10 +49,10 @@ class TechnicalIndicators:
         if cached is not None:
             return cached
 
-        c = df["close"].values.astype(float)
-        h = df["high"].values.astype(float)
-        low_arr = df["low"].values.astype(float)
-        v = df["volume"].values.astype(float) if "volume" in df.columns else np.zeros(len(df))
+        c = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
+        h = pd.to_numeric(df["high"], errors="coerce").dropna().values.astype(float)
+        low_arr = pd.to_numeric(df["low"], errors="coerce").dropna().values.astype(float)
+        v = pd.to_numeric(df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in df.columns else np.zeros(len(df))
 
         ma = TechnicalIndicators._ma(c)
         ema = TechnicalIndicators._ema(c)

@@ -329,8 +329,58 @@ async def run_backtest_stream(
             result_data = msg.get("data", {})
             if msg.get("type") == "result" and result_data:
                 await backtest_result_cache.set(cache_key, _sanitize_numpy(result_data), CACHE_TTL["backtest_result"])
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to cache backtest result: %s", e)
             pass
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@backtest_router.get("/backtest/progress")
+async def backtest_progress_stream(request: Request):
+    from core.events import EventType, get_event_bus
+
+    bus = get_event_bus()
+    progress_queue: asyncio.Queue = asyncio.Queue()
+    _PROGRESS_EVENT_TYPES = {
+        EventType.BACKTEST_PROGRESS,
+        EventType.BACKTEST_TRADE,
+        EventType.BACKTEST_COMPLETED,
+        EventType.BACKTEST_ERROR,
+        EventType.BACKTEST_STARTED,
+    }
+
+    def _on_event(event):
+        if event.event_type in _PROGRESS_EVENT_TYPES:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.call_soon_threadsafe(progress_queue.put_nowait, event)
+            except RuntimeError:
+                pass
+
+    for et in _PROGRESS_EVENT_TYPES:
+        bus.subscribe(et, _on_event)
+
+    async def generate():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(progress_queue.get(), timeout=30.0)
+                    payload = {
+                        "type": event.event_type.value,
+                        "data": event.data,
+                        "timestamp": event.timestamp,
+                    }
+                    yield f"data: {json_dumps(_sanitize_numpy(payload))}\n\n"
+                    if event.event_type in (EventType.BACKTEST_COMPLETED, EventType.BACKTEST_ERROR):
+                        break
+                except asyncio.TimeoutError:
+                    yield f": keepalive\n\n"
+        finally:
+            for et in _PROGRESS_EVENT_TYPES:
+                bus.unsubscribe(et, _on_event)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -989,7 +1039,7 @@ async def compute_efficient_frontier(request: Request, body: EfficientFrontierRe
                 df = df.tail(body.period)
                 if "close" not in df.columns:
                     return sym, None
-                closes = df["close"].values.astype(float)
+                closes = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
                 rets = np.diff(closes) / np.where(closes[:-1] > 0, closes[:-1], 1)
                 rets = np.where(np.isfinite(rets), rets, 0)
                 return sym, rets

@@ -52,7 +52,8 @@ const ToastItem = memo(function ToastItem({ toast, onDismiss }: { toast: Toast; 
 });
 
 export const ToastContainer = memo(function ToastContainer() {
-  const { toasts, removeToast } = useToastStore();
+  const toasts = useToastStore(s => s.toasts);
+  const removeToast = useToastStore(s => s.removeToast);
 
   if (toasts.length === 0) return null;
 

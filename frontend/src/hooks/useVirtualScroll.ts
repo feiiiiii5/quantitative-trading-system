@@ -30,10 +30,10 @@ export function useVirtualScroll({ itemCount, itemHeight, overscan = 5 }: Virtua
     ? 0
     : Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
   const endIdx = containerHeight === 0
-    ? 0
+    ? Math.min(itemCount, 20)
     : Math.min(itemCount, Math.ceil((scrollTop + containerHeight) / itemHeight) + overscan);
 
-  const visibleItems = containerHeight === 0 ? [] : Array.from({ length: endIdx - startIdx }, (_, i) => startIdx + i);
+  const visibleItems = Array.from({ length: endIdx - startIdx }, (_, i) => startIdx + i);
 
   const onScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     setScrollTop(e.currentTarget.scrollTop);

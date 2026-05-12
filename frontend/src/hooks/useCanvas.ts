@@ -23,10 +23,19 @@ export function useCanvas(
   }, []);
 
   useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    let rafId: number;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(redraw);
+    });
+    observer.observe(canvas);
     redraw();
-    const onResize = () => redraw();
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(rafId);
+    };
   }, [redraw]);
 
   useEffect(() => {

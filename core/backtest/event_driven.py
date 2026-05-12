@@ -55,13 +55,13 @@ def run_event_driven(
     strategy.reset()
     engine._event_bus.publish(Event(EventType.INIT, {"strategy": strategy.name}))
 
-    closes = df["close"].values.astype(float) if "close" in df.columns else np.array([])
-    opens = df["open"].values.astype(float) if "open" in df.columns else closes
-    highs = df["high"].values.astype(float) if "high" in df.columns else closes
-    lows = df["low"].values.astype(float) if "low" in df.columns else closes
+    closes = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float) if "close" in df.columns else np.array([])
+    opens = pd.to_numeric(df["open"], errors="coerce").dropna().values.astype(float) if "open" in df.columns else closes
+    highs = pd.to_numeric(df["high"], errors="coerce").dropna().values.astype(float) if "high" in df.columns else closes
+    lows = pd.to_numeric(df["low"], errors="coerce").dropna().values.astype(float) if "low" in df.columns else closes
     dates_col = df["date"].values if "date" in df.columns else np.arange(len(closes))
-    volumes = df["volume"].values.astype(float) if "volume" in df.columns else None
-    amounts_col = df["amount"].values.astype(float) if "amount" in df.columns else None
+    volumes = pd.to_numeric(df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in df.columns else None
+    amounts_col = pd.to_numeric(df["amount"], errors="coerce").dropna().values.astype(float) if "amount" in df.columns else None
 
     n = len(closes)
     if n < 2:
@@ -163,7 +163,8 @@ def run_event_driven(
                         "reason": validated.reason,
                         "strength": validated.strength,
                     }
-                except Exception:
+                except Exception as e:
+                    logger.debug("Signal validation failed: %s", e)
                     action = sig.get("action", "hold")
             else:
                 action = getattr(sig, "action", "hold")

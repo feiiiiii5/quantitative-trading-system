@@ -4,6 +4,7 @@ import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi, type C
 import { useMarketStocks, useMarketSectors } from '@/hooks/queries/useMarketQueries';
 import { useWatchlist, useAddToWatchlist, useRemoveFromWatchlist } from '@/hooks/queries/useWatchlistQueries';
 import { VirtualList } from '@/components/ui/VirtualList';
+import { EmptyState } from '@/components/ui/EmptyState';
 import { apiGet } from '@/api/client';
 import { formatPrice, formatPercent, formatVolume, formatAmount, priceColor } from '@/utils/format';
 import type { StockQuote } from '@/types';
@@ -151,6 +152,69 @@ function changeColor(val: number): string {
   return 'rgba(255,255,255,0.45)';
 }
 
+const TickFlashCell = memo(function TickFlashCell({ value, changePct }: { value: number; changePct: number }) {
+  const [flash, setFlash] = useState<'up' | 'down' | null>(null);
+  const prev = useRef(value);
+  useEffect(() => {
+    if (value !== prev.current) {
+      setFlash(value > prev.current ? 'up' : 'down');
+      prev.current = value;
+      const timer = setTimeout(() => setFlash(null), 500);
+      return () => clearTimeout(timer);
+    }
+  }, [value]);
+  return (
+    <span style={{
+      color: changePct >= 0 ? 'var(--num-positive)' : 'var(--num-negative)',
+      background: flash === 'up' ? 'rgba(255,59,92,0.15)' :
+                  flash === 'down' ? 'rgba(0,217,160,0.15)' : 'transparent',
+      transition: 'background 500ms ease-out',
+      fontVariantNumeric: 'tabular-nums',
+      fontFamily: 'var(--font-mono)',
+    }}>
+      {formatPrice(value)}
+    </span>
+  );
+});
+
+const LimitBadge = memo(function LimitBadge({ changePct }: { changePct: number }) {
+  if (changePct >= 9.9) {
+    return (
+      <span style={{
+        fontFamily: 'var(--font-mono)',
+        fontSize: '9px',
+        fontWeight: 600,
+        padding: '1px 4px',
+        borderRadius: '2px',
+        background: 'rgba(255,23,68,0.2)',
+        color: '#FF1744',
+        marginLeft: 4,
+        flexShrink: 0,
+      }}>
+        ↑停
+      </span>
+    );
+  }
+  if (changePct <= -9.9) {
+    return (
+      <span style={{
+        fontFamily: 'var(--font-mono)',
+        fontSize: '9px',
+        fontWeight: 600,
+        padding: '1px 4px',
+        borderRadius: '2px',
+        background: 'rgba(0,200,83,0.2)',
+        color: '#00C853',
+        marginLeft: 4,
+        flexShrink: 0,
+      }}>
+        ↓停
+      </span>
+    );
+  }
+  return null;
+});
+
 const KlineChart = memo(function KlineChart({ symbol }: { symbol: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -280,21 +344,7 @@ const LoadingState = memo(function LoadingState() {
   );
 });
 
-const EmptyPlaceholder = memo(function EmptyPlaceholder() {
-  return (
-    <div style={{
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      flex: 1,
-      fontFamily: 'var(--font-sans)',
-      fontSize: '14px',
-      color: 'rgba(255,255,255,0.3)',
-    }}>
-      暂无数据
-    </div>
-  );
-});
+
 
 const MoneyFlowTab = memo(function MoneyFlowTab() {
   const [stocks, setStocks] = useState<MoneyFlowStock[]>([]);
@@ -344,7 +394,7 @@ const MoneyFlowTab = memo(function MoneyFlowTab() {
   }, [stocks, sortKey, sortDir]);
 
   if (loading) return <LoadingState />;
-  if (error || sorted.length === 0) return <EmptyPlaceholder />;
+  if (error || sorted.length === 0) return <EmptyState title="暂无资金流向数据" description="请检查网络连接或稍后重试" size="md" />;
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -465,7 +515,7 @@ const SectorRotationTab = memo(function SectorRotationTab() {
   }, []);
 
   if (loading) return <LoadingState />;
-  if (error || (rotation.length === 0 && strength.length === 0 && moneyFlow.length === 0)) return <EmptyPlaceholder />;
+  if (error || (rotation.length === 0 && strength.length === 0 && moneyFlow.length === 0)) return <EmptyState title="暂无行情数据" description="请检查网络连接或稍后重试" size="lg" />;
 
   const sortedMoneyFlow = useMemo(() => {
     return [...moneyFlow].sort((a, b) => b.main_net_inflow - a.main_net_inflow);
@@ -758,7 +808,7 @@ const ScreenerTab = memo(function ScreenerTab() {
   }, [presets]);
 
   if (loading) return <LoadingState />;
-  if (error || presets.length === 0) return <EmptyPlaceholder />;
+  if (error || presets.length === 0) return <EmptyState title="暂无选股条件" description="请检查网络连接或稍后重试" size="md" />;
 
   return (
     <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
@@ -940,20 +990,10 @@ const ScreenerTab = memo(function ScreenerTab() {
           </>
         )}
         {!running && !result && selectedId === null && (
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flex: 1,
-            fontFamily: 'var(--font-sans)',
-            fontSize: '14px',
-            color: 'rgba(255,255,255,0.3)',
-          }}>
-            请选择一个选股条件
-          </div>
+          <EmptyState title="请选择选股条件" description="从左侧列表中选择一个条件开始筛选" size="md" />
         )}
         {!running && !result && selectedId !== null && (
-          <EmptyPlaceholder />
+          <EmptyState title="暂无选股结果" description="该条件下未筛选到符合条件的股票" size="md" />
         )}
       </div>
     </div>
@@ -1211,6 +1251,9 @@ export function MarketPage() {
   const [sectorFilter, setSectorFilter] = useState('');
   const [showSectorDropdown, setShowSectorDropdown] = useState(false);
   const [contentTab, setContentTab] = useState<ContentTab>('market');
+  const [focusedIdx, setFocusedIdx] = useState(-1);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const sectorNames = useMemo(() => {
     const names = new Set(sectors.map(s => s.name));
@@ -1275,6 +1318,50 @@ export function MarketPage() {
     });
   }, [filtered, sortKey, sortDir]);
 
+  useEffect(() => {
+    setFocusedIdx(-1);
+  }, [filter, activeTab, changeRangeIdx, sectorFilter]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const handler = (e: KeyboardEvent) => {
+      if (contentTab !== 'market') return;
+      switch (e.key) {
+        case 'ArrowDown':
+          e.preventDefault();
+          setFocusedIdx(prev => Math.min(prev + 1, sorted.length - 1));
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          setFocusedIdx(prev => Math.max(prev - 1, 0));
+          break;
+        case 'Enter':
+          if (focusedIdx >= 0 && sorted[focusedIdx]) {
+            navigate(`/stock/${sorted[focusedIdx].symbol}`);
+          }
+          break;
+        case 'Escape':
+          setFocusedIdx(-1);
+          break;
+        case ' ':
+          if (focusedIdx >= 0 && sorted[focusedIdx]) {
+            e.preventDefault();
+            toggleWatch(sorted[focusedIdx].symbol);
+          }
+          break;
+        case 'f':
+          if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+            e.preventDefault();
+            searchInputRef.current?.focus();
+          }
+          break;
+      }
+    };
+    el.addEventListener('keydown', handler);
+    return () => el.removeEventListener('keydown', handler);
+  }, [contentTab, sorted, focusedIdx, navigate, toggleWatch]);
+
   const watchlistSet = useMemo(() => new Set(watchlist), [watchlist]);
 
   const handleRowClick = useCallback((stock: StockQuote) => {
@@ -1296,8 +1383,9 @@ export function MarketPage() {
     }
   }, [selectedStock, toggleWatch]);
 
-  const renderItem = useCallback((stock: StockQuote, _index: number, style: React.CSSProperties) => {
+  const renderItem = useCallback((stock: StockQuote, index: number, style: React.CSSProperties) => {
     const isWatched = watchlistSet.has(stock.symbol);
+    const isFocused = focusedIdx === index;
     return (
       <div
         style={{
@@ -1307,13 +1395,15 @@ export function MarketPage() {
           height: '40px',
           cursor: 'pointer',
           borderBottom: '1px solid var(--separator)',
+          borderLeft: isFocused ? '2px solid var(--accent)' : '2px solid transparent',
+          background: isFocused ? 'rgba(10,132,255,0.08)' : undefined,
           transition: `background var(--dur-fast) var(--ease-apple)`,
           boxSizing: 'border-box',
         }}
         onClick={() => handleRowClick(stock)}
         onDoubleClick={() => navigate(`/stock/${stock.symbol}`)}
-        onMouseEnter={e => { e.currentTarget.style.background = 'var(--accent-soft)'; }}
-        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+        onMouseEnter={e => { if (!isFocused) e.currentTarget.style.background = 'var(--accent-soft)'; }}
+        onMouseLeave={e => { if (!isFocused) e.currentTarget.style.background = 'transparent'; }}
       >
         <span style={{ width: '80px', flexShrink: 0, padding: '0 12px', fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--accent)', fontVariantNumeric: 'tabular-nums' }}>
           {stock.symbol}
@@ -1321,13 +1411,16 @@ export function MarketPage() {
         <span style={{ flex: 1, minWidth: 0, padding: '0 12px', fontFamily: 'var(--font-sans)', fontSize: '13px', fontWeight: 500, color: 'var(--label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {stock.name}
         </span>
-        <span style={{ width: '90px', flexShrink: 0, padding: '0 12px', fontFamily: 'var(--font-mono)', fontSize: '12px', color: priceColor(stock.change_pct), fontVariantNumeric: 'tabular-nums', textAlign: 'right', boxSizing: 'border-box' }}>
-          {formatPrice(stock.price)}
+        <span style={{ width: '90px', flexShrink: 0, padding: '0 12px', fontSize: '12px', fontVariantNumeric: 'tabular-nums', textAlign: 'right', boxSizing: 'border-box' }}>
+          <TickFlashCell value={stock.price} changePct={stock.change_pct} />
         </span>
-        <span style={{ width: '90px', flexShrink: 0, padding: '0 12px', fontFamily: 'var(--font-mono)', fontSize: '12px', color: priceColor(stock.change_pct), fontVariantNumeric: 'tabular-nums', textAlign: 'right', fontWeight: 500, boxSizing: 'border-box' }}>
-          {formatPercent(stock.change_pct)}
+        <span style={{ width: '90px', flexShrink: 0, padding: '0 12px', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 2, boxSizing: 'border-box' }}>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: priceColor(stock.change_pct), fontVariantNumeric: 'tabular-nums', fontWeight: 500 }}>
+            {formatPercent(stock.change_pct)}
+          </span>
+          <LimitBadge changePct={stock.change_pct} />
         </span>
-        <span style={{ width: '90px', flexShrink: 0, padding: '0 12px', fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--label-secondary)', fontVariantNumeric: 'tabular-nums', textAlign: 'right', boxSizing: 'border-box' }}>
+        <span style={{ width: '90px', flexShrink: 0, padding: '0 12px', fontFamily: 'var(--font-mono)', fontSize: '11px', color: (stock.volume_ratio ?? 0) > 3 ? '#FF9100' : 'var(--label-secondary)', fontVariantNumeric: 'tabular-nums', textAlign: 'right', boxSizing: 'border-box', background: (stock.volume_ratio ?? 0) > 3 ? 'rgba(255,145,0,0.08)' : 'transparent' }}>
           {formatVolume(stock.volume)}
         </span>
         <span style={{ width: '100px', flexShrink: 0, padding: '0 12px', fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--label-secondary)', fontVariantNumeric: 'tabular-nums', textAlign: 'right', boxSizing: 'border-box' }}>
@@ -1358,10 +1451,10 @@ export function MarketPage() {
         </span>
       </div>
     );
-  }, [watchlistSet, handleRowClick, handleToggleWatch]);
+  }, [watchlistSet, handleRowClick, handleToggleWatch, focusedIdx]);
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg-base)', position: 'relative' }}>
+    <div ref={containerRef} tabIndex={0} style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg-base)', position: 'relative', outline: 'none' }}>
       <div style={{
         display: 'flex',
         alignItems: 'center',
@@ -1504,6 +1597,7 @@ export function MarketPage() {
             {sorted.length}
           </span>
           <input
+            ref={searchInputRef}
             value={filter}
             onChange={e => setFilter(e.target.value)}
             placeholder="搜索代码/名称..."

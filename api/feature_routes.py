@@ -591,7 +591,7 @@ async def get_correlation_matrix(request: Request):
             try:
                 df = await fetcher.get_history(sym, period, "daily", "qfq")
                 if df is not None and len(df) >= window:
-                    price_data[sym] = df["close"].values.astype(float)
+                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
             except (ValueError, KeyError, TypeError) as e:
                 logger.debug("Correlation data fetch failed for %s: %s", sym, e)
                 continue
@@ -664,7 +664,7 @@ async def portfolio_risk_attribution(request: Request):
             try:
                 df = await fetcher.get_history(sym, period, "daily", "qfq")
                 if df is not None and len(df) >= 30:
-                    price_data[sym] = df["close"].values.astype(float)
+                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
                     weights[sym] = w / total_weight
             except (ValueError, KeyError, TypeError) as e:
                 logger.debug("Risk attribution data fetch failed for %s: %s", sym, e)
@@ -835,7 +835,7 @@ async def optimize_portfolio(request: Request):
             try:
                 df = await fetcher.get_history(sym, period, "daily", "qfq")
                 if df is not None and len(df) >= 10:
-                    price_data[sym] = df["close"].values.astype(float)
+                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
             except (ValueError, KeyError, TypeError) as e:
                 logger.debug("Portfolio data fetch failed for %s: %s", sym, e)
                 continue
@@ -910,7 +910,7 @@ async def get_efficient_frontier(request: Request):
             try:
                 df = await fetcher.get_history(sym, period, "daily", "qfq")
                 if df is not None and len(df) >= 10:
-                    price_data[sym] = df["close"].values.astype(float)
+                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
             except (ValueError, KeyError, TypeError) as e:
                 logger.debug("Frontier data fetch failed for %s: %s", sym, e)
                 continue
@@ -999,7 +999,7 @@ async def black_litterman_optimize(request: Request):
             try:
                 df = await fetcher.get_history(sym, period, "daily", "qfq")
                 if df is not None and len(df) >= 10:
-                    price_data[sym] = df["close"].values.astype(float)
+                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
             except (ValueError, KeyError, TypeError) as e:
                 logger.debug("BL data fetch failed for %s: %s", sym, e)
                 continue
@@ -1130,7 +1130,7 @@ async def monte_carlo_var(request: Request):
             try:
                 df = await fetcher.get_history(sym, period, "daily", "qfq")
                 if df is not None and len(df) >= 30:
-                    price_data[sym] = df["close"].values.astype(float)
+                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
             except (ValueError, KeyError, TypeError) as e:
                 logger.debug("VaR data fetch failed for %s: %s", sym, e)
                 continue
@@ -1199,7 +1199,7 @@ async def correlation_analysis(request: Request):
             try:
                 df = await fetcher.get_history(sym, period, "daily", "qfq")
                 if df is not None and len(df) >= 20:
-                    price_data[sym] = df["close"].values.astype(float)
+                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
             except (ValueError, KeyError, TypeError) as e:
                 logger.debug("Correlation data fetch failed for %s: %s", sym, e)
                 continue

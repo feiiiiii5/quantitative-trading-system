@@ -9,6 +9,7 @@ from api.connection_manager import (
     _ALLOWED_CONFIG_KEYS, _kline_cache, _manager, _rt_cache, _start_time, _strategy_list_cache,
     cache_response,
 )
+from core.async_utils import backtest_result_cache
 from api.routers.models import ConfigSetRequest, FeatureFlagRegisterRequest, FeatureFlagUpdateRequest
 from api.utils import json_response as _json_response
 from api.utils import safe_error, validate_symbol
@@ -414,6 +415,7 @@ async def get_system_metrics(request: Request):
                 "rt": _rt_cache.stats(),
                 "kline": _kline_cache.stats(),
                 "strategy_list": _strategy_list_cache.stats(),
+                "backtest_result": backtest_result_cache.stats(),
             },
         }
         return _json_response(True, data=metrics)

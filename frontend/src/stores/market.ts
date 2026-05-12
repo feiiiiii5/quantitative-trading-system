@@ -75,8 +75,14 @@ export const useMarketStore = create<MarketState>()(devtools((set, get) => ({
   fetchSectors: async () => {
     set({ loading: true, error: null });
     try {
-      const data = await apiGet<{ items: SectorData[] }>('/market/heatmap');
-      set({ sectors: data?.items ?? [], loading: false, error: null });
+      const data = await apiGet<Record<string, unknown>>('/market/heatmap');
+      const items: SectorData[] = Object.entries(data ?? {}).map(([key, val]) => ({
+        name: (val as Record<string, unknown>)?.name ?? key,
+        change_pct: (val as Record<string, unknown>)?.change_pct ?? 0,
+        amount: (val as Record<string, unknown>)?.amount ?? 0,
+        volume: (val as Record<string, unknown>)?.volume ?? 0,
+      }));
+      set({ sectors: items, loading: false, error: null });
     } catch (e) {
       set({ loading: false, error: (e as Error).message });
     }

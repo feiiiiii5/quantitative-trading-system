@@ -73,3 +73,23 @@ describe('isBacktestResult fuzz', () => {
     }
   });
 });
+
+describe('SSE error handling', () => {
+  it('handles SSE error message with null message field', () => {
+    const payload = { type: 'error', message: null };
+    const log = `[ERROR] ${payload.message ?? 'Unknown error'}`;
+    expect(log).toBe('[ERROR] Unknown error');
+  });
+
+  it('handles SSE error message with undefined message field', () => {
+    const payload = { type: 'error' };
+    const log = `[ERROR] ${(payload as Record<string, unknown>).message ?? 'Unknown error'}`;
+    expect(log).toBe('[ERROR] Unknown error');
+  });
+
+  it('handles SSE error message with valid message', () => {
+    const payload = { type: 'error', message: 'Strategy not found' };
+    const log = `[ERROR] ${payload.message ?? 'Unknown error'}`;
+    expect(log).toBe('[ERROR] Strategy not found');
+  });
+});

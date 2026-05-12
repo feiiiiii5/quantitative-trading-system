@@ -25,6 +25,7 @@ export interface StockQuote {
   close?: number;
   last_close?: number;
   sector?: string;
+  volume_ratio?: number;
 }
 
 export interface IndexQuote {

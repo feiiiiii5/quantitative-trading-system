@@ -21,3 +21,4 @@ target/
 .qc_style_tmp/
 /package.json
 /package-lock.json
+.trae/

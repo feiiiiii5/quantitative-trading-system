@@ -56,7 +56,7 @@ def _extract_signal_return_pairs(
     if close_col is None:
         return np.array([]), np.array([])
 
-    closes = test_df[close_col].values.astype(float)
+    closes = pd.to_numeric(test_df[close_col], errors="coerce").dropna().values.astype(float)
     for i in range(len(closes) - 1):
         if closes[i] > 1e-9:
             forward_returns[i] = (closes[i + 1] - closes[i]) / closes[i]

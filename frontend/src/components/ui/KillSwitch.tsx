@@ -3,7 +3,9 @@ import { useRiskStore } from '@/stores/risk';
 import { Input } from '@/components/ui/Input';
 
 export const KillSwitch = memo(function KillSwitch() {
-  const { killSwitchActive, triggerKillSwitch, resetKillSwitch } = useRiskStore();
+  const killSwitchActive = useRiskStore(s => s.killSwitchActive);
+  const triggerKillSwitch = useRiskStore(s => s.triggerKillSwitch);
+  const resetKillSwitch = useRiskStore(s => s.resetKillSwitch);
   const [confirming, setConfirming] = useState(false);
   const [confirmText, setConfirmText] = useState('');
 

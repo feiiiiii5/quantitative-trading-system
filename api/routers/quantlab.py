@@ -4,11 +4,16 @@ import asyncio
 import logging
 import time
 
+import pandas as pd
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
 from api.utils import json_response as _json_response
 from api.utils import safe_error
+from api.routers.models import (
+    AnalyzeBacktestRequest, AutoOptimizeRequest, CompareStrategiesRequest,
+    DiagnoseRequest, SensitivityHeatmapRequest, SignalReplayRequest, WalkForwardRequest,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -74,7 +79,7 @@ async def parse_strategy(request: Request, body: StrategyParseRequest):
 
 
 @router.post("/quantlab/diagnose")
-async def diagnose_strategy(request: Request, body: dict):
+async def diagnose_strategy(request: Request, body: DiagnoseRequest):
     try:
         from core.backtest import BacktestEngine
         from core.backtest.enhanced_metrics import compute_comprehensive_metrics
@@ -94,8 +99,8 @@ async def diagnose_strategy(request: Request, body: dict):
         from core.strategies import STRATEGY_REGISTRY
         from core.data_fetcher import get_fetcher
 
-        strategy_name = body.get("strategy", "")
-        symbol = body.get("symbol", "")
+        strategy_name = body.strategy
+        symbol = body.symbol
         if strategy_name not in STRATEGY_REGISTRY:
             return _json_response(False, error=f"策略{strategy_name}不存在")
 
@@ -227,7 +232,7 @@ async def analyze_strategy_endpoint(request: Request, body: StrategyParseRequest
 
 
 @router.post("/quantlab/analyze-backtest")
-async def analyze_backtest_endpoint(request: Request, body: dict):
+async def analyze_backtest_endpoint(request: Request, body: AnalyzeBacktestRequest):
     try:
         from core.strategy_schema import (
             AssetClass,
@@ -243,8 +248,8 @@ async def analyze_backtest_endpoint(request: Request, body: dict):
         )
         from core.strategy_analyzer import analyze_backtest_result
 
-        strategy_data = body.get("strategy", {})
-        result_data = body.get("result", {})
+        strategy_data = body.strategy
+        result_data = body.result
         meta = StrategyMeta(
             name=strategy_data.get("name", "unknown"),
             asset_class=AssetClass(strategy_data.get("asset_class", "spot")),
@@ -346,17 +351,21 @@ async def get_comprehensive_metrics(
 
 
 @router.post("/quantlab/walk-forward")
-async def walk_forward_analysis_endpoint(request: Request, body: dict):
+async def walk_forward_analysis_endpoint(request: Request, body: WalkForwardRequest):
     try:
         from core.backtest import BacktestEngine
         from core.backtest.optimization import walk_forward_analysis
         from core.strategies import STRATEGY_REGISTRY
         from core.data_fetcher import get_fetcher
 
-        strategy_name = body.get("strategy", "")
-        symbol = body.get("symbol", "")
-        is_window = body.get("is_window", 252)
-        oos_window = body.get("oos_window", 63)
+        strategy_name = body.strategy
+        symbol = body.symbol
+        is_window = body.is_window
+        oos_window = body.oos_window
+        base_params = body.base_params
+        param_ranges = body.param_ranges
+        metric = body.metric
+        anchored = body.anchored
 
         if strategy_name not in STRATEGY_REGISTRY:
             return _json_response(False, error=f"策略{strategy_name}不存在")
@@ -371,6 +380,8 @@ async def walk_forward_analysis_endpoint(request: Request, body: dict):
             walk_forward_analysis,
             engine, STRATEGY_REGISTRY[strategy_name], df,
             is_window=is_window, oos_window=oos_window,
+            anchored=anchored, metric=metric,
+            base_params=base_params, param_ranges=param_ranges,
         )
         return _json_response(True, data=result)
     except Exception as e:
@@ -378,15 +389,149 @@ async def walk_forward_analysis_endpoint(request: Request, body: dict):
         return _json_response(False, error=safe_error(e))
 
 
-@router.post("/quantlab/compare-strategies")
-async def compare_strategies(request: Request, body: dict):
+@router.post("/quantlab/auto-optimize")
+async def auto_optimize_strategy(request: Request, body: AutoOptimizeRequest):
+    try:
+        from core.backtest import BacktestEngine
+        from core.backtest.optimization import walk_forward_analysis, parameter_grid_scan
+        from core.strategies import STRATEGY_REGISTRY
+        from core.data_fetcher import get_fetcher
+
+        strategy_name = body.strategy
+        symbol = body.symbol
+        is_window = body.is_window
+        oos_window = body.oos_window
+        metric = body.metric
+        param_ranges = body.param_ranges
+
+        if strategy_name not in STRATEGY_REGISTRY:
+            return _json_response(False, error=f"策略{strategy_name}不存在")
+
+        fetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
+        if df is None or len(df) < is_window + oos_window:
+            return _json_response(False, error="数据不足")
+
+        engine = BacktestEngine()
+        strategy_cls = STRATEGY_REGISTRY[strategy_name]
+
+        wfa_result = await asyncio.to_thread(
+            walk_forward_analysis,
+            engine, strategy_cls, df,
+            is_window=is_window, oos_window=oos_window,
+            metric=metric, param_ranges=param_ranges,
+        )
+
+        if "error" in wfa_result:
+            return _json_response(False, error=wfa_result["error"])
+
+        best_window_params = []
+        for w in wfa_result.get("windows", []):
+            if "best_params" in w and w.get("oos_sharpe", 0) > 0:
+                best_window_params.append(w["best_params"])
+
+        recommended_params = {}
+        if best_window_params:
+            all_keys = set()
+            for p in best_window_params:
+                all_keys.update(p.keys())
+            for k in all_keys:
+                vals = [p[k] for p in best_window_params if k in p]
+                if vals:
+                    if isinstance(vals[0], int):
+                        recommended_params[k] = int(round(sum(vals) / len(vals)))
+                    else:
+                        recommended_params[k] = round(sum(vals) / len(vals), 4)
+
+        return _json_response(True, data={
+            "wfa_result": wfa_result,
+            "recommended_params": recommended_params,
+            "n_profitable_windows": len(best_window_params),
+            "curve_fitted": wfa_result.get("curve_fitted", False),
+        })
+    except Exception as e:
+        logger.error("Auto-optimize error: %s", e)
+        return _json_response(False, error=safe_error(e))
+
+
+@router.get("/quantlab/strategy-health")
+async def strategy_health_monitor(request: Request, symbol: str = Query("000001", max_length=20)):
     try:
         from core.backtest import BacktestEngine
         from core.strategies import STRATEGY_REGISTRY
         from core.data_fetcher import get_fetcher
 
-        symbol = body.get("symbol", "")
-        strategy_names = body.get("strategies", [])
+        fetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, period="1y", kline_type="daily", adjust="qfq")
+        if df is None or len(df) < 60:
+            return _json_response(False, error="数据不足，至少需要60根K线")
+
+        engine = BacktestEngine()
+        health_reports = []
+
+        for name, cls in STRATEGY_REGISTRY.items():
+            try:
+                result = await asyncio.to_thread(engine.run, cls(), df, symbol)
+                sharpe = float(result.sharpe_ratio) if hasattr(result, "sharpe_ratio") else 0.0
+                max_dd = float(result.max_drawdown) if hasattr(result, "max_drawdown") else 0.0
+                total_ret = float(result.total_return) if hasattr(result, "total_return") else 0.0
+                win_rate = float(result.win_rate) if hasattr(result, "win_rate") else 0.0
+
+                status = "healthy"
+                issues = []
+                if sharpe < 0:
+                    status = "degraded"
+                    issues.append("negative_sharpe")
+                if max_dd < -0.3:
+                    status = "degraded" if status == "healthy" else status
+                    issues.append("excessive_drawdown")
+                if win_rate < 0.3 and result.total_trades > 5:
+                    status = "degraded" if status == "healthy" else status
+                    issues.append("low_win_rate")
+
+                health_reports.append({
+                    "strategy": name,
+                    "status": status,
+                    "sharpe": round(sharpe, 4),
+                    "max_drawdown": round(max_dd, 4),
+                    "total_return": round(total_ret, 4),
+                    "win_rate": round(win_rate, 4),
+                    "total_trades": int(result.total_trades) if hasattr(result, "total_trades") else 0,
+                    "issues": issues,
+                })
+            except Exception as e:
+                health_reports.append({
+                    "strategy": name,
+                    "status": "error",
+                    "error": str(e)[:100],
+                })
+
+        healthy_count = sum(1 for r in health_reports if r["status"] == "healthy")
+        degraded_count = sum(1 for r in health_reports if r["status"] == "degraded")
+        error_count = sum(1 for r in health_reports if r["status"] == "error")
+
+        return _json_response(True, data={
+            "symbol": symbol,
+            "total_strategies": len(health_reports),
+            "healthy": healthy_count,
+            "degraded": degraded_count,
+            "errors": error_count,
+            "reports": health_reports,
+        })
+    except Exception as e:
+        logger.error("Strategy health monitor error: %s", e)
+        return _json_response(False, error=safe_error(e))
+
+
+@router.post("/quantlab/compare-strategies")
+async def compare_strategies(request: Request, body: CompareStrategiesRequest):
+    try:
+        from core.backtest import BacktestEngine
+        from core.strategies import STRATEGY_REGISTRY
+        from core.data_fetcher import get_fetcher
+
+        symbol = body.symbol
+        strategy_names = body.strategies
         if not strategy_names:
             return _json_response(False, error="请提供策略列表")
 
@@ -417,4 +562,186 @@ async def compare_strategies(request: Request, body: dict):
         })
     except Exception as e:
         logger.error("Strategy comparison error: %s", e)
+        return _json_response(False, error=safe_error(e))
+
+
+@router.post("/quantlab/sensitivity-heatmap")
+async def sensitivity_heatmap(request: Request, body: SensitivityHeatmapRequest):
+    try:
+        from core.backtest import BacktestEngine
+        from core.strategies import STRATEGY_REGISTRY
+        from core.data_fetcher import get_fetcher
+
+        strategy_name = body.strategy
+        symbol = body.symbol
+        param_x = body.param_x
+        param_x_values = body.param_x_values
+        param_y = body.param_y
+        param_y_values = body.param_y_values
+        metric = body.metric
+
+        if strategy_name not in STRATEGY_REGISTRY:
+            return _json_response(False, error=f"策略{strategy_name}不存在")
+
+        fetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
+        if df is None or len(df) < 60:
+            return _json_response(False, error="数据不足")
+
+        engine = BacktestEngine()
+        strategy_cls = STRATEGY_REGISTRY[strategy_name]
+
+        heatmap = []
+        valid_metrics = []
+        for yv in param_y_values:
+            row = []
+            for xv in param_x_values:
+                try:
+                    yv_typed = int(yv) if yv == int(yv) else yv
+                    xv_typed = int(xv) if xv == int(xv) else xv
+                    strat = strategy_cls(**{param_x: xv_typed, param_y: yv_typed})
+                    bt_result = await asyncio.to_thread(engine.run, strat, df, symbol)
+                    val = getattr(bt_result, metric, None)
+                    if val is not None and hasattr(val, "__float__"):
+                        val = round(float(val), 4)
+                    else:
+                        val = None
+                    row.append(val)
+                    if val is not None:
+                        valid_metrics.append(val)
+                except Exception as e:
+                    logger.debug("Heatmap %s=%s, %s=%s error: %s", param_x, xv, param_y, yv, e)
+                    row.append(None)
+            heatmap.append(row)
+
+        metric_min = min(valid_metrics) if valid_metrics else 0
+        metric_max = max(valid_metrics) if valid_metrics else 0
+        metric_mean = round(sum(valid_metrics) / len(valid_metrics), 4) if valid_metrics else 0
+
+        best_idx = None
+        best_val = None
+        for yi, row in enumerate(heatmap):
+            for xi, val in enumerate(row):
+                if val is not None and (best_val is None or val > best_val):
+                    best_val = val
+                    best_idx = (yi, xi)
+
+        best_params = None
+        if best_idx is not None:
+            yi, xi = best_idx
+            best_params = {
+                param_x: param_x_values[xi],
+                param_y: param_y_values[yi],
+                metric: best_val,
+            }
+
+        return _json_response(True, data={
+            "param_x": param_x,
+            "param_x_values": param_x_values,
+            "param_y": param_y,
+            "param_y_values": param_y_values,
+            "metric": metric,
+            "heatmap": heatmap,
+            "statistics": {
+                "min": round(metric_min, 4) if valid_metrics else None,
+                "max": round(metric_max, 4) if valid_metrics else None,
+                "mean": metric_mean,
+                "range": round(metric_max - metric_min, 4) if valid_metrics else None,
+            },
+            "best_params": best_params,
+            "total_combinations": len(param_x_values) * len(param_y_values),
+            "valid_combinations": len(valid_metrics),
+        })
+    except Exception as e:
+        logger.error("Sensitivity heatmap error: %s", e)
+        return _json_response(False, error=safe_error(e))
+
+
+@router.post("/quantlab/signal-replay")
+async def signal_replay(request: Request, body: SignalReplayRequest):
+    try:
+        from core.strategies import STRATEGY_REGISTRY
+        from core.data_fetcher import get_fetcher
+
+        strategy_name = body.strategy
+        symbol = body.symbol
+        start_bar = body.start_bar
+        end_bar = body.end_bar
+        params = body.params
+
+        if strategy_name not in STRATEGY_REGISTRY:
+            return _json_response(False, error=f"策略{strategy_name}不存在")
+
+        fetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
+        if df is None or len(df) < 2:
+            return _json_response(False, error="数据不足")
+
+        strategy_cls = STRATEGY_REGISTRY[strategy_name]
+        if params:
+            typed_params = {}
+            for k, v in params.items():
+                typed_params[k] = int(v) if isinstance(v, float) and v == int(v) else v
+            strat = strategy_cls(**typed_params)
+        else:
+            strat = strategy_cls()
+
+        strat.reset()
+
+        end_bar = min(end_bar, len(df))
+        start_bar = min(start_bar, end_bar - 1)
+
+        replay_steps = []
+        for i in range(start_bar, end_bar):
+            row = df.iloc[i]
+            bar = {
+                "open": float(row.get("open", 0)) if pd.notna(row.get("open")) else 0,
+                "high": float(row.get("high", 0)) if pd.notna(row.get("high")) else 0,
+                "low": float(row.get("low", 0)) if pd.notna(row.get("low")) else 0,
+                "close": float(row.get("close", 0)) if pd.notna(row.get("close")) else 0,
+                "volume": float(row.get("volume", 0)) if pd.notna(row.get("volume")) else 0,
+                "date": str(row.get("date", ""))[:10] if "date" in df.columns else "",
+            }
+
+            sigs = strat.on_bar(bar, {})
+            signals = []
+            for sig in sigs:
+                action = sig.get("action", "hold")
+                if action in ("buy", "sell"):
+                    signals.append({
+                        "action": action,
+                        "confidence": sig.get("confidence", 0.5),
+                        "reason": sig.get("reason", ""),
+                        "position_pct": sig.get("position_pct", 0.0),
+                        "stop_loss": sig.get("stop_loss", 0.0),
+                        "take_profit": sig.get("take_profit", 0.0),
+                    })
+
+            step = {
+                "bar_index": i,
+                "date": bar["date"],
+                "close": bar["close"],
+                "signals": signals,
+            }
+            replay_steps.append(step)
+
+        buy_count = sum(1 for s in replay_steps for sig in s["signals"] if sig["action"] == "buy")
+        sell_count = sum(1 for s in replay_steps for sig in s["signals"] if sig["action"] == "sell")
+
+        return _json_response(True, data={
+            "strategy": strategy_name,
+            "symbol": symbol,
+            "start_bar": start_bar,
+            "end_bar": end_bar,
+            "total_bars": len(df),
+            "replay_steps": replay_steps,
+            "summary": {
+                "bars_replayed": len(replay_steps),
+                "buy_signals": buy_count,
+                "sell_signals": sell_count,
+                "signal_density": round((buy_count + sell_count) / max(len(replay_steps), 1), 4),
+            },
+        })
+    except Exception as e:
+        logger.error("Signal replay error: %s", e)
         return _json_response(False, error=safe_error(e))

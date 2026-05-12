@@ -1,6 +1,8 @@
-import { useState, useEffect, useCallback, memo } from 'react';
+import { useEffect, useCallback, memo } from 'react';
 import { useMarketStore } from '@/stores/market';
 import { formatPrice, formatPercent, priceColor } from '@/utils/format';
+import { MarketStatusBadge } from '@/components/MarketStatusBadge';
+import { useWsConnectionState } from '@/hooks/useWebSocket';
 import type { IndexQuote } from '@/types';
 
 interface TopbarProps {
@@ -13,21 +15,13 @@ const FALLBACK_INDICES: readonly IndexQuote[] = [
   { name: '创业板', code: 'CY', price: 0, change: 0, change_pct: 0 },
 ] as const;
 
-function isMarketOpen(): boolean {
-  const now = new Date();
-  const t = now.getHours() * 60 + now.getMinutes();
-  return (t >= 570 && t <= 690) || (t >= 780 && t <= 900);
-}
-
 export const Topbar = memo(function Topbar({ onSearchOpen }: TopbarProps) {
   const indices = useMarketStore((s) => s.indices);
   const fetchIndices = useMarketStore((s) => s.fetchIndices);
-  const [marketOpen, setMarketOpen] = useState(isMarketOpen);
+  const wsConnected = useWsConnectionState();
 
   useEffect(() => {
     fetchIndices();
-    const id = setInterval(() => setMarketOpen(isMarketOpen()), 30000);
-    return () => clearInterval(id);
   }, [fetchIndices]);
 
   const handleSearchClick = useCallback(() => onSearchOpen(), [onSearchOpen]);
@@ -50,30 +44,20 @@ export const Topbar = memo(function Topbar({ onSearchOpen }: TopbarProps) {
         zIndex: 10,
       }}
     >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          fontFamily: 'var(--font-mono)',
-          fontSize: '11px',
-          textTransform: 'uppercase' as const,
-          letterSpacing: '0.06em',
-          color: 'var(--label-secondary)',
-        }}
-      >
-        <span
-          style={{
-            width: '6px',
-            height: '6px',
-            borderRadius: '50%',
-            background: marketOpen ? 'var(--green)' : 'var(--label-tertiary)',
-            animation: marketOpen ? 'market-pulse 2s ease-in-out infinite' : 'none',
-            flexShrink: 0,
-          }}
-        />
-        <span>A股</span>
-      </div>
+      <MarketStatusBadge />
+
+      <span style={{
+        display: 'flex', alignItems: 'center', gap: 4,
+        fontSize: 9, fontFamily: 'var(--font-mono)', letterSpacing: '0.08em',
+        color: wsConnected ? 'var(--green)' : 'var(--label-quaternary)',
+      }}>
+        <span style={{
+          width: 5, height: 5, borderRadius: '50%',
+          background: wsConnected ? 'var(--green)' : 'var(--label-quaternary)',
+          boxShadow: wsConnected ? '0 0 4px var(--green)' : 'none',
+        }} />
+        {wsConnected ? 'LIVE' : 'OFFLINE'}
+      </span>
 
       <div
         role="button"

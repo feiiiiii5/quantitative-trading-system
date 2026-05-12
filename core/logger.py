@@ -130,7 +130,8 @@ def get_recent_logs(limit: int = 100, level: str | None = None) -> list[dict]:
                     rows.append(log_entry)
                 except json.JSONDecodeError:
                     pass
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to read recent logs: {}", e)
         pass
     return list(rows)[-limit:]
 

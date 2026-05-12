@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
+import { apiGet } from '@/api/client';
+import { dedup } from '@/utils/dedup';
 import type { OrderBookEntry, TradeRecord, ExecutionStats } from '@/types';
 
 interface TerminalState {

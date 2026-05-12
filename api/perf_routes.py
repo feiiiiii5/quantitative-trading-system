@@ -4,6 +4,7 @@ import json
 import logging
 import time
 
+import pandas as pd
 from fastapi import APIRouter, Query, Request, WebSocket
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -84,12 +85,13 @@ async def get_portfolio_risk(request: Request):
             try:
                 df = await fetcher.get_history(sym, period="1y", kline_type="daily", adjust="qfq")
                 if df is not None and len(df) > 20 and "close" in df.columns:
-                    closes = df["close"].values.astype(float)
+                    closes = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
                     rets = np.diff(closes) / np.where(closes[:-1] > 0, closes[:-1], 1)
                     rets = np.where(np.isfinite(rets), rets, 0)
                     returns_list.append(rets[-60:])
                     valid_symbols.append(sym)
-            except Exception:
+            except Exception as e:
+                logger.debug("Failed to fetch history for VaR calc: %s", e)
                 continue
         if len(returns_list) < 1:
             return _json_response(True, data={"var": 0, "cvar": 0, "beta": 0, "symbols": []})
@@ -137,7 +139,8 @@ async def get_risk_exposure(request: Request):
                 if not industry:
                     industry = "Unknown"
                 sector_map[industry] = sector_map.get(industry, 0) + 1
-            except Exception:
+            except Exception as e:
+                logger.debug("Fundamentals lookup failed: %s", e)
                 sector_map["Unknown"] = sector_map.get("Unknown", 0) + 1
         total = sum(sector_map.values())
         concentration = max(sector_map.values()) / total if total > 0 else 0
@@ -184,12 +187,13 @@ async def get_risk_metrics(request: Request):
             try:
                 df = await fetcher.get_history(sym, period="1y", kline_type="daily", adjust="qfq")
                 if df is not None and len(df) > 60 and "close" in df.columns:
-                    closes = df["close"].values.astype(float)
+                    closes = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
                     rets = np.diff(closes) / np.where(closes[:-1] > 0, closes[:-1], 1)
                     rets = np.where(np.isfinite(rets), rets, 0)
                     returns_list.append(rets)
                     valid_symbols.append(sym)
-            except Exception:
+            except Exception as e:
+                logger.debug("Failed to fetch history for risk assessment: %s", e)
                 continue
         if len(returns_list) < 1:
             return _json_response(True, data={
@@ -276,7 +280,8 @@ async def kill_switch(request: Request, body: KillSwitchConfirm):
                     if hasattr(trading, "sell"):
                         trading.sell(symbol)
                         closed_positions.append(symbol)
-                except Exception:
+                except Exception as e:
+                    logger.debug("Kill switch sell failed for %s: %s", symbol, e)
                     pass
         return _json_response(True, data={
             "action": "kill_switch_activated",
@@ -498,7 +503,8 @@ async def event_stream(request: Request):
                 try:
                     q = await bus.subscribe(ch)
                     queues.append((ch, q))
-                except Exception:
+                except Exception as e:
+                    logger.debug("Event bus subscribe failed for channel: %s", e)
                     pass
 
         try:
@@ -527,7 +533,8 @@ async def event_stream(request: Request):
                                 overview = await fetcher.get_market_overview()
                             if breadth is None:
                                 breadth = await fetcher.get_market_breadth()
-                        except Exception:
+                        except Exception as e:
+                            logger.debug("Market data fetch failed in SSE: %s", e)
                             overview = None
                             breadth = None
                     event_data = {
@@ -770,5 +777,6 @@ async def ws_market(websocket: WebSocket, request: Request):
             elif msg_type == "ping":
                 await manager.touch(websocket)
                 await manager.send_to(websocket, {"type": "pong"})
-    except Exception:
+    except Exception as e:
+        logger.debug("WebSocket handler error: %s", e)
         await manager.disconnect(websocket)

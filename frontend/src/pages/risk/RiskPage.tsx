@@ -1,8 +1,10 @@
-import { useEffect, useCallback, memo, useState } from 'react';
+import { useEffect, useCallback, memo, useState, useMemo } from 'react';
 import { useRiskStore } from '@/stores/risk';
 import { useCanvas } from '@/hooks/useCanvas';
 import { CorrelationMatrix } from '@/components/charts/CorrelationMatrix';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { VolatilityCone } from '@/components/charts/VolatilityCone';
+import { EmptyState } from '@/components/ui/EmptyState';
 import { formatRatio } from '@/utils/format';
 import { apiGet } from '@/api/client';
 import type { RiskLevel, RiskMetrics } from '@/types';
@@ -266,6 +268,29 @@ const DecompositionCanvas = memo(function DecompositionCanvas({ data }: { data: 
   return <canvas ref={ref} style={{ width: '100%', height: Math.max(data.length * 32 + 8, 80) }} />;
 });
 
+const GaugeCard = memo(function GaugeCard({ value, max, label, unit }: {
+  value: number; max: number; label: string; unit: string;
+}) {
+  const ratio = Math.min(Math.abs(value) / max, 1);
+  const radius = 40;
+  const circumference = Math.PI * radius;
+  const offset = circumference * (1 - ratio);
+  const color = ratio < 0.4 ? 'var(--green)' : ratio < 0.7 ? 'var(--orange)' : 'var(--red)';
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+      <svg width={100} height={55} viewBox="0 0 100 55">
+        <path d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="var(--border-default)" strokeWidth={6} strokeLinecap="round" />
+        <path d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke={color} strokeWidth={6} strokeLinecap="round"
+          strokeDasharray={circumference} strokeDashoffset={offset} style={{ transition: 'stroke-dashoffset 0.6s var(--ease-apple)' }} />
+      </svg>
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 18, fontWeight: 600, color: 'var(--label-primary)', fontVariantNumeric: 'tabular-nums' }}>
+        {value.toFixed(2)}{unit}
+      </span>
+      <span style={{ fontSize: 10, color: 'var(--label-tertiary)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{label}</span>
+    </div>
+  );
+});
+
 const MetricCard = memo(function MetricCard({
   label,
   value,
@@ -507,24 +532,7 @@ const LoadingPlaceholder = memo(function LoadingPlaceholder() {
   );
 });
 
-const NoDataPlaceholder = memo(function NoDataPlaceholder() {
-  return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-      padding: '32px 0', gap: 8,
-    }}>
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="12" r="10" />
-        <line x1="8" y1="15" x2="16" y2="15" />
-        <line x1="9" y1="9" x2="9.01" y2="9" />
-        <line x1="15" y1="9" x2="15.01" y2="9" />
-      </svg>
-      <span style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--label-quaternary)' }}>
-        暂无数据
-      </span>
-    </div>
-  );
-});
+
 
 const SectorExposureCanvas = memo(function SectorExposureCanvas({ sectors }: { sectors: Record<string, number> }) {
   const entries = Object.entries(sectors);
@@ -755,7 +763,7 @@ const EfficientFrontierPanel = memo(function EfficientFrontierPanel() {
   const { data, isLoading } = useEfficientFrontier();
 
   if (isLoading) return <LoadingPlaceholder />;
-  if (!data || data.frontier.length === 0) return <NoDataPlaceholder />;
+  if (!data || data.frontier.length === 0) return <EmptyState title="暂无有效前沿数据" description="请先添加持仓" size="md" />;
 
   return (
     <>
@@ -892,7 +900,7 @@ const MonteCarloVaRPanel = memo(function MonteCarloVaRPanel() {
   const { data, isLoading } = useMonteCarloVaR();
 
   if (isLoading) return <LoadingPlaceholder />;
-  if (!data) return <NoDataPlaceholder />;
+  if (!data) return <EmptyState title="暂无风险数据" description="请先添加持仓" size="md" />;
 
   const metrics: Array<{ label: string; value: string; color: string }> = [
     { label: 'VaR(95%)', value: (data.var_95 * 100).toFixed(2) + '%', color: '#FF9100' },
@@ -933,12 +941,12 @@ const CorrelationPanel = memo(function CorrelationPanel() {
   const { data, isLoading } = useCorrelationMatrix();
 
   if (isLoading) return <LoadingPlaceholder />;
-  if (!data) return <NoDataPlaceholder />;
+  if (!data) return <EmptyState title="暂无相关性数据" description="请先添加持仓" size="md" />;
 
   const symbols = data.symbols;
-  const matrixValues: number[][] = symbols.map(row =>
+  const matrixValues = useMemo(() => symbols.map(row =>
     symbols.map(col => data.full_correlation[row]?.[col] ?? 0)
-  );
+  ), [symbols, data.full_correlation]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -956,7 +964,9 @@ const CorrelationPanel = memo(function CorrelationPanel() {
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 15, fontWeight: 700, color: 'rgba(255,255,255,0.9)', fontVariantNumeric: 'tabular-nums' }}>{data.symbols.length}</div>
         </div>
       </div>
-      <CorrelationMatrix labels={symbols} values={matrixValues} width={440} height={320} />
+      <ErrorBoundary fallback={<div style={{ color: 'var(--label-tertiary)', padding: 16 }}>Chart unavailable</div>}>
+        <CorrelationMatrix labels={symbols} values={matrixValues} width={440} height={320} />
+      </ErrorBoundary>
       <CorrelationLegend />
     </div>
   );
@@ -966,7 +976,7 @@ const BlackLittermanPanel = memo(function BlackLittermanPanel() {
   const { data, isLoading } = useBlackLitterman();
 
   if (isLoading) return <LoadingPlaceholder />;
-  if (!data) return <NoDataPlaceholder />;
+  if (!data) return <EmptyState title="暂无优化数据" description="请先添加持仓" size="md" />;
 
   const weightEntries = Object.entries(data.weights);
   const returnEntries = Object.entries(data.posterior_returns);
@@ -1049,6 +1059,13 @@ const BlackLittermanPanel = memo(function BlackLittermanPanel() {
   );
 });
 
+const KELLY_INPUT: React.CSSProperties = {
+  width: '100%', height: 36, background: 'var(--bg-overlay)',
+  border: '1px solid var(--separator)', borderRadius: 'var(--r-sm)',
+  padding: '0 10px', color: 'var(--label-primary)', fontFamily: 'var(--font-mono)',
+  fontSize: 12, outline: 'none', boxSizing: 'border-box',
+};
+
 const KellyCalculatorPanel = memo(function KellyCalculatorPanel() {
   const [winRate, setWinRate] = useState('0.55');
   const [avgWin, setAvgWin] = useState('0.08');
@@ -1063,13 +1080,6 @@ const KellyCalculatorPanel = memo(function KellyCalculatorPanel() {
       avgWin: parseFloat(avgWin),
       avgLoss: parseFloat(avgLoss),
     });
-  };
-
-  const inputStyle: React.CSSProperties = {
-    width: '100%', height: 36, background: 'var(--bg-overlay)',
-    border: '1px solid var(--separator)', borderRadius: 'var(--r-sm)',
-    padding: '0 10px', color: 'var(--label-primary)', fontFamily: 'var(--font-mono)',
-    fontSize: 12, outline: 'none', boxSizing: 'border-box',
   };
 
   const kellyColor = (v: number) => {
@@ -1089,15 +1099,15 @@ const KellyCalculatorPanel = memo(function KellyCalculatorPanel() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
         <div>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--label-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>胜率</div>
-          <input value={winRate} onChange={e => setWinRate(e.target.value)} style={inputStyle} placeholder="0.55" />
+          <input value={winRate} onChange={e => setWinRate(e.target.value)} style={KELLY_INPUT} placeholder="0.55" />
         </div>
         <div>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--label-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>平均盈利</div>
-          <input value={avgWin} onChange={e => setAvgWin(e.target.value)} style={inputStyle} placeholder="0.08" />
+          <input value={avgWin} onChange={e => setAvgWin(e.target.value)} style={KELLY_INPUT} placeholder="0.08" />
         </div>
         <div>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--label-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>平均亏损</div>
-          <input value={avgLoss} onChange={e => setAvgLoss(e.target.value)} style={inputStyle} placeholder="0.05" />
+          <input value={avgLoss} onChange={e => setAvgLoss(e.target.value)} style={KELLY_INPUT} placeholder="0.05" />
         </div>
       </div>
 
@@ -1353,8 +1363,24 @@ const PortfolioAttributionPanel = memo(function PortfolioAttributionPanel() {
   );
 });
 
+const RISK_PANEL: React.CSSProperties = {
+  background: 'var(--bg-glass)',
+  backdropFilter: 'blur(24px) saturate(120%)',
+  borderRadius: 'var(--r-lg)',
+  border: '1px solid var(--separator)',
+  padding: 20,
+};
+
+const RISK_PANEL_TITLE: React.CSSProperties = {
+  fontFamily: 'var(--font-sans)',
+  fontSize: 15,
+  fontWeight: 600,
+  color: 'var(--label-primary)',
+  marginBottom: 16,
+};
+
 export function RiskPage() {
-  const { alerts } = useRiskStore();
+  const alerts = useRiskStore(s => s.alerts);
   const { data: dashboardData } = usePortfolioRiskDashboard();
   const { data: portfolioData, isLoading: portfolioLoading } = useRiskPortfolio();
   const { data: exposureData, isLoading: exposureLoading } = useRiskExposure();
@@ -1399,22 +1425,6 @@ export function RiskPage() {
 
   const effectiveRiskLevel: RiskLevel = loading ? 'LOW' : riskLevel;
 
-  const panelStyle: React.CSSProperties = {
-    background: 'var(--bg-glass)',
-    backdropFilter: 'blur(24px) saturate(120%)',
-    borderRadius: 'var(--r-lg)',
-    border: '1px solid var(--separator)',
-    padding: 20,
-  };
-
-  const panelTitleStyle: React.CSSProperties = {
-    fontFamily: 'var(--font-sans)',
-    fontSize: 15,
-    fontWeight: 600,
-    color: 'var(--label-primary)',
-    marginBottom: 16,
-  };
-
   return (
     <>
       <style>{pulseKeyframes}{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
@@ -1429,33 +1439,37 @@ export function RiskPage() {
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
-          {topMetrics.map((m) => (
-            <MetricCard key={m.label} label={m.label} value={m.value} color={m.color} subtitle={m.subtitle} borderColor={m.borderColor} isLoading={loading} />
-          ))}
+          <GaugeCard value={var95} max={0.15} label="VaR(95%)" unit="%" />
+          <GaugeCard value={cvar} max={0.20} label="CVaR" unit="%" />
+          <GaugeCard value={maxDrawdown} max={0.30} label="MAX DD" unit="%" />
+          <GaugeCard value={sharpe} max={3} label="SHARPE" unit="" />
+          <GaugeCard value={beta} max={2} label="BETA" unit="" />
         </div>
 
         {loading && <LoadingPlaceholder />}
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-          <div style={panelStyle}>
-            <div style={panelTitleStyle}>风险分解</div>
+          <div style={RISK_PANEL}>
+            <div style={RISK_PANEL_TITLE}>风险分解</div>
             <DecompositionCanvas data={decomposition} />
           </div>
-          <div style={panelStyle}>
-            <div style={panelTitleStyle}>相关性矩阵</div>
-            <CorrelationMatrix labels={correlation.labels} values={correlation.values} width={440} height={320} />
+          <div style={RISK_PANEL}>
+            <div style={RISK_PANEL_TITLE}>相关性矩阵</div>
+            <ErrorBoundary fallback={<div style={{ color: 'var(--label-tertiary)', padding: 16 }}>Chart unavailable</div>}>
+              <CorrelationMatrix labels={correlation.labels} values={correlation.values} width={440} height={320} />
+            </ErrorBoundary>
             <CorrelationLegend />
           </div>
         </div>
 
-        <div style={panelStyle}>
-          <div style={panelTitleStyle}>波动率分析</div>
+        <div style={RISK_PANEL}>
+          <div style={RISK_PANEL_TITLE}>波动率分析</div>
           <VolatilityCone dates={volDates} historical={historicalVol} implied={impliedVol} width={900} height={200} />
         </div>
 
-        <div style={panelStyle}>
-          <div style={panelTitleStyle}>投资组合风险</div>
-          {portfolioLoading ? <LoadingPlaceholder /> : !portfolioData ? <NoDataPlaceholder /> : (
+        <div style={RISK_PANEL}>
+          <div style={RISK_PANEL_TITLE}>投资组合风险</div>
+          {portfolioLoading ? <LoadingPlaceholder /> : !portfolioData ? <EmptyState title="暂无风险数据" description="请先添加持仓" size="md" /> : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
               <div>
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--label-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>持仓数量</div>
@@ -1505,9 +1519,9 @@ export function RiskPage() {
           )}
         </div>
 
-        <div style={panelStyle}>
-          <div style={panelTitleStyle}>风险暴露度</div>
-          {exposureLoading ? <LoadingPlaceholder /> : !exposureData ? <NoDataPlaceholder /> : (
+        <div style={RISK_PANEL}>
+          <div style={RISK_PANEL_TITLE}>风险暴露度</div>
+          {exposureLoading ? <LoadingPlaceholder /> : !exposureData ? <EmptyState title="暂无风险数据" description="请先添加持仓" size="md" /> : (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
               <div>
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--label-tertiary)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
@@ -1541,9 +1555,9 @@ export function RiskPage() {
           )}
         </div>
 
-        <div style={panelStyle}>
-          <div style={panelTitleStyle}>回撤分析</div>
-          {drawdownLoading ? <LoadingPlaceholder /> : !drawdownData ? <NoDataPlaceholder /> : (
+        <div style={RISK_PANEL}>
+          <div style={RISK_PANEL_TITLE}>回撤分析</div>
+          {drawdownLoading ? <LoadingPlaceholder /> : !drawdownData ? <EmptyState title="暂无风险数据" description="请先添加持仓" size="md" /> : (
             <>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
                 <div>
@@ -1610,48 +1624,48 @@ export function RiskPage() {
           )}
         </div>
 
-        <div style={panelStyle}>
-          <div style={panelTitleStyle}>有效前沿</div>
+        <div style={RISK_PANEL}>
+          <div style={RISK_PANEL_TITLE}>有效前沿</div>
           <EfficientFrontierPanel />
         </div>
 
-        <div style={panelStyle}>
-          <div style={panelTitleStyle}>蒙特卡洛 VaR</div>
+        <div style={RISK_PANEL}>
+          <div style={RISK_PANEL_TITLE}>蒙特卡洛 VaR</div>
           <MonteCarloVaRPanel />
         </div>
 
-        <div style={panelStyle}>
-          <div style={panelTitleStyle}>相关性矩阵</div>
+        <div style={RISK_PANEL}>
+          <div style={RISK_PANEL_TITLE}>相关性矩阵</div>
           <CorrelationPanel />
         </div>
 
-        <div style={panelStyle}>
-          <div style={panelTitleStyle}>Black-Litterman 优化</div>
+        <div style={RISK_PANEL}>
+          <div style={RISK_PANEL_TITLE}>Black-Litterman 优化</div>
           <BlackLittermanPanel />
         </div>
 
-        <div style={panelStyle}>
-          <div style={panelTitleStyle}>Kelly 仓位计算器</div>
+        <div style={RISK_PANEL}>
+          <div style={RISK_PANEL_TITLE}>Kelly 仓位计算器</div>
           <KellyCalculatorPanel />
         </div>
 
-        <div style={panelStyle}>
-          <div style={panelTitleStyle}>压力测试</div>
+        <div style={RISK_PANEL}>
+          <div style={RISK_PANEL_TITLE}>压力测试</div>
           <StressTestPanel />
         </div>
 
-        <div style={panelStyle}>
-          <div style={panelTitleStyle}>分散化分析</div>
+        <div style={RISK_PANEL}>
+          <div style={RISK_PANEL_TITLE}>分散化分析</div>
           <DiversificationPanel />
         </div>
 
-        <div style={panelStyle}>
-          <div style={panelTitleStyle}>收益归因</div>
+        <div style={RISK_PANEL}>
+          <div style={RISK_PANEL_TITLE}>收益归因</div>
           <PortfolioAttributionPanel />
         </div>
 
-        <div style={panelStyle}>
-          <div style={panelTitleStyle}>风险警报</div>
+        <div style={RISK_PANEL}>
+          <div style={RISK_PANEL_TITLE}>风险警报</div>
           <AlertTimeline alerts={alerts} />
         </div>
       </div>

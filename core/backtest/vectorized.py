@@ -169,7 +169,7 @@ def vectorized_backtest(
     if df.empty or "close" not in df.columns:
         return {"equity_curve": np.array([]), "trades": [], "stats": {}}
 
-    closes = df["close"].values.astype(float)
+    closes = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
     entries = entry_signals.values.astype(bool) if isinstance(entry_signals, pd.Series) else np.array(entry_signals, dtype=bool)
     exits = exit_signals.values.astype(bool) if isinstance(exit_signals, pd.Series) else np.array(exit_signals, dtype=bool)
 

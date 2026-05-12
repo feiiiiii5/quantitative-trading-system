@@ -408,7 +408,8 @@ def walk_forward_analysis(
                     if val > best_sharpe:
                         best_sharpe = val
                         best_params = params
-                except Exception:
+                except Exception as e:
+                    logger.debug("Parameter combo failed: %s", e)
                     continue
 
         try:
