@@ -84,7 +84,7 @@ async def fetch_stock_capital_flow(symbol: str, days: int = 10) -> list[dict]:
                     _FLOW_CACHE[cache_key] = (result, now)
                 return result
     except Exception as e:
-        logger.debug("EastMoney stock flow error for %s: %s", symbol, e)
+        logger.warning("EastMoney stock flow error for %s: %s", symbol, e)
 
     try:
         from core.data_fetcher import get_fetcher
@@ -143,7 +143,7 @@ async def fetch_realtime_capital_flow(symbol: str) -> dict | None:
                     "main_pct": float(item.get("f84", 0) or 0),
                 }
     except Exception as e:
-        logger.debug("Realtime capital flow error for %s: %s", symbol, e)
+        logger.warning("Realtime capital flow error for %s: %s", symbol, e)
 
     try:
         from core.data_fetcher import get_fetcher
@@ -218,7 +218,7 @@ async def fetch_capital_flow_ranking(
                 _RANKING_CACHE_TS = now
             return result
     except Exception as e:
-        logger.debug("EastMoney ranking error: %s", e)
+        logger.warning("EastMoney ranking error: %s", e)
 
     try:
         from core.market_data import fetch_all_a_stocks_async
@@ -288,7 +288,7 @@ async def fetch_sector_capital_flow() -> list[dict]:
                 _SECTOR_FLOW_CACHE_TS = now
             return result
     except Exception as e:
-        logger.debug("AKShare sector fund flow error: %s", e)
+        logger.warning("AKShare sector fund flow error: %s", e)
 
     try:
         url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
@@ -359,7 +359,7 @@ async def fetch_sector_capital_flow() -> list[dict]:
                 _SECTOR_FLOW_CACHE_TS = now
             return result
     except Exception as e:
-        logger.debug("Push2 sector capital flow error: %s", e)
+        logger.warning("Push2 sector capital flow error: %s", e)
 
     try:
         from core.sector_rotation import fetch_sector_list

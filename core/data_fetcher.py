@@ -79,10 +79,10 @@ async def session_manager():
     await close_aiohttp_session()
 
 
-async def async_http_get(url: str, headers: dict | None = None) -> str | None:
+async def async_http_get(url: str, headers: dict | None = None, timeout: aiohttp.ClientTimeout | None = None) -> str | None:
     try:
         session = await get_aiohttp_session()
-        async with session.get(url, headers=headers or {}) as resp:
+        async with session.get(url, headers=headers or {}, timeout=timeout) as resp:
             if resp.status == 200:
                 content = await resp.read()
                 try:
@@ -96,7 +96,7 @@ async def async_http_get(url: str, headers: dict | None = None) -> str | None:
     except TimeoutError:
         logger.debug("HTTP GET %s timeout", url)
     except (aiohttp.ClientError, OSError) as e:
-        logger.debug("HTTP GET %s error: %s", url, e)
+        logger.warning("HTTP GET %s error: %s", url, e)
     return None
 
 
@@ -105,6 +105,7 @@ async def http_get_json(
     params: dict | None = None,
     referer: str = "https://data.eastmoney.com/",
     use_jsonp: bool = False,
+    timeout: aiohttp.ClientTimeout | None = None,
 ) -> dict | None:
     if params is None:
         params = {}
@@ -115,9 +116,9 @@ async def http_get_json(
         text = await async_http_get(full_url, headers={
             "Referer": referer,
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        })
+        }, timeout=timeout)
     except (aiohttp.ClientError, OSError) as e:
-        logger.debug("http_get_json request error for %s: %s", url, e)
+        logger.warning("http_get_json request error for %s: %s", url, e)
         return None
     if not text:
         return None
@@ -131,7 +132,7 @@ async def http_get_json(
     try:
         return json.loads(text)
     except json.JSONDecodeError as e:
-        logger.debug("http_get_json JSON decode error for %s: %s", url, e)
+        logger.warning("http_get_json JSON decode error for %s: %s", url, e)
         return None
 
 
@@ -173,7 +174,7 @@ US_INDICES = {
 }
 
 _realtime_cache = OptimizedTTLCache(maxsize=5000, ttl=8, cleanup_interval=60)
-_history_cache = OptimizedTTLCache(maxsize=3000, ttl=1800, cleanup_interval=600)
+_history_cache = OptimizedTTLCache(maxsize=3000, ttl=1800, cleanup_interval=600, stale_while_revalidate=True)
 _indicator_cache = OptimizedTTLCache(maxsize=2000, ttl=900, cleanup_interval=300)
 _financial_cache = ThreadSafeLRU(maxsize=3000, ttl=10800)
 _northbound_cache = ThreadSafeLRU(maxsize=1000, ttl=180)
@@ -196,6 +197,7 @@ def _set_hot_symbols(symbols: list[str]) -> None:
 _inflight_requests: dict[str, asyncio.Future] = {}
 _inflight_lock: asyncio.Lock | None = None
 _INFLIGHT_MAX = 500
+_INFLIGHT_CLEANUP_INTERVAL = 60
 
 
 def _get_inflight_lock() -> asyncio.Lock:
@@ -205,20 +207,46 @@ def _get_inflight_lock() -> asyncio.Lock:
     return _inflight_lock
 
 
-class RequestCoalescer:
-    __slots__ = ("_window_ms", "_pending", "_lock")
+async def _cleanup_inflight_requests() -> None:
+    """Periodically remove completed futures that were not cleaned up by their originators."""
+    while True:
+        await asyncio.sleep(_INFLIGHT_CLEANUP_INTERVAL)
+        try:
+            stale_keys = []
+            async with _get_inflight_lock():
+                for key, fut in list(_inflight_requests.items()):
+                    if fut.done():
+                        stale_keys.append(key)
+                for key in stale_keys:
+                    del _inflight_requests[key]
+            if stale_keys:
+                logger.debug("Cleaned up %d stale inflight requests", len(stale_keys))
+        except Exception as e:
+            logger.debug("Inflight cleanup error: %s", e)
 
-    def __init__(self, window_ms: int = 50):
+
+class RequestCoalescer:
+    __slots__ = ("_window_ms", "_pending", "_lock", "_timeout")
+
+    def __init__(self, window_ms: int = 50, timeout: float = 30):
         self._window_ms = window_ms
         self._pending: dict[str, list[asyncio.Future]] = {}
         self._lock = asyncio.Lock()
+        self._timeout = timeout
 
     async def get_or_wait(self, key: str, fetch_fn) -> Any:
         async with self._lock:
             if key in self._pending:
-                fut = asyncio.get_event_loop().create_future()
+                fut = asyncio.get_running_loop().create_future()
                 self._pending[key].append(fut)
-                return await fut
+                try:
+                    return await asyncio.wait_for(fut, timeout=self._timeout)
+                except asyncio.TimeoutError:
+                    async with self._lock:
+                        waiters = self._pending.get(key, [])
+                        if fut in waiters:
+                            waiters.remove(fut)
+                    raise
             self._pending[key] = []
         try:
             result = await fetch_fn()
@@ -228,7 +256,7 @@ class RequestCoalescer:
                 if not w.done():
                     w.set_result(result)
             return result
-        except Exception as e:
+        except BaseException as e:
             async with self._lock:
                 waiters = self._pending.pop(key, [])
             for w in waiters:
@@ -237,6 +265,12 @@ class RequestCoalescer:
             raise
 
 _request_coalescer = RequestCoalescer(window_ms=50)
+
+TIMEOUT_TIERS = {
+    "realtime": aiohttp.ClientTimeout(total=5, connect=2),
+    "history_short": aiohttp.ClientTimeout(total=15, connect=5),
+    "history_full": aiohttp.ClientTimeout(total=45, connect=5),
+}
 
 CACHE_TTL_TIERS = {
     "realtime": 18,
@@ -284,7 +318,7 @@ class DataSourceHealthMonitor:
             try:
                 self._db.record_source_request(source_name, request_type, success, latency)
             except Exception as e:
-                logger.debug("Health monitor write error: %s", e)
+                logger.warning("Health monitor write error: %s", e)
 
     def rank_sources(self, source_names: list[str], request_type: str = "realtime") -> list[str]:
         scored = []
@@ -310,7 +344,7 @@ class DataSourceHealthMonitor:
                     else:
                         score = 0.5
                 except Exception as e:
-                    logger.debug("Source ranking error for %s: %s", name, e)
+                    logger.warning("Source ranking error for %s: %s", name, e)
                     score = 0.5
             scored.append((name, score))
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -343,7 +377,7 @@ class TencentSource:
         if not code:
             return None
         url = f"{TencentSource.BASE_URL}{code}"
-        text = await async_http_get(url)
+        text = await async_http_get(url, timeout=TIMEOUT_TIERS["realtime"])
         if not text:
             return None
         return TencentSource._parse_realtime(text, symbol, market)
@@ -353,7 +387,7 @@ class TencentSource:
         if not codes:
             return {}
         url = f"{TencentSource.BASE_URL}{','.join(codes)}"
-        text = await async_http_get(url)
+        text = await async_http_get(url, timeout=TIMEOUT_TIERS["realtime"])
         if not text:
             return {}
         results = {}
@@ -427,7 +461,7 @@ class TencentSource:
             if rows:
                 return pd.DataFrame(rows)
         except (json.JSONDecodeError, KeyError, ValueError, IndexError) as e:
-            logger.debug("Tencent history parse error: %s", e)
+            logger.warning("Tencent history parse error: %s", e)
         return None
 
     @staticmethod
@@ -478,7 +512,7 @@ class SinaSource:
             return None
 
         headers = {"Referer": "http://finance.sina.com.cn"}
-        text = await async_http_get(url, headers=headers)
+        text = await async_http_get(url, headers=headers, timeout=TIMEOUT_TIERS["realtime"])
         if not text:
             return None
         return SinaSource._parse_realtime(text, symbol, market)
@@ -576,7 +610,7 @@ class SinaSource:
                         "timestamp": time.time(),
                     }
         except (ValueError, IndexError) as e:
-            logger.debug("Sina parse error for %s: %s", symbol, e)
+            logger.warning("Sina parse error for %s: %s", symbol, e)
         return None
 
 
@@ -622,7 +656,7 @@ class EastMoneySource:
         code = EastMoneySource._clean_symbol(symbol)
         fields = "f43,f44,f45,f46,f47,f48,f57,f58,f60,f116,f117,f168,f169,f170"
         url = f"{EastMoneySource.QUOTE_URL}?secid={EastMoneySource._secid(code, market)}&fields={fields}"
-        text = await async_http_get(url, headers={"Referer": "https://finance.eastmoney.com"})
+        text = await async_http_get(url, headers={"Referer": "https://finance.eastmoney.com"}, timeout=TIMEOUT_TIERS["realtime"])
         if not text:
             return None
         try:
@@ -651,7 +685,7 @@ class EastMoneySource:
                 "timestamp": time.time(),
             }
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            logger.debug("EastMoney realtime parse error: %s", e)
+            logger.warning("EastMoney realtime parse error: %s", e)
             return None
 
     @staticmethod
@@ -666,7 +700,7 @@ class EastMoneySource:
             f"{EastMoneySource.KLINE_URL}?secid={EastMoneySource._secid(code, market)}"
             f"&klt={ktype}&fqt={int(fqt)}&fields1={fields1}&fields2={fields2}"
         )
-        text = await async_http_get(url, headers={"Referer": "https://quote.eastmoney.com"})
+        text = await async_http_get(url, headers={"Referer": "https://quote.eastmoney.com"}, timeout=TIMEOUT_TIERS["history_full"])
         if not text:
             return None
         try:
@@ -691,18 +725,20 @@ class EastMoneySource:
             if rows:
                 return pd.DataFrame(rows)
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            logger.debug("EastMoney history parse error: %s", e)
+            logger.warning("EastMoney history parse error: %s", e)
         return None
 
     @staticmethod
     async def fetch_financial_report(symbol: str) -> dict | None:
         code = EastMoneySource._clean_symbol(symbol)
+        if not code:
+            return None
         fields = "SECURITY_CODE,PE_TTM,PB_MRQ,BASIC_EPS,ROE_WEIGHT,OPERATE_INCOME_YOY,NETPROFIT_YOY,DEBT_ASSET_RATIO"
         url = (
             f"{EastMoneySource.DATA_URL}?reportName=RPT_F10_FINANCE_GMAININDICATOR"
             f"&columns={fields}&filter=(SECURITY_CODE=\"{code}\")&pageNumber=1&pageSize=1"
         )
-        text = await async_http_get(url, headers={"Referer": "https://data.eastmoney.com"})
+        text = await async_http_get(url, headers={"Referer": "https://data.eastmoney.com"}, timeout=TIMEOUT_TIERS["history_short"])
         if not text:
             return None
         try:
@@ -719,7 +755,7 @@ class EastMoneySource:
                 "debt_ratio": EastMoneySource._num(item.get("DEBT_ASSET_RATIO")),
             }
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            logger.debug("EastMoney financial parse error: %s", e)
+            logger.warning("EastMoney financial parse error: %s", e)
             return None
 
     @staticmethod
@@ -750,7 +786,7 @@ class EastMoneySource:
                 "top_stocks": [],
             }
         except Exception as e:
-            logger.debug("akshare northbound fetch error: %s", e)
+            logger.warning("akshare northbound fetch error: %s", e)
             return None
 
     @staticmethod
@@ -772,7 +808,7 @@ class EastMoneySource:
                 "seal_amount": EastMoneySource._num(item.get("fund")),
             } for item in pool]
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            logger.debug("EastMoney limit-up parse error: %s", e)
+            logger.warning("EastMoney limit-up parse error: %s", e)
             return []
 
     @staticmethod
@@ -797,7 +833,7 @@ class EastMoneySource:
                 "institutions": item.get("ORG_NAME", ""),
             } for item in records]
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            logger.debug("EastMoney dragon-tiger parse error: %s", e)
+            logger.warning("EastMoney dragon-tiger parse error: %s", e)
             return []
 
     @staticmethod
@@ -917,11 +953,11 @@ class HKStockSource:
             return None
         secid = f"116.{code}"
         url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={secid}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f169,f170"
-        text = await async_http_get(url, headers={"Referer": "https://finance.eastmoney.com"})
+        text = await async_http_get(url, headers={"Referer": "https://finance.eastmoney.com"}, timeout=TIMEOUT_TIERS["realtime"])
         if not text:
             secid = f"128.{code}"
             url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={secid}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f169,f170"
-            text = await async_http_get(url, headers={"Referer": "https://finance.eastmoney.com"})
+            text = await async_http_get(url, headers={"Referer": "https://finance.eastmoney.com"}, timeout=TIMEOUT_TIERS["realtime"])
         if not text:
             return None
         try:
@@ -945,7 +981,7 @@ class HKStockSource:
                 "timestamp": time.time(),
             }
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            logger.debug("HKStockSource realtime parse error: %s", e)
+            logger.warning("HKStockSource realtime parse error: %s", e)
         return None
 
     @staticmethod
@@ -963,7 +999,7 @@ class HKStockSource:
                         df[col] = pd.to_numeric(df[col], errors="coerce")
                 return df
         except Exception as e:
-            logger.debug("HKStockSource history error: %s", e)
+            logger.warning("HKStockSource history error: %s", e)
         return None
 
 
@@ -973,13 +1009,13 @@ class USStockSource:
         clean = re.sub(r"^(us|US)", "", str(symbol)).strip().upper()
         url = f"http://hq.sinajs.cn/list=gb_{clean.lower()}"
         headers = {"Referer": "http://finance.sina.com.cn"}
-        text = await async_http_get(url, headers=headers)
+        text = await async_http_get(url, headers=headers, timeout=TIMEOUT_TIERS["realtime"])
         if text:
             result = SinaSource._parse_realtime(text, clean, "US")
             if result:
                 return result
         url = f"https://push2.eastmoney.com/api/qt/stock/get?secid=105.{clean}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f169,f170"
-        text = await async_http_get(url, headers={"Referer": "https://finance.eastmoney.com"})
+        text = await async_http_get(url, headers={"Referer": "https://finance.eastmoney.com"}, timeout=TIMEOUT_TIERS["realtime"])
         if not text:
             return None
         try:
@@ -1003,7 +1039,7 @@ class USStockSource:
                 "timestamp": time.time(),
             }
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            logger.debug("USStockSource realtime parse error: %s", e)
+            logger.warning("USStockSource realtime parse error: %s", e)
         return None
 
     @staticmethod
@@ -1021,7 +1057,7 @@ class USStockSource:
                         df[col] = pd.to_numeric(df[col], errors="coerce")
                 return df
         except Exception as e:
-            logger.debug("USStockSource history error: %s", e)
+            logger.warning("USStockSource history error: %s", e)
         return None
 
 
@@ -1112,13 +1148,15 @@ class CircuitBreaker:
                     return True
                 return False
             if self.state == "HALF_OPEN":
-                return True
+                if self.half_open_calls < self.half_open_max:
+                    self.half_open_calls += 1
+                    return True
+                return False
             return False
 
     async def _record_success(self, result) -> None:
         async with self._lock:
             if self.state == "HALF_OPEN":
-                self.half_open_calls += 1
                 if self._is_valid_result(result):
                     if self.half_open_calls >= self.half_open_max:
                         self.state = "CLOSED"
@@ -1148,18 +1186,12 @@ class CircuitBreaker:
         func_name = getattr(func, '__name__', 'source')
         if not await self._acquire_permission(func_name):
             raise CircuitBreakerError(f"Circuit breaker OPEN for {func_name}")
-        async with self._lock:
-            is_half_open = self.state == "HALF_OPEN"
         try:
-            if is_half_open:
-                async with self._half_open_sem:
-                    result = await func(*args, **kwargs)
-            else:
-                result = await func(*args, **kwargs)
+            result = await func(*args, **kwargs)
             await self._record_success(result)
             return result
         except Exception as e:
-            logger.debug("CircuitBreaker call error: %s", e)
+            logger.error("CircuitBreaker call error: %s", e)
             await self._record_failure()
             raise
 
@@ -1215,7 +1247,7 @@ class AKShareSource:
             logger.warning("AKShare fetch_history timed out after %ss: %s", NETWORK_TIMEOUT_SECONDS, symbol)
             return None
         except Exception as e:
-            logger.debug("AKShare fetch_history error: %s", e)
+            logger.warning("AKShare fetch_history error: %s", e)
             return None
 
     @staticmethod
@@ -1265,7 +1297,7 @@ class AKShareSource:
                     df = df.rename(columns=rename_map)
                     return df
         except Exception as e:
-            logger.debug("AKShare sync fetch error: %s", e)
+            logger.warning("AKShare sync fetch error: %s", e)
         return None
 
     @staticmethod
@@ -1274,7 +1306,7 @@ class AKShareSource:
             result = await asyncio.to_thread(AKShareSource._sync_fetch_fundamentals, symbol, market)
             return result
         except Exception as e:
-            logger.debug("AKShare fundamentals error: %s", e)
+            logger.warning("AKShare fundamentals error: %s", e)
             return None
 
     @staticmethod
@@ -1295,7 +1327,7 @@ class AKShareSource:
                 result[key] = val
             return result
         except Exception as e:
-            logger.debug("AKShare fundamentals sync error: %s", e)
+            logger.warning("AKShare fundamentals sync error: %s", e)
         return None
 
 
@@ -1318,7 +1350,7 @@ class BaoStockSource:
             logger.warning("BaoStock fetch_history timed out after %ss: %s", NETWORK_TIMEOUT_SECONDS, symbol)
             return None
         except Exception as e:
-            logger.debug("BaoStock fetch error: %s", e)
+            logger.warning("BaoStock fetch error: %s", e)
             return None
 
     @staticmethod
@@ -1377,7 +1409,7 @@ class BaoStockSource:
                     with contextlib.redirect_stdout(_io.StringIO()), contextlib.redirect_stderr(_io.StringIO()):
                         bs.logout()
         except Exception as e:
-            logger.debug("BaoStock sync error: %s", e)
+            logger.warning("BaoStock sync error: %s", e)
             import io as _io2
             with contextlib.redirect_stdout(_io2.StringIO()), contextlib.redirect_stderr(_io2.StringIO()):
                 try:
@@ -1389,7 +1421,25 @@ class BaoStockSource:
 
 
 class SmartDataFetcher:
-    """智能数据获取器，自动选择最优数据源"""
+    """智能数据获取器，自动选择最优数据源
+
+    降级返回值约定：
+    - get_realtime: 返回 dict | None（None 表示无数据）
+    - get_history: 返回 pd.DataFrame（空 DataFrame 表示无数据）
+    - get_realtime_batch / get_batch_realtime_optimized: 返回 dict[str, dict]（空 dict 表示无数据）
+    - get_sector_heatmap: 返回 dict（含 "items" 键，空列表表示无数据）
+    - get_market_breadth: 返回 dict（含零值默认字段）
+    """
+
+    @staticmethod
+    def is_valid_realtime(data: dict | None) -> bool:
+        """检查实时数据是否有效（非 None 且价格 > 0）"""
+        return data is not None and data.get("price", 0) > 0
+
+    @staticmethod
+    def is_valid_history(df: pd.DataFrame) -> bool:
+        """检查历史数据是否有效（非空且有足够行数）"""
+        return not df.empty and len(df) >= 10
 
     def __init__(self, db: SQLiteStore | None = None):
         self._db = db or get_db()
@@ -1478,7 +1528,7 @@ class SmartDataFetcher:
             except Exception as e:
                 latency = time.monotonic() - start
                 self._health.record_request(source_name, "realtime", False, latency)
-                logger.debug("Source %s realtime error: %s", source_name, e)
+                logger.warning("Source %s realtime error: %s", source_name, e)
 
         logger.warning("All sources failed for realtime %s (market=%s)", symbol, market)
         return None
@@ -1516,7 +1566,7 @@ class SmartDataFetcher:
                             if rt:
                                 results[s] = rt
                         except Exception as e:
-                            logger.debug("Batch realtime fetch failed for %s: %s", s, e)
+                            logger.warning("Batch realtime fetch failed for %s: %s", s, e)
 
         if other_symbols:
             tasks = [self.get_realtime(s, m) for s, m in other_symbols]
@@ -1539,6 +1589,11 @@ class SmartDataFetcher:
         cache_key = f"hist_{clean_symbol}_{market}_{kline_type}_{adjust}_{period}"
         cached = _history_cache.get(cache_key)
         if cached is not None:
+            if _history_cache.is_stale(cache_key):
+                try:
+                    asyncio.create_task(self._refresh_history_cache(clean_symbol, market, kline_type, adjust, period, cache_key))
+                except RuntimeError:
+                    pass
             return cached
 
         db_df = self._db.load_kline_rows(clean_symbol, market, kline_type, adjust)
@@ -1547,6 +1602,7 @@ class SmartDataFetcher:
             return db_df
 
         inflight_key = f"hist:{cache_key}"
+        fut = None
         should_fetch_direct = False
         async with _get_inflight_lock():
             if inflight_key in _inflight_requests:
@@ -1599,6 +1655,21 @@ class SmartDataFetcher:
             async with _get_inflight_lock():
                 _inflight_requests.pop(inflight_key, None)
 
+    async def _refresh_history_cache(self, clean_symbol: str, market: str, kline_type: str,
+                                      adjust: str, period: str, cache_key: str) -> None:
+        """后台刷新过期缓存，不阻塞当前请求"""
+        try:
+            df = await self._fetch_history_from_sources(clean_symbol, market, kline_type, adjust, period)
+            if df is not None and not df.empty:
+                df, warnings = DataQualityChecker.check_kline(df)
+                if not validate_kline_data(df, clean_symbol):
+                    return
+                rows = df.to_dict("records")
+                self._db.upsert_kline_rows(clean_symbol, market, kline_type, adjust, rows)
+                _history_cache.set(cache_key, df)
+        except Exception as e:
+            logger.debug("Background cache refresh failed for %s: %s", clean_symbol, e)
+
     async def get_history_batch(self, symbols: list[str], period: str = "1y",
                                 kline_type: str = "daily", adjust: str = "qfq",
                                 max_concurrent: int | None = None) -> dict[str, pd.DataFrame]:
@@ -1614,7 +1685,7 @@ class SmartDataFetcher:
                 try:
                     return sym, await self.get_history(sym, period, kline_type, adjust)
                 except Exception as e:
-                    logger.debug("Batch history fetch failed for %s: %s", sym, e)
+                    logger.warning("Batch history fetch failed for %s: %s", sym, e)
                     return sym, pd.DataFrame()
 
         tasks = [_fetch_one(s) for s in symbols[:50]]
@@ -1650,7 +1721,7 @@ class SmartDataFetcher:
                         if r is not None and not r.empty:
                             results[src] = r
                 except Exception as e:
-                    logger.debug("History source task failed: %s", e)
+                    logger.warning("History source task failed: %s", e)
 
             if len(results) >= 2:
                 dfs = list(results.values())
@@ -1725,7 +1796,7 @@ class SmartDataFetcher:
         except Exception as e:
             latency = time.monotonic() - start
             self._health.record_request(source_name, "history", False, latency)
-            logger.debug("Source %s history error: %s", source_name, e)
+            logger.warning("Source %s history error: %s", source_name, e)
         return None
 
     async def get_fundamentals(self, symbol: str, market: str | None = None) -> dict | None:
@@ -1940,7 +2011,7 @@ class SmartDataFetcher:
                             except (ValueError, IndexError):
                                 pass
             except Exception as e:
-                logger.debug("Northbound flow fetch failed: %s", e)
+                logger.warning("Northbound flow fetch failed: %s", e)
 
         async def fetch_temperature():
             try:
@@ -1958,7 +2029,7 @@ class SmartDataFetcher:
                 else:
                     temperature["value"] = 50.0
             except Exception as e:
-                logger.debug("Temperature calculation failed: %s", e)
+                logger.warning("Temperature calculation failed: %s", e)
                 temperature["value"] = 50.0
 
         try:
@@ -2050,7 +2121,7 @@ class SmartDataFetcher:
             await rt_cache.set(cache_key, result, CACHE_TTL["realtime_batch"])
             return result
         except Exception as e:
-            logger.debug("Batch realtime optimized error: %s", e)
+            logger.warning("Batch realtime optimized error: %s", e)
             return await self.get_realtime_batch(symbols)
 
     async def get_sector_heatmap(self) -> dict:
@@ -2078,7 +2149,7 @@ class SmartDataFetcher:
             await sector_cache.set(cache_key, result, CACHE_TTL["sector_heatmap"])
             return result
         except Exception as e:
-            logger.debug("Sector heatmap error: %s", e)
+            logger.warning("Sector heatmap error: %s", e)
             return {"items": [], "timestamp": time.time()}
 
     async def get_market_breadth(self) -> dict:
@@ -2115,7 +2186,7 @@ class SmartDataFetcher:
             await breadth_cache.set(cache_key, result, CACHE_TTL["market_breadth"])
             return result
         except Exception as e:
-            logger.debug("Market breadth error: %s", e)
+            logger.warning("Market breadth error: %s", e)
             return {"advance_count": 0, "decline_count": 0, "flat_count": 0, "total_amount": 0, "up": 0, "down": 0, "flat": 0, "timestamp": time.time()}
 
     async def refresh_hot_symbols_cache(self) -> None:
@@ -2128,23 +2199,23 @@ class SmartDataFetcher:
                 symbols = df["代码"].tolist()[:50] if "代码" in df.columns else []
                 _set_hot_symbols(symbols)
         except Exception as e:
-            logger.debug("Refresh hot symbols error: %s", e)
+            logger.warning("Refresh hot symbols error: %s", e)
 
     async def preload_all(self) -> None:
         try:
             await self.get_market_overview()
         except Exception as e:
-            logger.debug("Preload market overview error: %s", e)
+            logger.warning("Preload market overview error: %s", e)
         try:
             await self.refresh_hot_symbols_cache()
         except Exception as e:
-            logger.debug("Preload hot symbols error: %s", e)
+            logger.warning("Preload hot symbols error: %s", e)
         try:
             hot = _get_hot_symbols()[:10]
             if hot:
                 await self.prefetch_symbols(hot, priority="watchlist")
         except Exception as e:
-            logger.debug("Preload hot prefetch error: %s", e)
+            logger.warning("Preload hot prefetch error: %s", e)
 
     async def prefetch_symbols(self, symbols: list[str], priority: str = "normal") -> None:
         """批量预热缓存，按优先级排序：watchlist > portfolio > hot"""
@@ -2272,7 +2343,7 @@ class DataSourceRouter:
                 self.record_success(source_name, market, data_type, latency_ms)
                 return result
             except Exception as e:
-                logger.debug("Fetch from source %s failed: %s", source_name, e)
+                logger.warning("Fetch from source %s failed: %s", source_name, e)
                 self.record_failure(source_name, market, data_type)
         return None
 

@@ -131,7 +131,8 @@ export const useStrategyStore = create<StrategyState>()(devtools((set, get) => (
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          strategy: strategyName,
+          strategy_name: strategyName,
+          strategy_type: strategyName,
           symbol: params.symbol,
           start_date: params.start_date,
           end_date: params.end_date,

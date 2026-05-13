@@ -95,7 +95,7 @@ def sensitivity_analysis(engine, strategy_cls, df: pd.DataFrame,
                 result = engine.run(strategy_cls(**params), df)
                 sharpe = float(result.sharpe_ratio)
             except Exception as e:
-                logger.debug("Param scan iteration failed: %s", e)
+                logger.warning("Param scan iteration failed: %s", e)
                 sharpe = 0.0
             sharpes.append(sharpe)
             points.append({"value": params[name], "sharpe_ratio": round(sharpe, 4)})
@@ -118,7 +118,7 @@ def sensitivity_analysis(engine, strategy_cls, df: pd.DataFrame,
                     result = engine.run(strategy_cls(**params), df)
                     sharpe = float(result.sharpe_ratio)
                 except Exception as e:
-                    logger.debug("Heatmap scan iteration failed: %s", e)
+                    logger.warning("Heatmap scan iteration failed: %s", e)
                     sharpe = 0.0
                 heatmap.append({"x": xv, "y": yv, "sharpe_ratio": round(sharpe, 4)})
 
@@ -277,7 +277,7 @@ def parameter_sensitivity(
                 entry[m] = round(float(val), 4) if val is not None and np.isfinite(val) else 0.0
             results.append(entry)
         except Exception as e:
-            logger.debug("Sensitivity scan (%s=%s) failed: %s", param_name, params[param_name], e)
+            logger.warning("Sensitivity scan (%s=%s) failed: %s", param_name, params[param_name], e)
             entry = {"value": params[param_name]}
             for m in metrics:
                 entry[m] = 0.0
@@ -356,7 +356,7 @@ def walk_forward_analysis(
                     "oos_max_dd": round(float(oos_result.max_drawdown), 4),
                 })
             except Exception as e:
-                logger.debug("WFA window failed: %s", e)
+                logger.warning("WFA window failed: %s", e)
             del is_df, oos_df
         if not results:
             return {"error": "所有窗口回测失败"}
@@ -428,7 +428,7 @@ def walk_forward_analysis(
                 "oos_max_dd": round(float(oos_result.max_drawdown), 4),
             })
         except Exception as e:
-            logger.debug("WFA optimized window failed: %s", e)
+            logger.warning("WFA optimized window failed: %s", e)
         del is_df, oos_df
 
     if not results:

@@ -67,7 +67,7 @@ async def fetch_sector_list() -> list[dict]:
                 _SECTOR_CACHE_TS = now
             return result
     except Exception as e:
-        logger.debug("AKShare sector list error: %s", e)
+        logger.warning("AKShare sector list error: %s", e)
 
     try:
         url = "https://push2.eastmoney.com/api/qt/clist/get"
@@ -105,7 +105,7 @@ async def fetch_sector_list() -> list[dict]:
                 _SECTOR_CACHE_TS = now
             return result
     except Exception as e:
-        logger.debug("Sector list fetch error: %s", e)
+        logger.warning("Sector list fetch error: %s", e)
 
     try:
         url2 = "https://push2.eastmoney.com/api/qt/clist/get"
@@ -143,7 +143,7 @@ async def fetch_sector_list() -> list[dict]:
                 _SECTOR_CACHE_TS = now
             return result
     except Exception as e:
-        logger.debug("Sector list fetch error (concept): %s", e)
+        logger.warning("Sector list fetch error (concept): %s", e)
 
     try:
         from core.data_fetcher import get_fetcher
@@ -212,7 +212,7 @@ async def fetch_sector_list() -> list[dict]:
                         _SECTOR_CACHE_TS = now
                     return result
     except Exception as e:
-        logger.debug("Sina sector fallback error: %s", e)
+        logger.warning("Sina sector fallback error: %s", e)
 
     with _SECTOR_CACHE_LOCK:
         return _SECTOR_CACHE
@@ -238,7 +238,7 @@ async def fetch_sector_stocks(sector_code: str, count: int = 20) -> list[dict]:
                 })
             return result
     except Exception as e:
-        logger.debug("AKShare sector stocks error for %s: %s", sector_code, e)
+        logger.warning("AKShare sector stocks error for %s: %s", sector_code, e)
 
     try:
         url = "https://push2.eastmoney.com/api/qt/clist/get"
@@ -301,7 +301,7 @@ async def fetch_sector_stocks(sector_code: str, count: int = 20) -> list[dict]:
                     })
                 return result
     except Exception as e:
-        logger.debug("Sector stocks by name fallback error: %s", e)
+        logger.warning("Sector stocks by name fallback error: %s", e)
 
     return []
 

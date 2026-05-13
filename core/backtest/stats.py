@@ -11,6 +11,13 @@ def compute_backtest_statistics(
     trades: list[dict],
     dates_list: list[str],
 ) -> dict:
+    if not equity_curve:
+        return {
+            "total_return": 0, "annual_return": 0, "max_drawdown": 0,
+            "sharpe_ratio": 0, "sortino_ratio": 0, "calmar_ratio": 0,
+            "win_rate": 0, "profit_factor": 0, "total_trades": 0,
+            "win_trades": 0, "loss_trades": 0, "avg_hold_days": 0,
+        }
     eq_arr = np.array(equity_curve)
     peak_arr = np.maximum.accumulate(eq_arr)
     drawdown_curve = ((peak_arr - eq_arr) / np.where(peak_arr > 1e-9, peak_arr, 1.0) * 100).tolist()
@@ -169,7 +176,7 @@ def compute_backtest_statistics(
                 if vals:
                     monthly_rets.append({"month": m, "return": float(np.mean(vals))})
         except Exception as e:
-            logger.debug("Monthly return calculation failed: %s", e)
+            logger.warning("Monthly return calculation failed: %s", e)
 
     return {
         "total_return": round(total_return, 2),

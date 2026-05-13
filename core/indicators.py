@@ -36,14 +36,14 @@ register_cleanup(_indicator_cache.clear)
 class TechnicalIndicators:
 
     @staticmethod
-    def compute_all(df: pd.DataFrame, symbol: str = "", period: str = "daily") -> dict:
+    def compute_all(df: pd.DataFrame, symbol: str = "", period: str = "daily", adjust: str = "") -> dict:
         if df is None or len(df) < 30:
             return {}
 
-        cache_key = f"{symbol}:{period}"
+        cache_key = f"{symbol}:{period}:{adjust}"
         if df is not None and "date" in df.columns and len(df) > 0:
             last_date = str(df["date"].iloc[-1])[:10]
-            cache_key = f"{symbol}:{period}:{last_date}:{len(df)}"
+            cache_key = f"{symbol}:{period}:{adjust}:{last_date}:{len(df)}"
 
         cached = _indicator_cache.get(cache_key)
         if cached is not None:
@@ -54,6 +54,8 @@ class TechnicalIndicators:
         low_arr = pd.to_numeric(df["low"], errors="coerce").dropna().values.astype(float)
         v = pd.to_numeric(df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in df.columns else np.zeros(len(df))
 
+        tp = (h + low_arr + c) / 3
+
         ma = TechnicalIndicators._ma(c)
         ema = TechnicalIndicators._ema(c)
         boll = TechnicalIndicators._boll(c)
@@ -63,11 +65,11 @@ class TechnicalIndicators:
 
         rsi = TechnicalIndicators._rsi(c)
         kdj = TechnicalIndicators._kdj(h, low_arr, c)
-        cci = TechnicalIndicators._cci(h, low_arr, c)
+        cci = TechnicalIndicators._cci_from_tp(tp, period=14)
         williams_r = TechnicalIndicators._williams_r(h, low_arr, c)
         roc = TechnicalIndicators._roc(c)
 
-        vwap = TechnicalIndicators._vwap(h, low_arr, c, v)
+        vwap = TechnicalIndicators._vwap_from_tp(tp, v, c)
         obv = TechnicalIndicators._obv(c, v)
         volume_ratio = TechnicalIndicators._volume_ratio(v)
         cmf = TechnicalIndicators._cmf(h, low_arr, c, v)
@@ -272,6 +274,10 @@ class TechnicalIndicators:
     @staticmethod
     def _cci(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, period: int = 14) -> np.ndarray:
         tp_arr = (h + low_arr + c) / 3
+        return TechnicalIndicators._cci_from_tp(tp_arr, period)
+
+    @staticmethod
+    def _cci_from_tp(tp_arr: np.ndarray, period: int = 14) -> np.ndarray:
         n = len(tp_arr)
         if n < period:
             return np.zeros(n)
@@ -302,6 +308,10 @@ class TechnicalIndicators:
     @staticmethod
     def _vwap(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, v: np.ndarray) -> np.ndarray:
         tp = (h + low_arr + c) / 3
+        return TechnicalIndicators._vwap_from_tp(tp, v, c)
+
+    @staticmethod
+    def _vwap_from_tp(tp: np.ndarray, v: np.ndarray, c: np.ndarray) -> np.ndarray:
         cum_tp_v = np.cumsum(tp * v)
         cum_v = np.cumsum(v)
         return np.where(cum_v != 0, cum_tp_v / cum_v, c)
@@ -828,7 +838,7 @@ def calc_factor_ic(factor_values, forward_returns, periods: list | None = None) 
                 corr, _ = pearsonr(x_clean, y_clean)
                 ic_list.append(float(corr) if np.isfinite(corr) else 0.0)
             except Exception as e:
-                logger.debug("IC calculation failed for period %s: %s", p, e)
+                logger.warning("IC calculation failed for period %s: %s", p, e)
                 ic_list.append(0.0)
 
         if not ic_list:
@@ -869,7 +879,7 @@ def calc_factor_turnover(factor_values_series) -> float:
             corr, _ = spearmanr(rank_t_clean, rank_t1_clean)
             turnover_list.append(float(corr) if np.isfinite(corr) else 0.0)
         except Exception as e:
-            logger.debug("Turnover autocorrelation failed: %s", e)
+            logger.warning("Turnover autocorrelation failed: %s", e)
             continue
 
     if not turnover_list:

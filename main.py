@@ -292,6 +292,13 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Scheduler task start failed: {e}")
 
     try:
+        from core.data_fetcher import _cleanup_inflight_requests
+        task = asyncio.create_task(_cleanup_inflight_requests())
+        app.state._bg_tasks.append(task)
+    except Exception as e:
+        logger.warning(f"Inflight cleanup task start failed: {e}")
+
+    try:
         from core.market_data import start_background_refresh
         start_background_refresh()
     except Exception as e:

@@ -6,6 +6,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Form, Path, Query, Request
 
+from api.connection_manager import set_symbol_priority, clear_symbol_priority, _PRIORITY_WATCHLIST
 from api.routers.models import (
     AlertAddRequest,
     AlertRemoveRequest,
@@ -21,13 +22,6 @@ from core.smart_alerts import get_smart_alert_engine
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-_PRIORITY_WATCHLIST = "watchlist"
-_symbol_priority: dict[str, str] = {}
-
-
-def set_symbol_priority(symbol: str, priority: str) -> None:
-    _symbol_priority[symbol] = priority
 
 
 @router.get("/watchlist")
@@ -77,7 +71,7 @@ async def add_to_watchlist(request: Request, body: WatchlistAddRemoveRequest):
         if body.symbol not in watchlist:
             watchlist.append(body.symbol)
             db.set_config("watchlist", watchlist)
-        set_symbol_priority(body.symbol, _PRIORITY_WATCHLIST)
+        await set_symbol_priority(body.symbol, _PRIORITY_WATCHLIST)
         return _json_response(True, data=watchlist)
     except Exception as e:
         return _json_response(False, error=safe_error(e))
@@ -93,7 +87,7 @@ async def remove_from_watchlist(request: Request, body: WatchlistAddRemoveReques
         if body.symbol in watchlist:
             watchlist.remove(body.symbol)
             db.set_config("watchlist", watchlist)
-        _symbol_priority.pop(body.symbol, None)
+        await clear_symbol_priority(body.symbol)
         return _json_response(True, data=watchlist)
     except Exception as e:
         return _json_response(False, error=safe_error(e))

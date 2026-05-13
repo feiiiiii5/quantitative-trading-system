@@ -175,4 +175,16 @@ class TestEnhancedRiskManager:
             "cash": 8000.0,
         }
         approved, reason = filter.check(order, context)
+        assert not approved
+        assert "集中度" in reason
+
+    def test_concentration_below_boundary_with_slippage_buffer(self):
+        filter = ConcentrationFilter(max_concentration=0.3)
+        order = Order(order_id="test", symbol="000001", side=OrderSide.BUY, order_type=OrderType.MARKET, quantity=90, price=10.0)
+        context = {
+            "total_assets": 10000.0,
+            "current_positions": {"000001": {"market_value": 2000.0}},
+            "cash": 8000.0,
+        }
+        approved, reason = filter.check(order, context)
         assert approved

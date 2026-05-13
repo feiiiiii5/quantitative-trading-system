@@ -196,7 +196,7 @@ async def get_deep_analysis(request: Request, symbol: str = Path(..., min_length
         c = df["close"].astype(float)
         h = df["high"].astype(float)
         low = df["low"].astype(float)
-        df["volume"].astype(float) if "volume" in df.columns else None
+        vol = df["volume"].astype(float) if "volume" in df.columns else None
         indicators = TechnicalIndicators.compute_all(df, symbol=symbol, period=period)
         ma = indicators.get("ma", {})
         ma20 = ma.get(20, [])

@@ -26,7 +26,7 @@ export function useStrategyParamSpecs(strategy: string | null) {
     queryKey: strategyKeys.paramSpecs(strategy ?? ''),
     queryFn: () => apiGet<{
       strategies: Record<string, Record<string, { type: string; min: number; max: number; step: number; default: number }>>;
-    }>('/strategy/param-specs', { strategy: strategy ?? '' }),
+    }>('/strategy/param-specs'),
     enabled: strategy !== null,
     staleTime: 300_000,
   });
@@ -35,7 +35,10 @@ export function useStrategyParamSpecs(strategy: string | null) {
 export function useFactorRegistry() {
   return useQuery({
     queryKey: strategyKeys.factorRegistry(),
-    queryFn: () => apiGet<Array<{ name: string; category: string; description: string }>>('/factor/registry'),
+    queryFn: async () => {
+      const raw = await apiGet<{ factors: Array<{ name: string; category: string; description: string }>; categories: string[] }>('/factor/registry');
+      return Array.isArray(raw) ? raw : raw.factors;
+    },
     staleTime: 300_000,
   });
 }

@@ -71,7 +71,8 @@ def _simulate_call_auction_fill(open_price: float, rng: np.random.Generator = No
     if rng is None:
         rng = np.random.default_rng()
     noise = rng.uniform(-0.001, 0.001)
-    return open_price * (1 + noise)
+    fill_price = open_price * (1 + noise)
+    return max(fill_price, open_price * 0.8)
 
 
 def _simulate_twap_fill(price: float, shares: int, daily_amount: float,

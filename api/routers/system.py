@@ -14,6 +14,7 @@ from api.routers.models import ConfigSetRequest, FeatureFlagRegisterRequest, Fea
 from api.utils import json_response as _json_response
 from api.utils import safe_error, validate_symbol
 from core.database import get_db
+from core.data_fetcher import SmartDataFetcher
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -297,6 +298,31 @@ async def system_status(request: Request):
         cpu_percent = 0
         logger.debug("psutil metrics failed: %s", e)
 
+    cache_stats = {}
+    try:
+        from core.data_fetcher import _realtime_cache, _history_cache, _indicator_cache
+        cache_stats = {
+            "realtime": _realtime_cache.stats(),
+            "history": _history_cache.stats(),
+            "indicator": _indicator_cache.stats(),
+        }
+    except Exception as e:
+        logger.debug("Cache stats collection failed: %s", e)
+
+    circuit_breaker_status = {}
+    try:
+        fetcher: SmartDataFetcher = request.app.state.fetcher
+        for name, breaker in fetcher._circuit_breakers.items():
+            circuit_breaker_status[name] = {
+                "state": breaker.state,
+                "failure_count": breaker.failure_count,
+                "failure_threshold": breaker.failure_threshold,
+                "timeout_seconds": breaker.timeout,
+                "last_failure_ago": round(time.monotonic() - breaker.last_failure_time, 1) if breaker.last_failure_time > 0 else None,
+            }
+    except Exception as e:
+        logger.debug("Circuit breaker stats collection failed: %s", e)
+
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
@@ -304,7 +330,25 @@ async def system_status(request: Request):
         "memory_mb": memory_mb,
         "cpu_percent": cpu_percent,
         "database": pool_status,
+        "cache": cache_stats,
+        "circuit_breakers": circuit_breaker_status,
     }
+
+
+@router.post("/circuit-breaker/{source}/reset")
+async def reset_circuit_breaker(source: str, request: Request):
+    try:
+        fetcher: SmartDataFetcher = request.app.state.fetcher
+        breaker = fetcher._circuit_breakers.get(source)
+        if breaker is None:
+            return _json_response(False, error=f"Unknown source: {source}")
+        breaker.state = "CLOSED"
+        breaker.failure_count = 0
+        breaker.half_open_calls = 0
+        logger.info("Circuit breaker reset for source %s", source)
+        return _json_response(True, data={"source": source, "state": breaker.state})
+    except Exception as e:
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/data/quality/{symbol}")

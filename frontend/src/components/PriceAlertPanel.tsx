@@ -74,11 +74,13 @@ export const PriceAlertPanel = memo(function PriceAlertPanel() {
 
   const addAlert = useCallback(() => {
     if (!symbol.trim() || !threshold) return;
+    const numThreshold = parseFloat(threshold);
+    if (!Number.isFinite(numThreshold) || numThreshold <= 0) return;
     const newAlert: PriceAlert = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       symbol: symbol.trim().toUpperCase(),
       condition,
-      threshold: parseFloat(threshold),
+      threshold: numThreshold,
       active: true,
       notify: ['toast', 'sound'],
     };

@@ -23,6 +23,12 @@ from core.data_fetcher import SmartDataFetcher
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+_WS_SEND_TIMEOUT = 2.0
+
+
+async def _safe_send_json(ws: WebSocket, data: dict) -> None:
+    await asyncio.wait_for(ws.send_json(data), timeout=_WS_SEND_TIMEOUT)
+
 
 @router.websocket("/ws/realtime")
 async def websocket_realtime(ws: WebSocket):
@@ -44,7 +50,7 @@ async def websocket_realtime(ws: WebSocket):
                 elif msg_type == "unsubscribe" and symbols:
                     await _manager.unsubscribe(ws, symbols[:_MAX_SUBSCRIBE_SYMBOLS])
                 elif msg_type == "ping":
-                    await ws.send_json({"type": "pong", "ts": time.time()})
+                    await _safe_send_json(ws, {"type": "pong", "ts": time.time()})
             except json.JSONDecodeError:
                 logger.debug("WebSocket received non-JSON message")
     except WebSocketDisconnect:
@@ -73,11 +79,11 @@ async def websocket_pnl(ws: WebSocket):
             try:
                 msg = json.loads(data)
                 if msg.get("type") == "ping":
-                    await ws.send_json({"type": "pong", "ts": time.time()})
+                    await _safe_send_json(ws, {"type": "pong", "ts": time.time()})
                 elif msg.get("type") == "get_pnl":
                     positions = msg.get("positions", [])
                     if not positions:
-                        await ws.send_json({"type": "pnl", "data": []})
+                        await _safe_send_json(ws, {"type": "pnl", "data": []})
                         continue
                     fetcher: SmartDataFetcher = ws.app.state.fetcher
                     pnl_data = []
@@ -112,7 +118,7 @@ async def websocket_pnl(ws: WebSocket):
                     total_pnl = sum(p["pnl"] for p in pnl_data)
                     total_cost = sum(p["cost"] for p in pnl_data)
                     total_mv = sum(p["market_value"] for p in pnl_data)
-                    await ws.send_json({
+                    await _safe_send_json(ws, {
                         "type": "pnl",
                         "data": pnl_data,
                         "summary": {
@@ -156,11 +162,11 @@ async def websocket_signals(ws: WebSocket):
             try:
                 msg = json.loads(data)
                 if msg.get("type") == "ping":
-                    await ws.send_json({"type": "pong", "ts": time.time()})
+                    await _safe_send_json(ws, {"type": "pong", "ts": time.time()})
                 elif msg.get("type") == "subscribe":
                     symbols = msg.get("symbols", [])[:10]
                     if not symbols:
-                        await ws.send_json({"type": "error", "message": "No symbols provided"})
+                        await _safe_send_json(ws, {"type": "error", "message": "No symbols provided"})
                         continue
                     fetcher: SmartDataFetcher = ws.app.state.fetcher
                     from core.strategies import CompositeStrategy
@@ -209,7 +215,7 @@ async def websocket_signals(ws: WebSocket):
                         except Exception as e:
                             logger.debug("Signal WebSocket error for %s: %s", symbol, e)
                             continue
-                    await ws.send_json({
+                    await _safe_send_json(ws, {
                         "type": "signals",
                         "data": signal_data,
                         "ts": time.time(),
@@ -239,7 +245,7 @@ async def websocket_regime(ws: WebSocket):
         _regime_connections.append(ws)
         _regime_last_active[ws] = time.monotonic()
     try:
-        await ws.send_json({
+        await _safe_send_json(ws, {
             "type": "connected",
             "message": "Subscribed to market regime stream",
             "ts": time.time(),
@@ -250,11 +256,11 @@ async def websocket_regime(ws: WebSocket):
             try:
                 msg = json.loads(data)
                 if msg.get("type") == "ping":
-                    await ws.send_json({"type": "pong", "ts": time.time()})
+                    await _safe_send_json(ws, {"type": "pong", "ts": time.time()})
                 elif msg.get("type") == "subscribe":
                     symbols = msg.get("symbols", [])[:20]
                     if not symbols:
-                        await ws.send_json({"type": "error", "message": "No symbols provided"})
+                        await _safe_send_json(ws, {"type": "error", "message": "No symbols provided"})
                         continue
                     fetcher: SmartDataFetcher = ws.app.state.fetcher
                     from core.regime_detector import RegimeAdapter
@@ -277,7 +283,7 @@ async def websocket_regime(ws: WebSocket):
                         except Exception as e:
                             logger.debug("Regime WebSocket error for %s: %s", symbol, e)
                             continue
-                    await ws.send_json({
+                    await _safe_send_json(ws, {
                         "type": "regime_data",
                         "data": regime_data,
                         "ts": time.time(),
@@ -316,7 +322,7 @@ async def websocket_portfolio_metrics(ws: WebSocket):
                 msg = json.loads(raw)
                 msg_type = msg.get("type", "")
                 if msg_type == "ping":
-                    await ws.send_json({"type": "pong", "ts": time.time()})
+                    await _safe_send_json(ws, {"type": "pong", "ts": time.time()})
                 elif msg_type == "configure":
                     positions = msg.get("positions", [])
                     base_value = float(msg.get("base_value", 0))
@@ -337,14 +343,14 @@ async def websocket_portfolio_metrics(ws: WebSocket):
                             now = time.time()
                             _portfolio_cache_timestamps[key_entry] = now
                             _portfolio_cache_timestamps[key_shares] = now
-                    await ws.send_json({
+                    await _safe_send_json(ws, {
                         "type": "configured",
                         "symbol_count": len(symbols),
                         "base_value": base_value,
                         "ts": time.time(),
                     })
             except TimeoutError:
-                await ws.send_json({"type": "keepalive", "ts": time.time()})
+                await _safe_send_json(ws, {"type": "keepalive", "ts": time.time()})
             except json.JSONDecodeError:
                 logger.debug("WebSocket received non-JSON message")
     except WebSocketDisconnect:

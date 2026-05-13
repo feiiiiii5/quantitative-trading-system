@@ -46,7 +46,7 @@ def _extract_signal_return_pairs(
         for i, bar in enumerate(oos_result.kline_with_signals):
             if i >= len(test_df):
                 break
-            action = bar.get("action", "")
+            action = bar.get("action", "") or bar.get("s", "")
             if action == "buy":
                 signals[i] = 1.0
             elif action == "sell":
@@ -140,7 +140,7 @@ def walk_forward_ic_validation(
             engine = BacktestEngine(initial_capital=initial_capital)
             oos_result = engine.run(strategy_cls(**best_params), test_df)
         except (InsufficientDataError, Exception) as e:
-            logger.debug("IC validation OOS window %d failed: %s", window_idx, e)
+            logger.warning("IC validation OOS window %d failed: %s", window_idx, e)
             start += test_days
             window_idx += 1
             continue
@@ -310,7 +310,7 @@ def walk_forward_oos_validation(
                         best_params = params
                         best_is_result = result
                 except (InsufficientDataError, Exception) as e:
-                    logger.debug("IS window %d param combo failed: %s", window_idx, e)
+                    logger.warning("IS window %d param combo failed: %s", window_idx, e)
         else:
             try:
                 engine = BacktestEngine(initial_capital=initial_capital)
@@ -319,7 +319,7 @@ def walk_forward_oos_validation(
                 best_params = {}
                 best_is_result = result
             except (InsufficientDataError, Exception) as e:
-                logger.debug("IS window %d default params failed: %s", window_idx, e)
+                logger.warning("IS window %d default params failed: %s", window_idx, e)
                 start += test_days
                 continue
 
@@ -336,7 +336,7 @@ def walk_forward_oos_validation(
             oos_sharpes.append(oos_result.sharpe_ratio)
             oos_returns.append(oos_result.total_return)
         except (InsufficientDataError, Exception) as e:
-            logger.debug("OOS window %d failed: %s", window_idx, e)
+            logger.warning("OOS window %d failed: %s", window_idx, e)
             oos_sharpes.append(0.0)
             oos_returns.append(0.0)
 

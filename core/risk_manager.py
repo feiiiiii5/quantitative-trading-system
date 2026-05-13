@@ -42,7 +42,7 @@ class ConcentrationFilter(RiskFilter):
         current_value = context.get("current_positions", {}).get(order.symbol, {}).get("market_value", 0)
         if order.price is None or order.price <= 0:
             return False, "委托价格无效，无法计算集中度"
-        order_value = order.quantity * order.price
+        order_value = order.quantity * order.price * 1.002
         concentration = (current_value + order_value) / total_assets
         if concentration > self._max + 1e-9:
             return False, f"持仓集中度{concentration:.1%}超过上限{self._max:.1%}"
@@ -50,10 +50,13 @@ class ConcentrationFilter(RiskFilter):
 
 
 class DailyLossFilter(RiskFilter):
+    _MIN_CIRCUIT_BREAKER_MINUTES = 30
+
     def __init__(self, max_daily_loss: float = 0.05, initial_capital: float = 1000000):
         self._max_daily_loss = max_daily_loss
         self._initial_capital = initial_capital
         self._daily_pnl: float = 0.0
+        self._daily_min_pnl: float = 0.0
         self._circuit_breaker_time: datetime.datetime | None = None
         self._daily_reset_date: str | None = None
 
@@ -61,13 +64,17 @@ class DailyLossFilter(RiskFilter):
         today = datetime.date.today().isoformat()
         if self._daily_reset_date != today:
             self._daily_pnl = 0.0
+            self._daily_min_pnl = 0.0
             self._daily_reset_date = today
             self._circuit_breaker_time = None
 
     def _try_auto_reset_circuit_breaker(self):
         if self._circuit_breaker_time is None:
             return
-        recovery_threshold = -self._initial_capital * self._max_daily_loss * 0.5
+        elapsed = (datetime.datetime.now() - self._circuit_breaker_time).total_seconds() / 60
+        if elapsed < self._MIN_CIRCUIT_BREAKER_MINUTES:
+            return
+        recovery_threshold = self._daily_min_pnl * 0.3
         if self._daily_pnl >= recovery_threshold:
             self._circuit_breaker_time = None
             logger.info("日内熔断自动解除，当前亏损: %s", self)
@@ -89,6 +96,8 @@ class DailyLossFilter(RiskFilter):
     def update_daily_pnl(self, pnl: float, context: dict | None = None):
         self._reset_if_needed()
         self._daily_pnl += pnl
+        if self._daily_pnl < self._daily_min_pnl:
+            self._daily_min_pnl = self._daily_pnl
         effective_capital = self._initial_capital
         if context and context.get("total_assets", 0) > 0:
             effective_capital = context["total_assets"]
@@ -172,7 +181,7 @@ class TrailingStopManager:
                 stop_price = pos["entry_price"] * (1 - self._trailing_stop)
             else:
                 stop_price = pos["lowest_price"] * (1 + self._trailing_stop_positive)
-            pos["stop_price"] = min(pos["stop_price"], stop_price)
+            pos["stop_price"] = max(pos["stop_price"], stop_price)
             if current_price >= pos["stop_price"]:
                 return "trailing_stop"
         else:

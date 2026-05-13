@@ -473,3 +473,177 @@ class TestRequestBodyLimitMiddleware:
         assert len(responses) == 2
         assert responses[0]["status"] == 413
         assert mw._rejected == 1
+
+
+class TestBacktestResultCache:
+    def test_cache_key_deterministic(self):
+        from core.backtest.runner import _make_backtest_cache_key
+        key1 = _make_backtest_cache_key("000001", "ma_cross", "2024-01-01", "2024-12-31", 1000000, {"period": 5})
+        key2 = _make_backtest_cache_key("000001", "ma_cross", "2024-01-01", "2024-12-31", 1000000, {"period": 5})
+        assert key1 == key2
+
+    def test_cache_key_differs_for_different_params(self):
+        from core.backtest.runner import _make_backtest_cache_key
+        key1 = _make_backtest_cache_key("000001", "ma_cross", "2024-01-01", "2024-12-31", 1000000, {"period": 5})
+        key2 = _make_backtest_cache_key("000001", "ma_cross", "2024-01-01", "2024-12-31", 1000000, {"period": 10})
+        assert key1 != key2
+
+    def test_cache_set_and_get(self):
+        import time
+        from core.backtest.runner import _backtest_cache, _get_cached_result, _set_cached_result
+        _backtest_cache.clear()
+        _set_cached_result("test_key", {"total_return": 0.15})
+        result = _get_cached_result("test_key")
+        assert result is not None
+        assert result["total_return"] == 0.15
+        assert result["cached"] is True
+        _backtest_cache.clear()
+
+    def test_cache_miss(self):
+        from core.backtest.runner import _backtest_cache, _get_cached_result
+        _backtest_cache.clear()
+        result = _get_cached_result("nonexistent_key")
+        assert result is None
+
+    def test_cache_ttl_expiry(self):
+        import time
+        from core.backtest.runner import (
+            _BACKTEST_CACHE_TTL,
+            _backtest_cache,
+            _get_cached_result,
+            _set_cached_result,
+        )
+        _backtest_cache.clear()
+        _set_cached_result("ttl_key", {"total_return": 0.1})
+        entry = _backtest_cache["ttl_key"]
+        _backtest_cache["ttl_key"] = (entry[0], time.monotonic() - _BACKTEST_CACHE_TTL - 1)
+        result = _get_cached_result("ttl_key")
+        assert result is None
+        _backtest_cache.clear()
+
+    def test_cache_max_eviction(self):
+        from core.backtest.runner import (
+            _BACKTEST_CACHE_MAX,
+            _backtest_cache,
+            _get_cached_result,
+            _set_cached_result,
+        )
+        _backtest_cache.clear()
+        for i in range(_BACKTEST_CACHE_MAX + 5):
+            _set_cached_result(f"key_{i}", {"total_return": i * 0.01})
+        assert len(_backtest_cache) <= _BACKTEST_CACHE_MAX
+        _backtest_cache.clear()
+
+
+class TestCircuitBreakerObservability:
+    def test_breaker_status_fields(self):
+        from core.data_fetcher import CircuitBreaker
+        cb = CircuitBreaker(failure_threshold=5, timeout=30)
+        assert cb.state == "CLOSED"
+        assert cb.failure_count == 0
+        assert cb.failure_threshold == 5
+        assert cb.timeout == 30
+        assert cb.last_failure_time == 0.0
+
+    def test_breaker_state_transitions_observable(self):
+        import asyncio
+        from core.data_fetcher import CircuitBreaker, CircuitBreakerError
+
+        async def _run():
+            cb = CircuitBreaker(failure_threshold=2, timeout=0.05)
+
+            async def failing_fn():
+                raise RuntimeError("fail")
+
+            for _ in range(2):
+                with pytest.raises(RuntimeError):
+                    await cb.call(failing_fn)
+
+            assert cb.state == "OPEN"
+            assert cb.failure_count == 2
+            assert cb.last_failure_time > 0
+
+            with pytest.raises(CircuitBreakerError):
+                await cb.call(failing_fn)
+
+            await asyncio.sleep(0.06)
+            assert cb.state == "OPEN"
+
+            async def ok_fn():
+                return {"price": 1.0}
+
+            result = await cb.call(ok_fn)
+            assert result is not None
+
+        asyncio.run(_run())
+
+    def test_breaker_reset(self):
+        from core.data_fetcher import CircuitBreaker
+        cb = CircuitBreaker(failure_threshold=2, timeout=60)
+        cb.state = "OPEN"
+        cb.failure_count = 5
+        cb.half_open_calls = 3
+        cb.state = "CLOSED"
+        cb.failure_count = 0
+        cb.half_open_calls = 0
+        assert cb.state == "CLOSED"
+        assert cb.failure_count == 0
+
+
+class TestSymbolStateLock:
+    def test_set_and_clear_priority(self):
+        import asyncio
+        from api.connection_manager import set_symbol_priority, clear_symbol_priority, _symbol_priority
+
+        async def _run():
+            await set_symbol_priority("000001", "position")
+            assert _symbol_priority.get("000001") == "position"
+            await clear_symbol_priority("000001")
+            assert "000001" not in _symbol_priority
+
+        asyncio.run(_run())
+
+    def test_trading_hours_lock(self):
+        from api.connection_manager import _trading_hours_lock
+        assert _trading_hours_lock is not None
+
+
+class TestWebSocketSendTimeout:
+    def test_safe_send_json_exists(self):
+        from api.routers.websocket import _safe_send_json, _WS_SEND_TIMEOUT
+        assert _WS_SEND_TIMEOUT > 0
+        assert callable(_safe_send_json)
+
+    def test_no_unprotected_ws_send_json(self):
+        import inspect
+        import api.routers.websocket as ws_mod
+        import api.connection_manager as cm_mod
+        ws_source = inspect.getsource(ws_mod)
+        cm_source = inspect.getsource(cm_mod)
+        assert "await ws.send_json(" not in ws_source
+        assert "await ws.send_json(" not in cm_source
+
+
+class TestCorrelationIdInResponse:
+    def test_response_includes_request_id_when_set(self):
+        from api.utils import orjson_response
+        from api.middleware import correlation_id
+        import orjson
+
+        correlation_id.set("test-cid-123")
+        try:
+            resp = orjson_response(True, data={"key": "value"})
+            body = orjson.loads(resp.body)
+            assert body["request_id"] == "test-cid-123"
+        finally:
+            correlation_id.set("")
+
+    def test_response_omits_request_id_when_empty(self):
+        from api.utils import orjson_response
+        from api.middleware import correlation_id
+        import orjson
+
+        correlation_id.set("")
+        resp = orjson_response(True, data={"key": "value"})
+        body = orjson.loads(resp.body)
+        assert "request_id" not in body

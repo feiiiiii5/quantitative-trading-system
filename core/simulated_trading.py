@@ -30,6 +30,11 @@ class SimPosition:
     take_profit: float = 0.0
     buy_date: str = ""
     buy_fees: float = 0.0
+    first_buy_date: str = ""
+
+    def __post_init__(self):
+        if not self.first_buy_date and self.buy_date:
+            self.first_buy_date = self.buy_date
 
     @property
     def market_value(self) -> float:
@@ -183,7 +188,8 @@ class SimulatedTrading:
 
     def _write_audit(self, action: str, detail: dict) -> None:
         try:
-            self._audit_logger.info("%s | %s", action, json)
+            serialized = json.dumps(detail, ensure_ascii=False, default=str)
+            self._audit_logger.info("%s | %s", action, serialized)
         except (OSError, ValueError, TypeError) as e:  # pragma: no cover
             logger.warning("Audit log write failed for %s: %s", action, e)
 
@@ -373,6 +379,7 @@ class SimulatedTrading:
 
             if symbol in self._positions:
                 pos = self._positions[symbol]
+                prev_available = pos.available_shares
                 total_shares = pos.shares + shares
                 total_cost_basis = pos.avg_cost * pos.shares + amount
                 pos.avg_cost = total_cost_basis / total_shares
@@ -381,6 +388,8 @@ class SimulatedTrading:
                 pos.stop_loss = stop_loss if stop_loss > 0 else pos.stop_loss
                 pos.take_profit = take_profit if take_profit > 0 else pos.take_profit
                 pos.current_price = filled_price
+                pos.buy_date = today
+                pos.available_shares = prev_available
                 self._entry_price_map[symbol] = pos.avg_cost
             else:
                 self._positions[symbol] = SimPosition(
@@ -459,7 +468,7 @@ class SimulatedTrading:
 
             if pos.market == "A":
                 today = self._today_str()
-                if pos.buy_date == today:
+                if pos.buy_date == today and pos.available_shares == 0:
                     return {"success": False, "error": "T+1限制：当日买入的股票当日不可卖出", "t1_restricted": True}
 
             sell_shares = shares if shares and shares > 0 else pos.available_shares
@@ -551,7 +560,7 @@ class SimulatedTrading:
                 pos = self._positions[symbol]
                 if pos.market == "A":
                     today = self._today_str()
-                    if pos.buy_date == today:
+                    if pos.buy_date == today and pos.available_shares == 0:
                         return {"success": False, "error": "T+1限制：当日买入的股票当日不可挂卖单", "t1_restricted": True}
                 if shares > pos.available_shares:
                     return {"success": False, "error": f"可卖数量不足：可用{pos.available_shares}股"}
@@ -660,7 +669,8 @@ class SimulatedTrading:
                             order.filled_price = current_price
                             executed.append({"order": self._order_to_dict(order), "result": result})
 
-                elif order.action == "sell" and ((order.order_type == "limit" and current_price >= order.price) or (order.order_type == "market")):
+                elif order.action == "sell":
+                    if (order.order_type == "limit" and current_price >= order.price) or order.order_type == "market":
                         result = self.execute_sell(
                             symbol=order.symbol,
                             price=order.price,
@@ -831,6 +841,7 @@ class SimulatedTrading:
                     "take_profit": pos.take_profit,
                     "buy_date": pos.buy_date,
                     "buy_fees": pos.buy_fees,
+                    "first_buy_date": pos.first_buy_date,
                 })
 
             pending_orders = []
@@ -908,6 +919,7 @@ class SimulatedTrading:
                         take_profit=pos_data["take_profit"],
                         buy_date=pos_data["buy_date"],
                         buy_fees=pos_data["buy_fees"],
+                        first_buy_date=pos_data.get("first_buy_date", pos_data.get("buy_date", "")),
                     )
 
                 self._pending_orders.clear()

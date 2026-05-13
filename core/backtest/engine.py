@@ -90,7 +90,7 @@ class BacktestEngine:
                 df = preprocessed.df
             self._preprocessing_report = preprocessed.quality_report
         except Exception as e:
-            logger.debug("Preprocessing failed: %s", e)
+            logger.error("Preprocessing failed: %s", e)
             self._preprocessing_report = {}
 
         strategy.reset()
@@ -179,13 +179,8 @@ class BacktestEngine:
                 ),
             )
             tr_arr = np.concatenate([[0], tr_arr])
-            cumsum = np.cumsum(tr_arr)
-            atr_values[0] = tr_arr[1] if len(tr_arr) > 1 else 0
-            window = 14
-            for k in range(1, min(window, n)):
-                atr_values[k] = cumsum[k] / k
-            if n > window:
-                atr_values[window:] = (cumsum[window:] - cumsum[:-window]) / window
+            from core.indicators import calc_atr
+            atr_values = calc_atr(highs, lows, closes, period=14)
 
         volumes = pd.to_numeric(df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in df.columns else None
         amounts_col = pd.to_numeric(df["amount"], errors="coerce").dropna().values.astype(float) if "amount" in df.columns else None
@@ -207,7 +202,7 @@ class BacktestEngine:
             try:
                 sigs = strategy.on_bar(bar, {})
             except Exception as e:
-                logger.debug("Strategy on_bar error at bar %d: %s", i, e)
+                logger.warning("Strategy on_bar error at bar %d: %s", i, e)
                 sigs = []
 
             bar_buy = False

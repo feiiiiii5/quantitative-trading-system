@@ -61,9 +61,9 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 function getDifficulty(name: string): Difficulty {
-  const lower = name.toLowerCase();
-  const expert = ['ml_', 'deep_', 'lstm', 'transformer', 'gan', 'reinforcement', 'alpha', 'multi_factor', 'pair'];
-  const pro = ['dual_ma', 'macd', 'kdj', 'bollinger', 'rsi', 'turtle', 'momentum', 'mean_reversion', 'breakout'];
+  const lower = name.toLowerCase().replace(/strategy$/i, '').replace(/_/g, '');
+  const expert = ['ml', 'deep', 'lstm', 'transformer', 'gan', 'reinforcement', 'alpha', 'multifactor', 'pair'];
+  const pro = ['dualma', 'macd', 'kdj', 'bollinger', 'rsi', 'turtle', 'momentum', 'meanreversion', 'breakout', 'orderflow', 'pricevolume', 'pattern', 'volatilitysqueez', 'adaptive'];
   if (expert.some(e => lower.includes(e))) return 'EXPERT';
   if (pro.some(e => lower.includes(e))) return 'PRO';
   return 'BASIC';
@@ -156,13 +156,12 @@ const STRATEGY_DETAILS: Record<string, {
 };
 
 function getStrategyDetail(name: string) {
-  const lower = name.toLowerCase();
-  if (STRATEGY_DETAILS[lower]) return STRATEGY_DETAILS[lower];
+  const lower = name.toLowerCase().replace(/strategy$/i, '').replace(/_/g, '');
   for (const [key, detail] of Object.entries(STRATEGY_DETAILS)) {
-    if (lower.includes(key)) return detail;
-  }
-  for (const [key, detail] of Object.entries(STRATEGY_DETAILS)) {
-    if (key.includes(lower) && lower.length >= 3) return detail;
+    const keyNorm = key.replace(/_/g, '');
+    if (lower === keyNorm || lower.includes(keyNorm) || keyNorm.includes(lower)) {
+      return detail;
+    }
   }
   return null;
 }
@@ -1074,6 +1073,162 @@ const StrategyDetailPanel = memo(function StrategyDetailPanel({ name, descriptio
   );
 });
 
+const DIFFICULTY_CONFIG: Record<Difficulty, { label: string; color: string; bg: string; border: string }> = {
+  BASIC: { label: '基础', color: '#00C853', bg: 'rgba(0,200,83,0.08)', border: 'rgba(0,200,83,0.25)' },
+  PRO: { label: '进阶', color: '#FF9100', bg: 'rgba(255,145,0,0.08)', border: 'rgba(255,145,0,0.25)' },
+  EXPERT: { label: '专家', color: '#FF1744', bg: 'rgba(255,23,68,0.08)', border: 'rgba(255,23,68,0.25)' },
+};
+
+const StrategyIntroPanel = memo(function StrategyIntroPanel({
+  strategies,
+  onSelect,
+}: {
+  strategies: Array<{ name: string; aliases: string[]; description: string }>;
+  onSelect: (name: string) => void;
+}) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const grouped = useMemo<Record<Difficulty, typeof strategies>>(() => {
+    const g: Record<Difficulty, typeof strategies> = { BASIC: [], PRO: [], EXPERT: [] };
+    for (const s of strategies) {
+      g[getDifficulty(s.name)].push(s);
+    }
+    return g;
+  }, [strategies]);
+
+  const toggleExpand = useCallback((name: string) => {
+    setExpanded(prev => prev === name ? null : name);
+  }, []);
+
+  return (
+    <div style={{ height: '100%', overflow: 'auto' }}>
+      <div style={{
+        fontFamily: 'var(--font-sans)', fontSize: 20, fontWeight: 700,
+        color: 'var(--label-primary)', letterSpacing: '-0.02em', marginBottom: 4,
+      }}>
+        策略中心
+      </div>
+      <div style={{
+        fontSize: 13, color: 'var(--label-tertiary)', lineHeight: 1.6, marginBottom: 28,
+      }}>
+        选择适合您的交易策略，了解其原理、适用场景与风险特征
+      </div>
+
+      {(['BASIC', 'PRO', 'EXPERT'] as Difficulty[]).map(diff => {
+        const cfg = DIFFICULTY_CONFIG[diff];
+        const list = grouped[diff];
+        if (list.length === 0) return null;
+        return (
+          <div key={diff} style={{ marginBottom: 28 }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14,
+            }}>
+              <span style={{
+                fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase',
+                letterSpacing: '0.1em', padding: '3px 10px', borderRadius: 'var(--r-xs)',
+                background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`,
+              }}>
+                {cfg.label}
+              </span>
+              <span style={{
+                fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--label-quaternary)',
+              }}>
+                {list.length} 策略
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {list.map(s => {
+                const detail = getStrategyDetail(s.name);
+                const isExpanded = expanded === s.name;
+                return (
+                  <div
+                    key={s.name}
+                    style={{
+                      background: 'var(--bg-elevated)',
+                      borderRadius: 'var(--r-md)',
+                      border: `1px solid ${isExpanded ? 'rgba(10,132,255,0.3)' : 'var(--separator)'}`,
+                      overflow: 'hidden',
+                      transition: 'border-color var(--dur-fast) var(--ease-apple)',
+                    }}
+                  >
+                    <div
+                      onClick={() => toggleExpand(s.name)}
+                      style={{
+                        padding: '14px 18px', cursor: 'pointer',
+                        display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12,
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{
+                          fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 600,
+                          color: isExpanded ? 'var(--accent)' : 'var(--label-primary)',
+                          marginBottom: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                          {s.name}
+                        </div>
+                        <div style={{
+                          fontSize: 12, color: 'var(--label-secondary)', lineHeight: 1.5,
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                          {detail?.summary ?? s.description}
+                        </div>
+                      </div>
+                      <span style={{
+                        fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--label-quaternary)',
+                        transform: isExpanded ? 'rotate(0deg)' : 'rotate(-90deg)',
+                        transition: 'transform var(--dur-fast) var(--ease-apple)',
+                        marginTop: 4, flexShrink: 0,
+                      }}>▼</span>
+                    </div>
+
+                    {isExpanded && detail && (
+                      <div style={{
+                        padding: '0 18px 16px', borderTop: '1px solid var(--separator)',
+                      }}>
+                        <div style={{ marginTop: 12 }}>
+                          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--accent)', marginBottom: 4 }}>策略原理</div>
+                          <div style={{ fontSize: 12, color: 'var(--label-secondary)', lineHeight: 1.7 }}>{detail.principle}</div>
+                        </div>
+                        <div style={{ marginTop: 10 }}>
+                          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--label-tertiary)', marginBottom: 4 }}>适用场景</div>
+                          <div style={{ fontSize: 12, color: 'var(--label-secondary)', lineHeight: 1.7 }}>{detail.suitable}</div>
+                        </div>
+                        <div style={{ marginTop: 10 }}>
+                          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#FF9100', marginBottom: 4 }}>风险提示</div>
+                          <div style={{ fontSize: 12, color: 'var(--label-secondary)', lineHeight: 1.7 }}>{detail.risk}</div>
+                        </div>
+                        <div style={{ marginTop: 10 }}>
+                          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--label-tertiary)', marginBottom: 4 }}>关键参数</div>
+                          <div style={{ fontSize: 12, color: 'var(--label-secondary)', lineHeight: 1.7 }}>{detail.params}</div>
+                        </div>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onSelect(s.name); }}
+                          style={{
+                            marginTop: 14, width: '100%', height: 36,
+                            background: 'var(--accent)', color: '#FFFFFF', border: 'none',
+                            borderRadius: 'var(--r-sm)', fontFamily: 'var(--font-sans)',
+                            fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                            transition: 'opacity var(--dur-fast)',
+                          }}
+                          onMouseEnter={e => { e.currentTarget.style.opacity = '0.85'; }}
+                          onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
+                        >
+                          选择此策略进行回测
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+});
+
 const FACTOR_CATEGORY_ORDER = ['value', 'momentum', 'quality', 'volatility', 'growth', 'technical'];
 
 const FactorRegistryPanel = memo(function FactorRegistryPanel({ factors }: { factors: FactorInfo[] }) {
@@ -1141,7 +1296,7 @@ export function StrategyPage() {
   const selectStrategy = useStrategyStore(s => s.selectStrategy);
   const runBacktest = useStrategyStore(s => s.runBacktest);
   const clearResult = useStrategyStore(s => s.clearResult);
-  const { data: strategiesData } = useStrategyList();
+  const { data: strategiesData, isLoading: strategiesLoading, isError: strategiesError } = useStrategyList();
   const strategies = useMemo(() => strategiesData?.strategies ?? [], [strategiesData]);
   const { data: factors } = useFactorRegistry();
   const { data: paramSpecsData } = useStrategyParamSpecs(selectedStrategy);
@@ -1163,7 +1318,7 @@ export function StrategyPage() {
   const [leverage, setLeverage] = useState('1');
   const [executionDelay, setExecutionDelay] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ BASIC: true, PRO: true, EXPERT: true });
-  const [factorTab, setFactorTab] = useState<'registry' | 'alpha' | 'history'>('registry');
+  const [factorTab, setFactorTab] = useState<'intro' | 'registry' | 'alpha' | 'history'>('intro');
   const logRef = useRef<HTMLDivElement>(null);
   const [cursorVisible, setCursorVisible] = useState(true);
 
@@ -1239,6 +1394,20 @@ export function StrategyPage() {
           <span style={{ fontFamily: 'var(--font-sans)', fontSize: 17, fontWeight: 600, color: 'var(--label-primary)', letterSpacing: '-0.01em' }}>策略引擎</span>
         </div>
         <div style={{ flex: 1, overflow: 'auto' }}>
+          {strategiesLoading && (
+            <div style={CENTER_CONTAINER}>
+              <span style={LOADING_TEXT}>LOADING...</span>
+            </div>
+          )}
+          {strategiesError && !strategiesLoading && (
+            <div style={{ padding: '20px', textAlign: 'center' }}>
+              <div style={{ fontSize: 12, color: 'var(--label-tertiary)', marginBottom: 8 }}>策略列表加载失败</div>
+              <button onClick={() => window.location.reload()} style={{ fontSize: 11, color: 'var(--accent)', background: 'transparent', border: '1px solid var(--separator)', borderRadius: 'var(--r-xs)', padding: '4px 12px', cursor: 'pointer' }}>重试</button>
+            </div>
+          )}
+          {!strategiesLoading && !strategiesError && strategies.length === 0 && (
+            <EmptyState title="暂无策略" description="请检查后端服务是否正常" size="sm" />
+          )}
           {(['BASIC', 'PRO', 'EXPERT'] as Difficulty[]).map(group => (
             <div key={group}>
               <div
@@ -1459,8 +1628,20 @@ export function StrategyPage() {
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: 24 }}>
-        {!backtestRunning && !backtestResult && factors && (
+        {!backtestRunning && !backtestResult && (
           <div style={{ marginBottom: 16, display: 'flex', gap: 4 }}>
+            <button
+              onClick={() => setFactorTab('intro')}
+              style={{
+                height: 32, padding: '0 16px', borderRadius: 'var(--r-sm)',
+                border: `1px solid ${factorTab === 'intro' ? 'rgba(10,132,255,0.4)' : 'var(--separator)'}`,
+                background: factorTab === 'intro' ? 'var(--accent-soft)' : 'transparent',
+                color: factorTab === 'intro' ? 'var(--accent)' : 'var(--label-tertiary)',
+                fontFamily: 'var(--font-mono)', fontSize: 11, cursor: 'pointer',
+              }}
+            >
+              策略介绍
+            </button>
             <button
               onClick={() => setFactorTab('registry')}
               style={{
@@ -1515,11 +1696,15 @@ export function StrategyPage() {
           </div>
         ) : backtestResult ? (
           <BacktestResults result={backtestResult} showDrawdown={showDrawdown} onToggleDrawdown={toggleDrawdown} onBack={handleBackFromResults} commissionRate={Number(commissionRate)} slippage={Number(slippage)} initialCapital={Number(capital)} />
+        ) : factorTab === 'intro' ? (
+          <StrategyIntroPanel strategies={strategies} onSelect={handleSelectStrategy} />
         ) : factors ? (
           factorTab === 'registry' ? <FactorRegistryPanel factors={factors} /> :
           factorTab === 'alpha' ? <AlphaFactorPanel /> :
           factorTab === 'history' ? <BacktestHistoryPanel /> : null
-        ) : null}
+        ) : (
+          <EmptyState title="数据加载中" description="正在获取因子和策略数据..." size="md" />
+        )}
       </div>
     </div>
   );

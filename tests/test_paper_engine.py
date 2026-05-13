@@ -104,7 +104,7 @@ class TestPaperEngineAccountStats:
         engine.submit_order("AAPL", OrderSide.BUY, 100, 100.0)
         engine.update_market_value({"AAPL": 110.0})
         stats = engine.get_account_stats()
-        assert stats.market_value == 100 * 100.0
+        assert stats.market_value == 100 * 110.0
         pos = engine.get_position("AAPL")
         assert pos.unrealized_pnl == 100 * 10.0
 

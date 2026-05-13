@@ -115,7 +115,7 @@ async def trading_buy(
             strategy=body.strategy, market_price=market_price,
         )
         if result.get("success"):
-            set_symbol_priority(symbol, _PRIORITY_POSITION)
+            await set_symbol_priority(symbol, _PRIORITY_POSITION)
             fill_price = result.get("price", price)
             logger.info(
                 "Trade executed",
@@ -240,7 +240,7 @@ async def trading_sell(
         if result.get("success"):
             positions = trading.get_positions()
             if symbol not in positions:
-                set_symbol_priority(symbol, _PRIORITY_WATCHLIST)
+                await set_symbol_priority(symbol, _PRIORITY_WATCHLIST)
             fill_price = result.get("price", price)
             logger.info(
                 "Trade executed",

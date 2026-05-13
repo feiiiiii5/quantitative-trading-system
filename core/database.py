@@ -41,9 +41,10 @@ DB_PATH = DATA_DIR / "quantcore.db"
 
 
 class OptimizedTTLCache:
-    """O(1) TTL缓存：OrderedDict实现LRU + 惰性TTL过期 + 定期批量清理"""
+    """O(1) TTL缓存：OrderedDict实现LRU + 惰性TTL过期 + 定期批量清理 + stale-while-revalidate"""
 
-    def __init__(self, maxsize: int = 200, ttl: float = 60, cleanup_interval: float = 300):
+    def __init__(self, maxsize: int = 200, ttl: float = 60, cleanup_interval: float = 300,
+                 stale_while_revalidate: bool = False):
         self._cache: OrderedDict[str, tuple[Any, float]] = OrderedDict()
         self._maxsize = maxsize
         self._ttl = ttl
@@ -52,18 +53,33 @@ class OptimizedTTLCache:
         self._lock = threading.RLock()
         self._hits = 0
         self._misses = 0
+        self._stale_hits = 0
+        self._stale_while_revalidate = stale_while_revalidate
 
     def get(self, key: str) -> Any | None:
         with self._lock:
             if key in self._cache:
                 value, expire_ts = self._cache[key]
-                if time.monotonic() < expire_ts:
+                now = time.monotonic()
+                if now < expire_ts:
                     self._cache.move_to_end(key)
                     self._hits += 1
+                    return value
+                if self._stale_while_revalidate:
+                    self._cache.move_to_end(key)
+                    self._stale_hits += 1
                     return value
                 del self._cache[key]
             self._misses += 1
         return None
+
+    def is_stale(self, key: str) -> bool:
+        """检查缓存条目是否存在但已过期（用于触发后台刷新）"""
+        with self._lock:
+            if key in self._cache:
+                _, expire_ts = self._cache[key]
+                return time.monotonic() >= expire_ts
+        return False
 
     def set(self, key: str, value: Any, ttl: float | None = None) -> None:
         effective_ttl = ttl if ttl is not None else self._ttl
@@ -75,15 +91,17 @@ class OptimizedTTLCache:
                 if len(self._cache) >= self._maxsize:
                     self._cache.popitem(last=False)
             self._cache[key] = (value, expire_ts)
-            if time.monotonic() - self._last_cleanup > self._cleanup_interval:
-                self._cleanup_expired()
+            needs_cleanup = time.monotonic() - self._last_cleanup > self._cleanup_interval
+        if needs_cleanup:
+            self._cleanup_expired()
 
     def _cleanup_expired(self) -> None:
         now = time.monotonic()
-        expired = [k for k, (_, ts) in self._cache.items() if now >= ts]
-        for k in expired:
-            del self._cache[k]
-        self._last_cleanup = now
+        with self._lock:
+            expired = [k for k, (_, ts) in self._cache.items() if now >= ts]
+            for k in expired:
+                del self._cache[k]
+            self._last_cleanup = now
 
     def delete(self, key: str) -> None:
         with self._lock:
@@ -106,12 +124,13 @@ class OptimizedTTLCache:
 
     def stats(self) -> dict:
         with self._lock:
-            total = self._hits + self._misses
+            total = self._hits + self._misses + self._stale_hits
             return {
                 "size": len(self._cache),
                 "maxsize": self._maxsize,
                 "hits": self._hits,
                 "misses": self._misses,
+                "stale_hits": self._stale_hits,
                 "hit_rate": round(self._hits / total, 4) if total else 0,
             }
 
@@ -570,7 +589,7 @@ class SQLiteStore:
                     break
                 self._flush_buffer()
             except Exception as e:
-                logger.debug("Flush loop error: %s", e)
+                logger.error("Flush loop error: %s", e)
 
     def _flush_buffer(self) -> None:
         with self._buffer_lock:
@@ -687,8 +706,18 @@ class SQLiteStore:
         cursor = conn.execute(sql, params)
         return [dict(row) for row in cursor.fetchall()]
 
+    def fetchall_as_df(self, sql: str, params: tuple = ()) -> pd.DataFrame:
+        conn = self._get_conn()
+        cursor = conn.execute(sql, params)
+        columns = [desc[0] for desc in cursor.description] if cursor.description else []
+        rows = cursor.fetchall()
+        if not rows:
+            return pd.DataFrame(columns=columns)
+        data = [tuple(row) for row in rows]
+        return pd.DataFrame(data, columns=columns)
+
     def fetchall_cached(self, sql: str, params: tuple = (), ttl: float = 60.0) -> list[dict]:
-        cache_key = hashlib.md5(f"{sql}:{params}".encode()).hexdigest()[:16]
+        cache_key = hashlib.md5(f"{sql}:{params}".encode()).hexdigest()
         cached = _db_query_cache.get(cache_key)
         if cached is not None:
             logger.debug("Cache hit for query key=%s", cache_key)
@@ -778,16 +807,15 @@ class SQLiteStore:
         sql += " ORDER BY date ASC LIMIT 10000"
 
         try:
-            rows = self.fetchall(sql, tuple(params))
-            if rows:
-                df = pd.DataFrame(rows)
+            df = self.fetchall_as_df(sql, tuple(params))
+            if not df.empty:
                 for col in ["open", "high", "low", "close", "volume", "amount"]:
                     if col in df.columns:
                         df[col] = pd.to_numeric(df[col], errors="coerce")
                 _db_query_cache.set(cache_key, df)
                 return df
         except Exception as e:
-            logger.debug("Load kline error: %s", e)
+            logger.warning("Load kline error: %s", e)
 
         return pd.DataFrame()
 
@@ -902,6 +930,14 @@ class SQLiteStore:
                 float(result_data.get("max_drawdown", 0) or 0),
             ),
         )
+        count_row = self.fetchone("SELECT COUNT(*) as cnt FROM backtest_results")
+        if count_row:
+            cnt = dict(count_row).get("cnt", 0)
+            if cnt > 2000:
+                self.execute(
+                    "DELETE FROM backtest_results WHERE id IN (SELECT id FROM backtest_results ORDER BY created_at ASC LIMIT 500)"
+                )
+                logger.debug("Pruned 500 oldest backtest results, keeping under 2000")
         return result_id
 
     def get_backtest_by_id(self, result_id: str) -> dict | None:
@@ -1003,7 +1039,7 @@ class SQLiteStore:
                 conn.commit()
                 return {"deleted_cache": r1.rowcount}
         except Exception as e:
-            logger.debug("Cleanup error: %s", e)
+            logger.warning("Cleanup error: %s", e)
             return {"error": str(e)}
 
     def compress_old_data(self, days: int = 90) -> dict:
@@ -1073,10 +1109,11 @@ class SQLiteStore:
                     compressed_count += 1
 
             conn.commit()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             _db_query_cache.clear()
             return {"deleted_daily": deleted_count, "compressed_weekly": compressed_count}
         except Exception as e:
-            logger.debug("Compress error: %s", e)
+            logger.warning("Compress error: %s", e)
             return {"error": str(e)}
 
     def close(self) -> None:

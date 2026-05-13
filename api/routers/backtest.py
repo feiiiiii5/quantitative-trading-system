@@ -397,10 +397,25 @@ _job_lock = threading.Lock()
 class BacktestJobManager:
     _state: dict[str, dict] = {}
     _lock = threading.Lock()
+    _MAX_AGE_SECONDS = 3600
+    _MAX_ENTRIES = 200
+
+    @classmethod
+    def _evict(cls) -> None:
+        now = time.time()
+        expired = [jid for jid, job in cls._state.items()
+                   if now - job.get("updated_at", 0) > cls._MAX_AGE_SECONDS]
+        for jid in expired:
+            del cls._state[jid]
+        if len(cls._state) > cls._MAX_ENTRIES:
+            sorted_jobs = sorted(cls._state.items(), key=lambda x: x[1].get("updated_at", 0))
+            for jid, _ in sorted_jobs[:len(cls._state) - cls._MAX_ENTRIES]:
+                del cls._state[jid]
 
     @classmethod
     def submit(cls, job_id: str, progress: float, phase: str, message: str, result: dict | None = None, error: str | None = None) -> None:
         with cls._lock:
+            cls._evict()
             cls._state[job_id] = {
                 "progress": progress,
                 "phase": phase,

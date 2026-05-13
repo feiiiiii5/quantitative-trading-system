@@ -62,6 +62,18 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
             "rate_limit_per_minute": {"type": "integer", "minimum": 10, "maximum": 10000, "default": 120},
         },
     },
+    "strategy": {
+        "type": "object",
+        "required": False,
+        "properties": {
+            "buy_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.30},
+            "strong_buy_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.50},
+            "sell_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.25},
+            "cooldown_bars": {"type": "integer", "minimum": 0, "maximum": 20, "default": 3},
+            "kelly_cap": {"type": "number", "minimum": 0.1, "maximum": 1.0, "default": 0.65},
+            "min_bars_required": {"type": "integer", "minimum": 5, "maximum": 100, "default": 10},
+        },
+    },
     "data": {
         "type": "object",
         "required": False,
@@ -69,6 +81,10 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
             "cache_ttl_realtime": {"type": "integer", "minimum": 1, "maximum": 60, "default": 8},
             "cache_ttl_history": {"type": "integer", "minimum": 10, "maximum": 600, "default": 120},
             "max_concurrent_requests": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+            "network_timeout_seconds": {"type": "integer", "minimum": 5, "maximum": 120, "default": 30},
+            "inflight_max": {"type": "integer", "minimum": 50, "maximum": 2000, "default": 500},
+            "inflight_cleanup_interval": {"type": "integer", "minimum": 10, "maximum": 300, "default": 60},
+            "buffer_max_size": {"type": "integer", "minimum": 10, "maximum": 1000, "default": 100},
         },
     },
 }

@@ -310,7 +310,7 @@ def adf_test(series: np.ndarray | pd.Series, significance: float = 0.05) -> dict
             "method": "augmented_dickey_fuller",
         }
     except Exception as e:
-        logger.debug("ADF test failed: %s", e)
+        logger.warning("ADF test failed: %s", e)
         return _simplified_adf(series, significance)
 
 

@@ -20,34 +20,21 @@ def _vectorized_equity_curve(
     exit_indices: list[int],
     pnl_list: list[float],
 ) -> list[float]:
-    """Vectorized equity curve computation for performance.
-
-    This is a fast alternative to the loop-based approach when
-    trade data is already computed.
-    """
     if n_bars <= 0:
         return [equity]
 
-    equity_curve = [equity] * (n_bars + 1)
-    trade_map: dict[int, list[tuple[int, float]]] = {}
+    equity_curve = [0.0] * (n_bars + 1)
+    equity_curve[0] = equity
 
-    for _idx, (entry, exit_bar, pnl) in enumerate(zip(entry_indices, exit_indices, pnl_list, strict=True)):
-        if entry < 0 or entry > n_bars:
+    exit_pnl_map: dict[int, float] = {}
+    for entry, exit_bar, pnl in zip(entry_indices, exit_indices, pnl_list, strict=True):
+        if exit_bar < 0 or exit_bar > n_bars:
             continue
-        if entry not in trade_map:
-            trade_map[entry] = []
-        trade_map[entry].append((exit_bar, pnl))
+        exit_pnl_map[exit_bar] = exit_pnl_map.get(exit_bar, 0.0) + pnl
 
+    cumulative_pnl = 0.0
     for bar in range(1, n_bars + 1):
-        cumulative_pnl = 0.0
-        closed_trades = []
-
-        if bar in trade_map:
-            for exit_bar, pnl in trade_map[bar]:
-                if exit_bar <= bar:
-                    cumulative_pnl += pnl
-                    closed_trades.append((exit_bar, pnl))
-
+        cumulative_pnl += exit_pnl_map.get(bar, 0.0)
         equity_curve[bar] = equity + cumulative_pnl
 
     return equity_curve
@@ -110,12 +97,12 @@ class BacktestResult:
                 equity_curve.append({"date": self.dates[i], "value": float(self.equity_curve[i])})
         return {
             "strategy_name": self.strategy_name,
-            "total_return": round(self.total_return, 4) if self.total_return else 0,
-            "annual_return": round(self.annual_return, 4) if self.annual_return else 0,
-            "max_drawdown": round(self.max_drawdown, 4) if self.max_drawdown else 0,
+            "total_return": round(self.total_return, 4) if self.total_return is not None else 0,
+            "annual_return": round(self.annual_return, 4) if self.annual_return is not None else 0,
+            "max_drawdown": round(self.max_drawdown, 4) if self.max_drawdown is not None else 0,
             "sharpe_ratio": self.sharpe_ratio,
             "calmar_ratio": self.calmar_ratio,
-            "win_rate": round(self.win_rate, 2) if self.win_rate else 0,
+            "win_rate": round(self.win_rate, 2) if self.win_rate is not None else 0,
             "profit_factor": self.profit_factor,
             "total_trades": self.total_trades,
             "win_trades": self.win_trades,
@@ -123,8 +110,8 @@ class BacktestResult:
             "avg_profit": self.avg_profit,
             "avg_loss": self.avg_loss,
             "avg_hold_days": self.avg_hold_days,
-            "benchmark_return": round(self.benchmark_return, 4) if self.benchmark_return else 0,
-            "alpha": round(self.alpha, 4) if self.alpha else 0,
+            "benchmark_return": round(self.benchmark_return, 4) if self.benchmark_return is not None else 0,
+            "alpha": round(self.alpha, 4) if self.alpha is not None else 0,
             "beta": self.beta,
             "sortino_ratio": self.sortino_ratio,
             "max_consecutive_losses": self.max_consecutive_losses,
@@ -176,8 +163,10 @@ class BacktestResult:
         if indices[-1] != len(self.equity_curve) - 1:
             indices.append(len(self.equity_curve) - 1)
         self.equity_curve = [self.equity_curve[i] for i in indices]
-        self.drawdown_curve = [self.drawdown_curve[i] for i in indices]
-        self.dates = [self.dates[i] for i in indices]
+        if len(self.drawdown_curve) >= max(indices) + 1:
+            self.drawdown_curve = [self.drawdown_curve[i] for i in indices]
+        if len(self.dates) >= max(indices) + 1:
+            self.dates = [self.dates[i] for i in indices]
 
     def get_performance_summary(self) -> dict:
         """Get a concise performance summary for strategy comparison."""
@@ -192,8 +181,8 @@ class BacktestResult:
             "calmar": round(self.calmar_ratio, 2),
             "sortino": round(self.sortino_ratio, 2),
             "profit_factor": round(self.profit_factor, 2),
-            "avg_mae_pct": round(self.avg_mae, 2) if self.avg_mae else 0,
-            "avg_mfe_pct": round(self.avg_mfe, 2) if self.avg_mfe else 0,
+            "avg_mae_pct": round(self.avg_mae, 2) if self.avg_mae is not None else 0,
+            "avg_mfe_pct": round(self.avg_mfe, 2) if self.avg_mfe is not None else 0,
         }
 
     def compare_with(self, other: "BacktestResult") -> dict:
@@ -224,17 +213,17 @@ class BacktestResult:
             "sharpe": round(self.sharpe_ratio, 2),
             "sortino": round(self.sortino_ratio, 2),
             "calmar": round(self.calmar_ratio, 2),
-            "omega": round(self.omega_ratio, 2) if self.omega_ratio else 0,
-            "tail_ratio": round(self.tail_ratio, 2) if self.tail_ratio else 0,
-            "information_ratio": round(self.information_ratio, 2) if self.information_ratio else 0,
-            "var_95": round(self.var_95, 4) if self.var_95 else 0,
-            "cvar_95": round(self.cvar_95, 4) if self.cvar_95 else 0,
+            "omega": round(self.omega_ratio, 2) if self.omega_ratio is not None else 0,
+            "tail_ratio": round(self.tail_ratio, 2) if self.tail_ratio is not None else 0,
+            "information_ratio": round(self.information_ratio, 2) if self.information_ratio is not None else 0,
+            "var_95": round(self.var_95, 4) if self.var_95 is not None else 0,
+            "cvar_95": round(self.cvar_95, 4) if self.cvar_95 is not None else 0,
         }
-        recovery = self.recovery_factor if self.recovery_factor else 0
+        recovery = self.recovery_factor if self.recovery_factor is not None else 0
         metrics["recovery_factor"] = round(recovery, 2)
-        annualized_vol = self.annual_volatility if self.annual_volatility else 0
+        annualized_vol = self.annual_volatility if self.annual_volatility is not None else 0
         metrics["annual_volatility"] = round(annualized_vol, 4)
-        downside = self.downside_deviation if self.downside_deviation else 0
+        downside = self.downside_deviation if self.downside_deviation is not None else 0
         metrics["downside_deviation"] = round(downside, 4)
         metrics["return_risk_ratio"] = round(self.annual_return / max(annualized_vol, 1e-9), 4)
         metrics["upside_capture_ratio"] = round(
@@ -313,9 +302,9 @@ class BacktestResult:
             "mfe_mae_ratio": round(float(np.mean(mfes) / max(np.mean(maes), 1e-9)), 2) if mfes and maes else 0,
             "avg_hold_days": round(float(np.mean(hold_days)), 1) if hold_days else 0,
             "max_hold_days": max(hold_days) if hold_days else 0,
-            "profit_factor": round(self.profit_factor, 2) if self.profit_factor else 0,
-            "expectancy": round(self.expectancy, 2) if self.expectancy else 0,
-            "payoff_ratio": round(self.payoff_ratio, 2) if self.payoff_ratio else 0,
+            "profit_factor": round(self.profit_factor, 2) if self.profit_factor is not None else 0,
+            "expectancy": round(self.expectancy, 2) if self.expectancy is not None else 0,
+            "payoff_ratio": round(self.payoff_ratio, 2) if self.payoff_ratio is not None else 0,
             "consecutive_wins": self._count_max_consecutive(sell_trades, positive=True),
             "consecutive_losses": self._count_max_consecutive(sell_trades, positive=False),
         }

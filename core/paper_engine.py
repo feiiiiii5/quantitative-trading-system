@@ -67,6 +67,7 @@ class Position:
     symbol: str
     quantity: int = 0
     avg_cost: float = 0.0
+    current_price: float = 0.0
     unrealized_pnl: float = 0.0
     realized_pnl: float = 0.0
     trade_count: int = 0
@@ -156,7 +157,7 @@ class PaperEngine:
     def get_account_stats(self) -> AccountStats:
         with self._lock:
             market_value = sum(
-                pos.quantity * pos.avg_cost for pos in self._positions.values()
+                pos.quantity * (pos.current_price if pos.current_price > 0 else pos.avg_cost) for pos in self._positions.values()
             )
             total_value = self._cash + market_value
             total_pnl = total_value - self._initial_capital
@@ -344,6 +345,7 @@ class PaperEngine:
                 if symbol in self._positions:
                     pos = self._positions[symbol]
                     if pos.quantity > 0:
+                        pos.current_price = price
                         pos.unrealized_pnl = pos.quantity * (price - pos.avg_cost)
                         market_value += pos.quantity * price
 

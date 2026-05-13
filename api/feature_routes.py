@@ -384,19 +384,7 @@ async def get_sector_stocks(request: Request, sector_code: str, count: int = Que
         logger.error("Sector detail error for %s: %s", sector_code, e)
         return _json_response(False, error=safe_error(e))
 
-
 # Strategy Optimization & Stress Test endpoints
-@feature_router.get("/strategy/param-specs")
-async def get_param_specs(request: Request):
-    try:
-        from core.param_optimizer import get_param_specs
-        specs = get_param_specs()
-        return _json_response(True, data={"strategies": specs})
-    except Exception as e:
-        logger.error("Param specs error: %s", e)
-        return _json_response(False, error=safe_error(e))
-
-
 @feature_router.post("/strategy/optimize-params")
 async def optimize_params(
     request: Request,

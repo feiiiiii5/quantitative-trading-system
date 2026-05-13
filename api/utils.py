@@ -106,7 +106,11 @@ def json_response(success: bool, data=None, error: str = ""):
 
 
 def orjson_response(success: bool, data=None, error: str = "", status_code: int = 200) -> Response:
+    from api.middleware import correlation_id
     payload = {"success": success, "data": sanitize(data), "error": error}
+    cid = correlation_id.get("")
+    if cid:
+        payload["request_id"] = cid
     body = orjson.dumps(payload, default=_orjson_default)
     return Response(content=body, status_code=status_code, media_type="application/json")
 

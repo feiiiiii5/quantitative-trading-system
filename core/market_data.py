@@ -81,7 +81,7 @@ async def _fetch_sina_stock_list(page: int = 1, num: int = 80, sort: str = "amou
                 })
             return result
     except Exception as e:
-        logger.debug("Sina stock list fetch error (page=%s): %s", page, e)
+        logger.warning("Sina stock list fetch error (page=%s): %s", page, e)
     return []
 
 
@@ -139,7 +139,7 @@ async def _fetch_sina_stocks_fast() -> list[dict]:
 
         return all_stocks
     except Exception as e:
-        logger.debug("Sina fast fetch error: %s", e)
+        logger.warning("Sina fast fetch error: %s", e)
     return []
 
 
@@ -197,12 +197,12 @@ async def fetch_all_a_stocks_async() -> list[dict]:
                     _all_a_stocks_ts = time.monotonic()
                 return result
         except Exception as e:
-            logger.debug("akshare fallback error: %s", e)
+            logger.warning("akshare fallback error: %s", e)
 
         with _all_a_stocks_lock:
             return _all_a_stocks_cache if _all_a_stocks_cache else []
     except Exception as e:
-        logger.debug("get_all_a_stocks outer error: %s", e)
+        logger.warning("get_all_a_stocks outer error: %s", e)
         with _all_a_stocks_lock:
             return _all_a_stocks_cache if _all_a_stocks_cache else []
     finally:
@@ -224,7 +224,7 @@ def get_all_a_stocks_sync() -> list[dict]:
                 return _all_a_stocks_cache
         return asyncio.run(fetch_all_a_stocks_async())
     except Exception as e:
-        logger.debug("get_all_a_stocks_sync error: %s", e)
+        logger.warning("get_all_a_stocks_sync error: %s", e)
         with _all_a_stocks_lock:
             return _all_a_stocks_cache
 
@@ -271,7 +271,7 @@ def get_stock_list(market: str) -> list[dict]:
                     })
                 return result
     except Exception as e:
-        logger.debug("Get stock list fallback error for %s: %s", market, e)
+        logger.warning("Get stock list fallback error for %s: %s", market, e)
     return []
 
 
@@ -288,7 +288,7 @@ def _refresh_loop() -> None:
             except Exception as e:
                 logger.debug("Background refresh error: %s", e)
         except Exception as e:
-            logger.debug("Background refresh loop error: %s", e)
+            logger.warning("Background refresh loop error: %s", e)
             break
 
 

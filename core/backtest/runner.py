@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import logging
 from datetime import datetime
 
@@ -12,6 +14,36 @@ from .simulation import _get_strategy_min_bars
 
 logger = logging.getLogger(__name__)
 
+_BACKTEST_CACHE_MAX = 50
+_BACKTEST_CACHE_TTL = 3600
+_backtest_cache: dict[str, tuple[dict, float]] = {}
+
+
+def _make_backtest_cache_key(symbol: str, strategy_name: str, start_date: str,
+                              end_date: str, initial_capital: float, params: dict | None) -> str:
+    raw = f"{symbol}:{strategy_name}:{start_date}:{end_date}:{initial_capital}:{json.dumps(params or {}, sort_keys=True)}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+
+def _get_cached_result(key: str) -> dict | None:
+    import time
+    entry = _backtest_cache.get(key)
+    if entry is None:
+        return None
+    result, ts = entry
+    if time.monotonic() - ts > _BACKTEST_CACHE_TTL:
+        del _backtest_cache[key]
+        return None
+    return {**result, "cached": True}
+
+
+def _set_cached_result(key: str, result: dict) -> None:
+    import time
+    if len(_backtest_cache) >= _BACKTEST_CACHE_MAX:
+        oldest_key = min(_backtest_cache, key=lambda k: _backtest_cache[k][1])
+        del _backtest_cache[oldest_key]
+    _backtest_cache[key] = (result, time.monotonic())
+
 
 def run_backtest(
     symbol: str,
@@ -24,6 +56,12 @@ def run_backtest(
 ) -> dict:
     from core.data_fetcher import get_fetcher
     from core.memory_guard import check_and_reclaim_if_needed
+
+    cache_key = _make_backtest_cache_key(symbol, strategy_name, start_date, end_date, initial_capital, params)
+    cached = _get_cached_result(cache_key)
+    if cached is not None:
+        return cached
+
     check_and_reclaim_if_needed()
 
     if strategy_name == "adaptive":
@@ -62,7 +100,7 @@ def run_backtest(
             except RuntimeError:
                 df = asyncio.run(_fetch())
         except Exception as e:
-            logger.error("Data fetch failed for %s: %s", symbol, e)
+            logger.error("Data fetch failed for %s: %s", symbol, e, exc_info=True)
             return {"error": f"获取 {symbol} 数据失败: {e}"}
 
     if df is None or df.empty:
@@ -96,7 +134,7 @@ def run_backtest(
         except Exception as e:
             logger.debug("Metrics reporting failed: %s", e)
     except Exception as e:
-        logger.error("Backtest engine failed for %s with %s: %s", symbol, strategy_name, e)
+        logger.error("Backtest engine failed for %s with %s: %s", symbol, strategy_name, e, exc_info=True)
         return {"error": f"回测执行失败: {e}"}
 
     if not result.dates or not result.equity_curve:
@@ -125,6 +163,7 @@ def run_backtest(
     result_dict = result.to_dict()
     result_dict["slippage_model"] = "fixed_pct"
     result_dict["benchmark_curve"] = benchmark_curve[-500:] if benchmark_curve else []
+    _set_cached_result(cache_key, result_dict)
     return result_dict
 
 
@@ -137,6 +176,11 @@ def _run_adaptive_backtest(
     _df=None,
 ) -> dict:
     from core.adaptive_strategy import AdaptiveStrategyEngine
+
+    cache_key = _make_backtest_cache_key(symbol, "adaptive", start_date, end_date, initial_capital, params)
+    cached = _get_cached_result(cache_key)
+    if cached is not None:
+        return cached
 
     if _df is not None:
         df = _df.copy()
@@ -164,7 +208,7 @@ def _run_adaptive_backtest(
             except RuntimeError:
                 df = asyncio.run(_fetch())
         except Exception as e:
-            logger.error("Data fetch failed for %s: %s", symbol, e)
+            logger.error("Data fetch failed for %s: %s", symbol, e, exc_info=True)
             return {"error": f"获取 {symbol} 数据失败: {e}"}
 
     if df is None or df.empty:
@@ -190,7 +234,7 @@ def _run_adaptive_backtest(
         engine = AdaptiveStrategyEngine(initial_capital=initial_capital)
         result = engine.run(df)
     except Exception as e:
-        logger.error("Adaptive backtest failed for %s: %s", symbol, e)
+        logger.error("Adaptive backtest failed for %s: %s", symbol, e, exc_info=True)
         return {"error": f"自适应回测执行失败: {e}"}
 
     if not result.get("equity_curve"):
@@ -224,7 +268,7 @@ def _run_adaptive_backtest(
         for i in range(min(len(dates_list), len(bc_raw))):
             benchmark_curve.append({"date": str(dates_list[i]), "value": float(bc_raw[i])})
 
-    return {
+    adaptive_result = {
         "strategy_name": result.get("strategy_name", "自适应量化策略引擎"),
         "total_return": result.get("total_return", 0),
         "annual_return": result.get("annual_return", 0),
@@ -261,6 +305,8 @@ def _run_adaptive_backtest(
         "market_regime_labels": result.get("market_regime_labels", []),
         "strategy_allocation": result.get("strategy_allocation", []),
     }
+    _set_cached_result(cache_key, adaptive_result)
+    return adaptive_result
 
 
 def run_walk_forward(
@@ -295,7 +341,7 @@ def run_walk_forward(
         else:
             df = asyncio.run(_fetch_df())
     except Exception as e:
-        logger.error("Walk-forward data fetch failed for %s: %s", symbol, e)
+        logger.error("Walk-forward data fetch failed for %s: %s", symbol, e, exc_info=True)
         return {"error": f"获取数据失败: {e}"}
 
     if df is None or df.empty:

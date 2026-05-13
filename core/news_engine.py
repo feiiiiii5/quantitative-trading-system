@@ -135,7 +135,7 @@ async def _fetch_eastmoney_news(page: int = 1, count: int = 40) -> list[dict]:
                 })
             return result
     except Exception as e:
-        logger.debug("EastMoney news fetch error: %s", e)
+        logger.warning("EastMoney news fetch error: %s", e)
     return []
 
 
@@ -232,7 +232,7 @@ async def _fetch_stock_news_eastmoney(symbol: str, count: int = 20) -> list[dict
                 })
             return result
     except Exception as e:
-        logger.debug("Stock news fetch error for %s: %s", symbol, e)
+        logger.warning("Stock news fetch error for %s: %s", symbol, e)
     return []
 
 

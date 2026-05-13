@@ -236,7 +236,7 @@ class MultiTimeframeAnalyzer:
                 elif wma5 < wma10 and wlast < wma5:
                     score -= 0.3
         except Exception as e:
-            logger.debug("Weekly trend analysis failed: %s", e)
+            logger.warning("Weekly trend analysis failed: %s", e)
 
         try:
             monthly = MultiTimeframeAnalyzer.resample_monthly(daily_df)
@@ -249,7 +249,7 @@ class MultiTimeframeAnalyzer:
                 elif mlast < mma3:
                     score -= 0.3
         except Exception as e:
-            logger.debug("Monthly trend analysis failed: %s", e)
+            logger.warning("Monthly trend analysis failed: %s", e)
 
         return max(-1.0, min(1.0, score))
 
@@ -424,7 +424,6 @@ class AdaptiveStrategyEngine:
     def _precompute_scores(self, strategy_instances: dict, df: pd.DataFrame, n: int) -> dict:
         scores = {}
         step = max(1, n // 100)
-        df_copy = df.copy()
 
         def _compute_single(regime, strategy):
             name = type(strategy).__name__
@@ -432,10 +431,10 @@ class AdaptiveStrategyEngine:
             last_score = 0.0
             for i in range(step, n, step):
                 try:
-                    score = strategy.generate_score(df_copy.iloc[:i + 1])
+                    score = strategy.generate_score(df.iloc[:i + 1])
                     last_score = score if np.isfinite(score) else last_score
                 except Exception as e:
-                    logger.debug("Regime score generation failed at bar %s: %s", i, e)
+                    logger.warning("Regime score generation failed at bar %s: %s", i, e)
                 bar_scores[i:min(i + step, n)] = last_score
             if last_score != 0.0:
                 bar_scores[:step] = last_score
@@ -459,7 +458,7 @@ class AdaptiveStrategyEngine:
                         r, name, bar_scores = future.result(timeout=30)
                         scores.setdefault(r, {})[name] = bar_scores
                     except Exception as e:
-                        logger.debug("Strategy score computation failed: %s", e)
+                        logger.warning("Strategy score computation failed: %s", e)
 
         return scores
 
@@ -752,7 +751,7 @@ class AdaptiveStrategyEngine:
                                 if max_shares_by_amount > 0 and sell_shares > max_shares_by_amount:
                                     sell_shares = max_shares_by_amount
 
-                    sell_shares * fill_price
+                    sell_amount = sell_shares * fill_price
                     date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
                     result = self._record_trade(
                         trades, "sell", fill_price, sell_shares,
@@ -763,6 +762,10 @@ class AdaptiveStrategyEngine:
                     sell_bar_set.add(i)
                     last_sell_bar = i
                     shares = max(0, shares - sell_shares)
+                    if position is not None:
+                        position["shares"] = shares
+                    buy_score_at_entry = position.get("buy_score", 0.0) if position else 0.0
+                    entry_price_for_factor = position.get("entry_price", 1.0) if position else 1.0
                     if shares <= 0:
                         shares = 0
                         position = None
@@ -778,8 +781,7 @@ class AdaptiveStrategyEngine:
                         q_adapter = self._get_q_adapter(regime, len(instances))
                         q_adapter.update(regime, current_vol, current_trend, best_buy_idx, reward)
 
-                        buy_score_at_entry = position.get("buy_score", 0.0) if position else 0.0
-                        actual_ret = result["pnl"] / (position.get("entry_price", 1.0) * shares) if position and shares > 0 else 0.0
+                        actual_ret = result["pnl"] / (entry_price_for_factor * sell_shares) if entry_price_for_factor > 0 and sell_shares > 0 else 0.0
                         self._factor_monitor.update(name, buy_score_at_entry, actual_ret)
 
             in_cooldown = (i - last_sell_bar) <= COOLDOWN_BARS
@@ -832,6 +834,10 @@ class AdaptiveStrategyEngine:
                 else:
                     kelly = self._kelly_position(c[:i + 1])
                     alloc_pct = min(0.40, kelly) * cvar_adj * conviction_mult * vol_adj
+
+                corr_adj = self._correlation_dedup_adjustment("", {})
+                alloc_pct *= corr_adj
+                alloc_pct = min(alloc_pct, 0.65)
 
                 current_equity = cash + (shares * c[i] if shares > 0 else 0)
                 alloc_amount = current_equity * alloc_pct
@@ -939,7 +945,7 @@ class AdaptiveStrategyEngine:
             ds = str(d)[:10] if hasattr(d, "__str__") else str(d)[:10]
             dates_list.append(ds)
 
-        equity_curve[0]
+        initial_equity = equity_curve[0] if equity_curve else 1.0
         eq_arr = np.array(equity_curve)
         peak_arr = np.maximum.accumulate(eq_arr)
         drawdown_curve = ((peak_arr - eq_arr) / np.where(peak_arr > 0, peak_arr, 1) * 100).tolist()
@@ -955,8 +961,8 @@ class AdaptiveStrategyEngine:
         total_loss = sum(abs(t.get("pnl", 0)) for t in sell_trades if t.get("pnl", 0) <= 0)
         profit_factor = (total_win / total_loss) if total_loss > 0 else 999 if total_win > 0 else 0
 
-        np.mean([t["pnl"] for t in sell_trades if t.get("pnl", 0) > 0]) if win_trades > 0 else 0
-        np.mean([abs(t["pnl"]) for t in sell_trades if t.get("pnl", 0) <= 0]) if loss_trades > 0 else 0
+        avg_win = float(np.mean([t["pnl"] for t in sell_trades if t.get("pnl", 0) > 0])) if win_trades > 0 else 0
+        avg_loss = float(np.mean([abs(t["pnl"]) for t in sell_trades if t.get("pnl", 0) <= 0])) if loss_trades > 0 else 0
 
         hold_days_list = [t.get("hold_days", 0) for t in sell_trades if t.get("hold_days")]
         avg_hold_days = np.mean(hold_days_list) if hold_days_list else 0
@@ -1078,6 +1084,8 @@ class AdaptiveStrategyEngine:
             "total_trades": total_trades,
             "win_trades": win_trades,
             "loss_trades": loss_trades,
+            "avg_win": round(avg_win, 4),
+            "avg_loss": round(avg_loss, 4),
             "avg_hold_days": round(avg_hold_days, 1),
             "max_consecutive_losses": max_consec_losses,
             "benchmark_return": round(benchmark_return, 4) if benchmark_return else 0,

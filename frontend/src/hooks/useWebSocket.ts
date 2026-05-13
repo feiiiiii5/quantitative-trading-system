@@ -13,16 +13,21 @@ export function useWebSocket(channel: string, handler: (data: unknown) => void) 
 }
 
 export function useWebSocketSubscription(symbols: string[]) {
-  const symbolsRef = useRef(symbols);
-  symbolsRef.current = symbols;
+  const prevSymbolsRef = useRef<string>('');
 
   useEffect(() => {
+    const key = symbols.join(',');
+    if (key === prevSymbolsRef.current) return;
+    const prev = prevSymbolsRef.current;
+    prevSymbolsRef.current = key;
+
     if (symbols.length > 0) {
       wsManager.subscribeSymbols(symbols);
     }
     return () => {
-      if (symbolsRef.current.length > 0) {
-        wsManager.unsubscribeSymbols(symbolsRef.current);
+      const prevSymbols = prev ? prev.split(',') : [];
+      if (prevSymbols.length > 0) {
+        wsManager.unsubscribeSymbols(prevSymbols);
       }
     };
   }, [symbols.join(',')]);

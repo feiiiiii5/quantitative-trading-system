@@ -31,23 +31,44 @@ export function usePnLWebSocket(positions: Array<{ symbol: string; entry_price: 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectDelay = useRef(1000);
+  const positionsRef = useRef(positions);
+  positionsRef.current = positions;
+  const mountedRef = useRef(true);
+
+  const cleanup = useCallback(() => {
+    if (reconnectTimer.current) {
+      clearTimeout(reconnectTimer.current);
+      reconnectTimer.current = null;
+    }
+    if (wsRef.current) {
+      wsRef.current.onopen = null;
+      wsRef.current.onclose = null;
+      wsRef.current.onerror = null;
+      wsRef.current.onmessage = null;
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+  }, []);
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    cleanup();
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${protocol}//${window.location.host}/ws/pnl`;
     const ws = new WebSocket(url);
 
     ws.onopen = () => {
+      if (!mountedRef.current) { ws.close(); return; }
       setConnected(true);
       reconnectDelay.current = 1000;
-      if (positions.length > 0) {
-        ws.send(JSON.stringify({ type: 'get_pnl', positions }));
+      const pos = positionsRef.current;
+      if (pos.length > 0) {
+        ws.send(JSON.stringify({ type: 'get_pnl', positions: pos }));
       }
     };
 
     ws.onmessage = (event) => {
+      if (!mountedRef.current) return;
       try {
         const msg = JSON.parse(event.data) as { type: string; data: PnLPosition[]; summary: PnLSummary };
         if (msg.type === 'pnl' && msg.data) {
@@ -57,6 +78,7 @@ export function usePnLWebSocket(positions: Array<{ symbol: string; entry_price: 
     };
 
     ws.onclose = () => {
+      if (!mountedRef.current) return;
       setConnected(false);
       reconnectTimer.current = setTimeout(() => {
         reconnectDelay.current = Math.min(reconnectDelay.current * 2, 30000);
@@ -66,30 +88,25 @@ export function usePnLWebSocket(positions: Array<{ symbol: string; entry_price: 
 
     ws.onerror = () => ws.close();
     wsRef.current = ws;
-  }, [positions]);
+  }, [cleanup]);
 
   useEffect(() => {
+    mountedRef.current = true;
     if (positions.length > 0) {
       connect();
     }
     return () => {
-      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-      if (wsRef.current) {
-        wsRef.current.onopen = null;
-        wsRef.current.onclose = null;
-        wsRef.current.onerror = null;
-        wsRef.current.onmessage = null;
-        wsRef.current.close();
-        wsRef.current = null;
-      }
+      mountedRef.current = false;
+      cleanup();
     };
-  }, [connect]);
+  }, [positions.length > 0, connect, cleanup]);
 
   const refresh = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN && positions.length > 0) {
-      wsRef.current.send(JSON.stringify({ type: 'get_pnl', positions }));
+    const pos = positionsRef.current;
+    if (wsRef.current?.readyState === WebSocket.OPEN && pos.length > 0) {
+      wsRef.current.send(JSON.stringify({ type: 'get_pnl', positions: pos }));
     }
-  }, [positions]);
+  }, []);
 
   return { pnlData, connected, refresh };
 }

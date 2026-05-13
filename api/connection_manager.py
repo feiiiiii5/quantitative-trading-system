@@ -161,11 +161,12 @@ class ConnectionManager:
             return len(self.connections)
 
     async def broadcast(self, message: dict) -> int:
+        msg_str = orjson.dumps(message, option=orjson.OPT_SERIALIZE_NUMPY | orjson.OPT_NON_STR_KEYS).decode("utf-8")
         async with self._lock:
             count = 0
             for ws in list(self.connections):
                 try:
-                    await ws.send_json(message)
+                    await _safe_ws_send(ws, msg_str)
                     count += 1
                 except Exception as e:
                     logger.debug("WebSocket send failed during broadcast: %s", e)
@@ -242,6 +243,7 @@ _PRIORITY_INTERVALS = {
 }
 _symbol_priority: dict[str, str] = {}
 _symbol_last_push: dict[str, float] = {}
+_symbol_state_lock = asyncio.Lock()
 _index_symbols = {
     "sh000001", "sz399001", "sz399006",
     "hk00001", "hk00700",
@@ -264,16 +266,24 @@ def _classify_symbol_priority(symbol: str) -> str:
     return _PRIORITY_NORMAL
 
 
-def set_symbol_priority(symbol: str, priority: str) -> None:
-    _symbol_priority[symbol] = priority
+async def set_symbol_priority(symbol: str, priority: str) -> None:
+    async with _symbol_state_lock:
+        _symbol_priority[symbol] = priority
+
+
+async def clear_symbol_priority(symbol: str) -> None:
+    async with _symbol_state_lock:
+        _symbol_priority.pop(symbol, None)
 
 
 _trading_hours_cache: tuple[bool, float] = (False, 0.0)
+_trading_hours_lock = threading.Lock()
 
 
 def _is_trading_hours() -> bool:
     global _trading_hours_cache
-    cached_val, cached_ts = _trading_hours_cache
+    with _trading_hours_lock:
+        cached_val, cached_ts = _trading_hours_cache
     if time.monotonic() - cached_ts < 30.0:
         return cached_val
     try:
@@ -281,7 +291,8 @@ def _is_trading_hours() -> bool:
             MarketHours.get_market_status(m).get("is_open")
             for m in ["A", "HK", "US"]
         )
-        _trading_hours_cache = (result, time.monotonic())
+        with _trading_hours_lock:
+            _trading_hours_cache = (result, time.monotonic())
         return result
     except Exception as e:
         logger.debug("Market hours check failed: %s", e)
@@ -538,26 +549,28 @@ async def push_realtime_data(fetcher: SmartDataFetcher):
                 last_quote_hash_snapshot = dict(_last_quote_hash)
                 subscribed = await _manager.get_all_subscribed_symbols()
 
-            now = time.monotonic()
-            stale_symbols = [s for s, t in _symbol_last_push.items()
-                             if not s.startswith("__") and now - t > 300]
-            for s in stale_symbols:
-                del _symbol_last_push[s]
-                _symbol_priority.pop(s, None)
+            async with _symbol_state_lock:
+                now = time.monotonic()
+                stale_symbols = [s for s, t in _symbol_last_push.items()
+                                 if not s.startswith("__") and now - t > 300]
+                for s in stale_symbols:
+                    del _symbol_last_push[s]
+                    _symbol_priority.pop(s, None)
 
             quotes_data = {}
             subscribed_list = list(subscribed)[:_MAX_PUSH_SYMBOLS]
-            now = time.monotonic()
-            fetch_tasks = []
-            fetch_symbols = []
-            for symbol in subscribed_list:
-                priority = _classify_symbol_priority(symbol)
-                interval = _PRIORITY_INTERVALS.get(priority, 10)
-                last_push = _symbol_last_push.get(symbol, 0)
-                if now - last_push < interval:
-                    continue
-                fetch_tasks.append(fetcher.get_realtime(symbol))
-                fetch_symbols.append(symbol)
+            async with _symbol_state_lock:
+                now = time.monotonic()
+                fetch_tasks = []
+                fetch_symbols = []
+                for symbol in subscribed_list:
+                    priority = _classify_symbol_priority(symbol)
+                    interval = _PRIORITY_INTERVALS.get(priority, 10)
+                    last_push = _symbol_last_push.get(symbol, 0)
+                    if now - last_push < interval:
+                        continue
+                    fetch_tasks.append(fetcher.get_realtime(symbol))
+                    fetch_symbols.append(symbol)
             if fetch_tasks:
                 results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
                 for symbol, result in zip(fetch_symbols, results, strict=True):
@@ -565,11 +578,14 @@ async def push_realtime_data(fetcher: SmartDataFetcher):
                         logger.debug("Push quote fetch failed for %s: %s", symbol, result)
                         continue
                     rt = result
-                    if rt:
+                    if rt and rt.get("price", 0) > 0:
                         price_str = f"{rt.get('price', 0)}_{rt.get('change_pct', 0)}"
                         if price_str != last_quote_hash_snapshot.get(symbol, ""):
                             quotes_data[symbol] = rt
-                            _symbol_last_push[symbol] = now
+            async with _symbol_state_lock:
+                push_now = time.monotonic()
+                for symbol in quotes_data:
+                    _symbol_last_push[symbol] = push_now
 
             await _check_price_alerts(quotes_data)
 
@@ -599,17 +615,17 @@ async def push_realtime_data(fetcher: SmartDataFetcher):
                         await asyncio.gather(*tasks, return_exceptions=True)
 
             msg_data: dict = {}
+            async with _symbol_state_lock:
+                last_indices_push = _symbol_last_push.get("__indices__", 0)
             async with _push_state_lock:
                 indices_hash = json.dumps(indices_data, sort_keys=True)[:64] if indices_data else ""
                 should_push_indices = False
                 if indices_data and indices_hash != _last_indices_hash:
                     indices_interval = _PRIORITY_INTERVALS.get(_PRIORITY_INDEX, 5)
-                    last_indices_push = _symbol_last_push.get("__indices__", 0)
                     if now - last_indices_push >= indices_interval:
                         should_push_indices = True
                 if should_push_indices:
                     _last_indices_hash = indices_hash
-                    _symbol_last_push["__indices__"] = now
 
                 current_subscribed = await _manager.get_all_subscribed_symbols()
                 confirmed_quotes = {}
@@ -635,6 +651,10 @@ async def push_realtime_data(fetcher: SmartDataFetcher):
                         if diff:
                             msg_data["quotes"] = diff
                             _last_push_state["quotes"] = dict(confirmed_quotes)
+
+            if should_push_indices:
+                async with _symbol_state_lock:
+                    _symbol_last_push["__indices__"] = time.monotonic()
 
             if msg_data:
                 msg_str = _build_message("quote_update", msg_data)
@@ -750,7 +770,7 @@ async def push_regime_updates(fetcher: SmartDataFetcher):
                         }
                         for ws in conn_snapshot:
                             with contextlib.suppress(Exception):
-                                await ws.send_json(msg)
+                                await _safe_ws_send(ws, orjson.dumps(msg, option=orjson.OPT_SERIALIZE_NUMPY | orjson.OPT_NON_STR_KEYS).decode("utf-8"))
                 except Exception as exc:
                     logger.debug("WebSocket send failed in regime push: %s", exc)
         except asyncio.CancelledError:
@@ -859,7 +879,7 @@ async def push_portfolio_metrics(fetcher: SmartDataFetcher):
                     total_pnl_pct = (total_pnl / total_cost * 100) if total_cost > 0 else 0
                     day_return = (total_mv / base_value * 100 - 100) if base_value > 0 else 0
 
-                    await ws.send_json({
+                    portfolio_msg = orjson.dumps({
                         "type": "portfolio_metrics",
                         "positions": positions_data,
                         "summary": {
@@ -872,7 +892,8 @@ async def push_portfolio_metrics(fetcher: SmartDataFetcher):
                             "position_count": len(positions_data),
                         },
                         "ts": time.time(),
-                    })
+                    }, option=orjson.OPT_SERIALIZE_NUMPY | orjson.OPT_NON_STR_KEYS).decode("utf-8")
+                    await _safe_ws_send(ws, portfolio_msg)
                 except Exception as e:
                     logger.debug("Portfolio metrics推送失败: %s", e)
         except Exception as e:
