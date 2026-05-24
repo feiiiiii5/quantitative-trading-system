@@ -1,6 +1,7 @@
 import { memo, useCallback } from 'react';
 import { useCanvas } from '@/hooks/useCanvas';
 import type { SectorData } from '@/types';
+import { safeMax } from '@/utils/format';
 
 interface HeatmapCanvasProps {
   sectors: SectorData[];
@@ -157,7 +158,7 @@ export const HeatmapCanvas = memo(function HeatmapCanvas({
 
       const gap = 2;
       const rects = squarify(items, { x: 0, y: 0, w, h });
-      const maxAbs = Math.max(...sectors.map(s => Math.abs(s.change_pct ?? 0)), 0.01);
+      const maxAbs = safeMax(sectors.map(s => Math.abs(s.change_pct ?? 0)), 0.01);
 
       for (const rect of rects) {
         const rx = rect.x + gap / 2;
@@ -198,5 +199,5 @@ export const HeatmapCanvas = memo(function HeatmapCanvas({
 
   const { ref } = useCanvas(draw, [sectors]);
 
-  return <canvas ref={ref} style={{ width: '100%', height: '100%' }} />;
+  return <canvas ref={ref} style={{ width: '100%', height: '100%', display: 'block' }} />;
 });

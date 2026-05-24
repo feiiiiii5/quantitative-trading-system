@@ -18,7 +18,7 @@ interface TerminalState {
 }
 
 function generateSimulatedOrderBook(
-  symbol: string,
+  _symbol: string,
   basePrice?: number,
   rng: () => number = Math.random,
 ): { bids: OrderBookEntry[]; asks: OrderBookEntry[] } {

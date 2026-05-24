@@ -49,7 +49,7 @@ class MockWebSocket {
 }
 
 function getLatestMock(): MockWebSocket {
-  return MockWebSocket.instances[MockWebSocket.instances.length - 1];
+  return MockWebSocket.instances[MockWebSocket.instances.length - 1]!;
 }
 
 vi.stubGlobal('WebSocket', MockWebSocket);
@@ -71,7 +71,7 @@ describe('WSManager', () => {
     it('creates WebSocket with correct URL', () => {
       wsManager.connect('ws://localhost:8080');
       expect(MockWebSocket.instances).toHaveLength(1);
-      expect(MockWebSocket.instances[0].url).toBe('ws://localhost:8080');
+      expect(MockWebSocket.instances[0]!.url).toBe('ws://localhost:8080');
     });
 
     it('skips if already connected to same URL', () => {
@@ -86,7 +86,7 @@ describe('WSManager', () => {
       getLatestMock().simulateOpen();
       wsManager.connect('ws://localhost:9090');
       expect(MockWebSocket.instances).toHaveLength(2);
-      expect(MockWebSocket.instances[1].url).toBe('ws://localhost:9090');
+      expect(MockWebSocket.instances[1]!.url).toBe('ws://localhost:9090');
     });
 
     it('cleans up previous connection before creating new one', () => {

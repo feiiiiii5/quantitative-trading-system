@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import { useCanvas } from '@/hooks/useCanvas';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { SkeletonCard } from '@/components/ui/Skeleton';
 import { DepthChart } from '@/components/charts/DepthChart';
 import { useTerminalStore } from '@/stores/terminal';
 import { useRiskStore } from '@/stores/risk';
@@ -174,7 +176,7 @@ const TradeQueue = memo(function TradeQueue({ trades }: { trades: TradeRecord[] 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', overflow: 'auto', flex: 1 }}>
       {trades.length === 0 ? (
-        <div style={{ padding: '32px 20px', textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--label-quaternary)', letterSpacing: '0.06em' }}>NO TRADES</div>
+        <EmptyState title="暂无成交" description="当前没有成交记录" size="sm" />
       ) : trades.map((trade) => {
         const isBuy = trade.direction === 'BUY';
         const isLarge = trade.amount > 1_000_000;
@@ -884,7 +886,7 @@ export function TerminalPage() {
   const orderBook = useTerminalStore(s => s.orderBook);
   const selectedSymbol = useTerminalStore(s => s.selectedSymbol);
   const fetchOrderBook = useTerminalStore(s => s.fetchOrderBook);
-  const { data: tradesData } = useTradingHistory();
+  const { data: tradesData, isLoading: tradesLoading, error: tradesError, refetch: refetchTrades } = useTradingHistory();
   const { pnlData, connected: pnlConnected, refresh: refreshPnL } = usePnLWebSocket([]);
 
   const trades: TradeRecord[] = useMemo(() => {
@@ -974,7 +976,13 @@ export function TerminalPage() {
 
           <div style={{ ...panelStyle, flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             <div style={panelTitleStyle}>成交队列</div>
-            <TradeQueue trades={trades} />
+            {tradesLoading ? (
+              <SkeletonCard rows={4} />
+            ) : tradesError ? (
+              <EmptyState title="成交数据加载失败" description="请检查网络连接或稍后重试" size="sm" action={{ label: '重试', onClick: () => refetchTrades() }} />
+            ) : (
+              <TradeQueue trades={trades} />
+            )}
           </div>
         </div>
 

@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import { useCanvas } from '@/hooks/useCanvas';
+import { safeMin, safeMax } from '@/utils/format';
 
 interface SparklineProps {
   data: number[];
@@ -13,8 +14,8 @@ export const Sparkline = memo(function Sparkline({ data, width = 50, height = 14
 
   const { ref } = useCanvas((ctx, w, h) => {
     if (data.length < 2) return;
-    const min = Math.min(...data);
-    const max = Math.max(...data);
+    const min = safeMin(data);
+    const max = safeMax(data);
     const range = max - min || 1;
     ctx.clearRect(0, 0, w, h);
     ctx.beginPath();

@@ -30,7 +30,7 @@ export function useChipDistribution(symbol: string) {
       fire: Record<string, unknown>;
     }>(`/chip/${symbol}`),
     enabled: symbol.length > 0,
-    staleTime: 60_000,
+    staleTime: 120_000,
   });
 }
 
@@ -48,7 +48,7 @@ export function useStockNews(symbol: string) {
       related_symbols: string[];
     }>>(`/news/stock/${symbol}`, { limit: 10 }),
     enabled: symbol.length > 0,
-    staleTime: 30_000,
+    staleTime: 60_000,
   });
 }
 
@@ -67,7 +67,7 @@ export function useNewsSentiment(symbol: string) {
       summary: { total: number; bullish: number; bearish: number; neutral: number };
     }>('/news/sentiment', { symbol }),
     enabled: symbol.length > 0,
-    staleTime: 30_000,
+    staleTime: 60_000,
   });
 }
 
@@ -87,7 +87,7 @@ export function useGarchVolatility(symbol: string) {
       forecast_series: Array<{ day: number; volatility_annualized: number }>;
     }>(`/volatility/garch/${symbol}`),
     enabled: symbol.length > 0,
-    staleTime: 60_000,
+    staleTime: 120_000,
   });
 }
 
@@ -106,7 +106,7 @@ export function useHmmRegime(symbol: string) {
       }>;
     }>(`/regime/hmm/${symbol}`),
     enabled: symbol.length > 0,
-    staleTime: 60_000,
+    staleTime: 120_000,
   });
 }
 
@@ -140,7 +140,7 @@ export function useRollingRisk(symbol: string) {
       }>;
     }>(`/rolling-risk/${symbol}`),
     enabled: symbol.length > 0,
-    staleTime: 60_000,
+    staleTime: 120_000,
   });
 }
 
@@ -166,6 +166,6 @@ export function useSeasonality(symbol: string) {
       seasonality_strength: number;
     }>(`/seasonality/${symbol}`),
     enabled: symbol.length > 0,
-    staleTime: 300_000,
+    staleTime: 600_000,
   });
 }

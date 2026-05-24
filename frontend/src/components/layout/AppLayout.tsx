@@ -11,7 +11,10 @@ import { wsManager } from '@/services/websocket';
 import { useMarketStore } from '@/stores/market';
 import { useToastStore } from '@/stores/toast';
 import type { QuoteMessage, IndexMessage } from '@/types/websocket';
+import type { StockQuote } from '@/types';
 import '@/styles/base.css';
+
+type StockPatch = Partial<StockQuote>;
 
 function LayoutHotkeys({ onSearchOpen }: { onSearchOpen: () => void }) {
   const navigate = useNavigate();
@@ -45,13 +48,14 @@ export const AppLayout = memo(function AppLayout() {
   }, []);
 
   useEffect(() => {
-    const wsUrl = `ws://${window.location.host}/ws/realtime`;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/api/ws/realtime`;
     wsManager.connect(wsUrl);
 
     const unsubQuote = wsManager.subscribe('quote', (msg) => {
       const m = msg as QuoteMessage;
       if (m.symbol) {
-        useMarketStore.getState().updateStock(m.symbol, m as Parameters<typeof useMarketStore.getState().updateStock>[1]);
+        useMarketStore.getState().updateStock(m.symbol, m as StockPatch);
       }
     });
 

@@ -17,7 +17,7 @@ export function useStrategyList() {
       total: number;
       strategies: Array<{ name: string; aliases: string[]; description: string }>;
     }>('/strategies/list'),
-    staleTime: 60_000,
+    staleTime: 120_000,
   });
 }
 
@@ -28,7 +28,7 @@ export function useStrategyParamSpecs(strategy: string | null) {
       strategies: Record<string, Record<string, { type: string; min: number; max: number; step: number; default: number }>>;
     }>('/strategy/param-specs'),
     enabled: strategy !== null,
-    staleTime: 300_000,
+    staleTime: 600_000,
   });
 }
 
@@ -39,7 +39,7 @@ export function useFactorRegistry() {
       const raw = await apiGet<{ factors: Array<{ name: string; category: string; description: string }>; categories: string[] }>('/factor/registry');
       return Array.isArray(raw) ? raw : raw.factors;
     },
-    staleTime: 300_000,
+    staleTime: 600_000,
   });
 }
 
@@ -47,7 +47,7 @@ export function useAlphaList() {
   return useQuery({
     queryKey: strategyKeys.alphaList(),
     queryFn: () => apiGet<Array<{ name: string; expression: string; category: string; description: string }>>('/alpha/list'),
-    staleTime: 300_000,
+    staleTime: 600_000,
   });
 }
 
@@ -74,6 +74,6 @@ export function useBacktestHistory() {
         total_trades: number;
       };
     }>>('/backtest/history'),
-    staleTime: 30_000,
+    staleTime: 60_000,
   });
 }

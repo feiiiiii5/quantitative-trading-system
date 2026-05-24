@@ -21,7 +21,7 @@ describe('apiClient', () => {
 describe('response interceptor logic', () => {
   it('unwraps {success: true, data: X} to X', () => {
     const payload = { success: true, data: { foo: 'bar' } };
-    const response = { data: payload };
+    const response: { data: unknown } = { data: payload };
     if (payload && typeof payload === 'object' && 'success' in payload) {
       if (payload.success) {
         response.data = 'data' in payload ? payload.data : null;
@@ -32,7 +32,7 @@ describe('response interceptor logic', () => {
 
   it('returns null for {success: true} without data', () => {
     const payload = { success: true };
-    const response = { data: payload };
+    const response: { data: unknown } = { data: payload };
     if (payload && typeof payload === 'object' && 'success' in payload) {
       if (payload.success) {
         response.data = 'data' in payload ? payload.data : null;
@@ -77,7 +77,7 @@ describe('retry logic', () => {
 
   it('should retry GET on network error', () => {
     const config = { method: 'get', __retryCount: 0 };
-    const error = { code: 'ERR_NETWORK', response: undefined };
+    const error: { code?: string; response?: { status: number } } = { code: 'ERR_NETWORK', response: undefined };
     const isRetryable =
       config.method === 'get' &&
       (error.code === 'ERR_NETWORK' || (error.response?.status ?? 0) >= 500);

@@ -13,7 +13,7 @@ describe('generateSimulatedOrderBook determinism', () => {
     const rng2 = () => 0.9;
     const result1 = generateSimulatedOrderBook('sh600519', undefined, rng1);
     const result2 = generateSimulatedOrderBook('sh600519', undefined, rng2);
-    expect(result1.bids[0].price).not.toBe(result2.bids[0].price);
+    expect(result1.bids[0]!.price).not.toBe(result2.bids[0]!.price);
   });
 
   it('returns 10 bid and 10 ask levels', () => {
@@ -27,7 +27,7 @@ describe('generateSimulatedOrderBook determinism', () => {
     const rng = () => 0.5;
     const result = generateSimulatedOrderBook('sh600519', 100, rng);
     for (let i = 1; i < result.bids.length; i++) {
-      expect(result.bids[i].price).toBeLessThan(result.bids[i - 1].price);
+      expect(result.bids[i]!.price).toBeLessThan(result.bids[i - 1]!.price);
     }
   });
 
@@ -35,13 +35,13 @@ describe('generateSimulatedOrderBook determinism', () => {
     const rng = () => 0.5;
     const result = generateSimulatedOrderBook('sh600519', 100, rng);
     for (let i = 1; i < result.asks.length; i++) {
-      expect(result.asks[i].price).toBeGreaterThan(result.asks[i - 1].price);
+      expect(result.asks[i]!.price).toBeGreaterThan(result.asks[i - 1]!.price);
     }
   });
 });
 
 function generateSimulatedOrderBook(
-  symbol: string,
+  _symbol: string,
   basePrice?: number,
   rng: () => number = Math.random,
 ): { bids: Array<{ price: number; quantity: number; orders: number }>; asks: Array<{ price: number; quantity: number; orders: number }> } {

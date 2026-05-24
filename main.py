@@ -1085,11 +1085,25 @@ def _build_frontend():
 
 
 if __name__ == "__main__":
+    os.environ.setdefault("WS_AUTH_ENABLED", "false")
     _kill_existing_process()
     _build_frontend()
 
     def open_browser():
-        _preload_done.wait(timeout=30)
+        _preload_done.wait(timeout=60)
+        import urllib.request
+        import urllib.error
+        for attempt in range(30):
+            try:
+                req = urllib.request.Request(f"http://localhost:{PORT}/api/health")
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    if resp.status == 200:
+                        body = resp.read()
+                        if b"healthy" in body or b"ok" in body:
+                            break
+            except (urllib.error.URLError, ConnectionRefusedError, OSError):
+                pass
+            time.sleep(1)
         webbrowser.open(f"http://localhost:{PORT}")
 
     threading.Thread(target=open_browser, daemon=True).start()

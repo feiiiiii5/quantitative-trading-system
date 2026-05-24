@@ -49,3 +49,23 @@ export function priceClass(change: number): string {
   if (change < 0) return 'price-fall';
   return 'price-flat';
 }
+
+export function safeMin(values: number[], fallback = Infinity): number {
+  if (values.length === 0) return fallback;
+  let result = values[0]!;
+  for (let i = 1; i < values.length; i++) {
+    const v = values[i]!;
+    if (v < result) result = v;
+  }
+  return result;
+}
+
+export function safeMax(values: number[], fallback = -Infinity): number {
+  if (values.length === 0) return fallback;
+  let result = values[0]!;
+  for (let i = 1; i < values.length; i++) {
+    const v = values[i]!;
+    if (v > result) result = v;
+  }
+  return result;
+}

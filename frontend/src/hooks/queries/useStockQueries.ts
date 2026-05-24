@@ -30,7 +30,7 @@ export function useStockRealtime(symbol: string) {
       market_cap?: number;
     }>(`/stock/realtime/${symbol}`),
     enabled: symbol.length > 0,
-    staleTime: 5_000,
+    staleTime: 10_000,
   });
 }
 
@@ -42,7 +42,7 @@ export function useStockHistory(symbol: string, period: string = '1y') {
       { period, kline_type: 'daily', adjust: 'qfq' },
     ),
     enabled: symbol.length > 0,
-    staleTime: 60_000,
+    staleTime: 120_000,
   });
 }
 
@@ -51,7 +51,7 @@ export function useStockIndicators(symbol: string) {
     queryKey: stockKeys.indicators(symbol),
     queryFn: () => apiGet<Record<string, number[]>>(`/stock/indicators/${symbol}`, { indicators: 'all' }),
     enabled: symbol.length > 0,
-    staleTime: 60_000,
+    staleTime: 120_000,
   });
 }
 
@@ -68,7 +68,7 @@ export function useStockFundamentals(symbol: string) {
       gross_margin: number;
     }>(`/stock/fundamentals/${symbol}`),
     enabled: symbol.length > 0,
-    staleTime: 300_000,
+    staleTime: 600_000,
   });
 }
 
@@ -83,6 +83,6 @@ export function useStockAnalysis(symbol: string) {
       signals: string[];
     }>(`/stock/analysis/${symbol}`),
     enabled: symbol.length > 0,
-    staleTime: 60_000,
+    staleTime: 120_000,
   });
 }

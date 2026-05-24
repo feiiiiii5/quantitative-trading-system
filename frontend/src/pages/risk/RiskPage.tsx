@@ -5,7 +5,7 @@ import { CorrelationMatrix } from '@/components/charts/CorrelationMatrix';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { VolatilityCone } from '@/components/charts/VolatilityCone';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { formatRatio } from '@/utils/format';
+import { formatRatio, safeMin, safeMax } from '@/utils/format';
 import { apiGet } from '@/api/client';
 import type { RiskLevel, RiskMetrics } from '@/types';
 import { usePortfolioRiskDashboard, useStressScenarios } from '@/hooks/queries/usePortfolioQueries';
@@ -45,25 +45,6 @@ const LEVEL_COLORS: Record<RiskLevel, { bg: string; color: string }> = {
 };
 
 
-type BorderColor = '#FF1744' | '#FF9100' | '#00C853';
-
-function varBorderColor(value: number): BorderColor {
-  if (value > 0.05) return '#FF1744';
-  if (value > 0.02) return '#FF9100';
-  return '#00C853';
-}
-
-function sharpeBorderColor(value: number): BorderColor {
-  if (value > 1) return '#00C853';
-  if (value >= 0.5) return '#FF9100';
-  return '#FF1744';
-}
-
-function betaBorderColor(value: number): BorderColor {
-  if (value > 1) return '#FF9100';
-  return '#00C853';
-}
-
 function metricColor(value: number, invert = false): string {
   if (invert) {
     if (value < 0) return '#00C853';
@@ -79,57 +60,11 @@ function isDataLoading(var95: number, cvar: number, maxDrawdown: number, sharpe:
   return var95 === 0 && cvar === 0 && maxDrawdown === 0 && sharpe === 0 && beta === 0;
 }
 
-interface PortfolioData {
-  var_95: number;
-  cvar_95: number;
-  beta: number;
-  symbols: string[];
-  position_count: number;
-  annualized_vol: number;
-}
-
-interface ExposureData {
-  sectors: Record<string, number>;
-  concentration: number;
-  position_count: number;
-  diversification_score: number;
-}
-
-interface DrawdownEpisode {
-  start_idx: number;
-  trough_idx: number;
-  end_idx: number;
-  depth: number;
-  duration_bars: number;
-  recovery_bars: number;
-  recovered: boolean;
-}
-
-interface DrawdownData {
-  symbol: string;
-  period: string;
-  episodes: DrawdownEpisode[];
-  avg_recovery_bars: number;
-  recovery_rate: number;
-  total_episodes: number;
-}
-
 interface FrontierPoint {
   return: number;
   volatility: number;
   sharpe_ratio: number;
   weights: Record<string, number>;
-}
-
-interface EfficientFrontierData {
-  symbols: string[];
-  period: string;
-  risk_free_rate: number;
-  frontier: FrontierPoint[];
-  optimal_portfolios: {
-    min_variance: FrontierPoint;
-    max_sharpe: FrontierPoint;
-  };
 }
 
 interface MonteCarloVaRData {
@@ -143,58 +78,6 @@ interface MonteCarloVaRData {
   confidence_levels: Record<string, number>;
   method: string;
   message: string;
-}
-
-interface CorrelationMatrixData {
-  symbols: string[];
-  period: string;
-  full_correlation: Record<string, Record<string, number>>;
-  rolling_correlation: Record<string, Record<string, number>>;
-  rolling_window: number;
-}
-
-interface BlackLittermanData {
-  posterior_returns: Record<string, number>;
-  weights: Record<string, number>;
-  expected_return: number;
-  expected_volatility: number;
-  sharpe_ratio: number;
-  message: string;
-}
-
-interface KellyData {
-  kelly_full: number;
-  suggested_fraction: number;
-  fraction_type: string;
-  win_rate: number;
-  win_loss_ratio: number;
-  expected_value: number;
-  ruin_probability: number;
-  max_position_pct: number;
-}
-
-interface StressScenario {
-  name: string;
-  description: string;
-  equity_shock: number;
-  bond_shock: number;
-  commodity_shock: number;
-  volatility_mult: number;
-}
-
-interface StressTestResult {
-  scenarios: Array<{
-    name: string;
-    portfolio_impact: number;
-    portfolio_volatility: number;
-    max_drawdown: number;
-    recovery_days: number;
-  }>;
-  summary: {
-    worst_case: number;
-    average_impact: number;
-    stress_score: number;
-  };
 }
 
 interface DiversificationData {
@@ -236,7 +119,7 @@ const DecompositionCanvas = memo(function DecompositionCanvas({ data }: { data: 
     const barAreaW = w - labelWidth - valueWidth;
     const barHeight = 20;
     const gap = 12;
-    const maxVal = Math.max(...data.map(d => d.contribution), 0.01);
+    const maxVal = safeMax(data.map(d => d.contribution), 0.01);
 
     for (let i = 0; i < data.length; i++) {
       const item = data[i]!;
@@ -287,65 +170,6 @@ const GaugeCard = memo(function GaugeCard({ value, max, label, unit }: {
         {value.toFixed(2)}{unit}
       </span>
       <span style={{ fontSize: 10, color: 'var(--label-tertiary)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{label}</span>
-    </div>
-  );
-});
-
-const MetricCard = memo(function MetricCard({
-  label,
-  value,
-  color,
-  subtitle,
-  borderColor,
-  isLoading,
-}: {
-  label: string;
-  value: string;
-  color: string;
-  subtitle: string;
-  borderColor: BorderColor;
-  isLoading: boolean;
-}) {
-  return (
-    <div style={{
-      background: 'var(--bg-glass)',
-      backdropFilter: 'blur(24px) saturate(120%)',
-      borderRadius: 'var(--r-lg)',
-      border: '1px solid var(--separator)',
-      borderLeft: `4px solid ${borderColor}`,
-      padding: '24px 20px',
-      transition: 'transform var(--dur-fast) var(--ease-apple), box-shadow var(--dur-fast) var(--ease-apple)',
-      position: 'relative',
-      overflow: 'hidden',
-    }}>
-      <div style={{
-        fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase',
-        letterSpacing: '0.08em', color: 'var(--label-tertiary)', marginBottom: 10,
-      }}>
-        {label}
-      </div>
-      {isLoading ? (
-        <div style={{
-          fontFamily: 'var(--font-mono)', fontSize: 28, fontWeight: 700,
-          color: 'var(--label-quaternary)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.2,
-          animation: 'subtleBreathe 2s ease-in-out infinite',
-        }}>
-          --
-        </div>
-      ) : (
-        <div style={{
-          fontFamily: 'var(--font-mono)', fontSize: 28, fontWeight: 700,
-          color, fontVariantNumeric: 'tabular-nums', lineHeight: 1.2,
-        }}>
-          {value}
-        </div>
-      )}
-      <div style={{
-        fontFamily: 'var(--font-sans)', fontSize: 11, color: 'var(--label-tertiary)',
-        marginTop: 6,
-      }}>
-        {subtitle}
-      </div>
     </div>
   );
 });
@@ -545,7 +369,7 @@ const SectorExposureCanvas = memo(function SectorExposureCanvas({ sectors }: { s
     const barHeight = 14;
     const rowGap = 26;
     const barAreaW = w - labelWidth - valueWidth;
-    const maxVal = Math.max(...entries.map(([, v]) => v), 0.01);
+    const maxVal = safeMax(entries.map(([, v]) => v), 0.01);
 
     for (let i = 0; i < entries.length; i++) {
       const [name, val] = entries[i]!;
@@ -594,10 +418,10 @@ const EfficientFrontierCanvas = memo(function EfficientFrontierCanvas({ frontier
 
     const vols = frontier.map(p => p.volatility);
     const rets = frontier.map(p => p.return);
-    const minVol = Math.min(...vols) * 0.9;
-    const maxVol = Math.max(...vols) * 1.1;
-    const minRet = Math.min(...rets) * 0.9;
-    const maxRet = Math.max(...rets) * 1.1;
+    const minVol = safeMin(vols) * 0.9;
+    const maxVol = safeMax(vols) * 1.1;
+    const minRet = safeMin(rets) * 0.9;
+    const maxRet = safeMax(rets) * 1.1;
     const volRange = maxVol - minVol || 0.01;
     const retRange = maxRet - minRet || 0.01;
 
@@ -715,7 +539,7 @@ const OptimalPortfolioCard = memo(function OptimalPortfolioCard({ title, point, 
   point: FrontierPoint;
   accentColor: string;
 }) {
-  const weightEntries = Object.entries(point.weights);
+  const weightEntries = Object.entries(point?.weights ?? {});
   return (
     <div style={{
       background: 'rgba(255,255,255,0.03)',
@@ -765,24 +589,35 @@ const EfficientFrontierPanel = memo(function EfficientFrontierPanel() {
   if (isLoading) return <LoadingPlaceholder />;
   if (!data || data.frontier.length === 0) return <EmptyState title="暂无有效前沿数据" description="请先添加持仓" size="md" />;
 
+  const minVariance = data.optimal_portfolios?.min_variance;
+  const maxSharpe = data.optimal_portfolios?.max_sharpe;
+
   return (
     <>
       <EfficientFrontierCanvas
         frontier={data.frontier}
-        minVariance={data.optimal_portfolios.min_variance}
-        maxSharpe={data.optimal_portfolios.max_sharpe}
+        minVariance={minVariance ?? { return: 0, volatility: 0, sharpe_ratio: 0, weights: {} }}
+        maxSharpe={maxSharpe ?? { return: 0, volatility: 0, sharpe_ratio: 0, weights: {} }}
       />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 16 }}>
-        <OptimalPortfolioCard
-          title="最小方差组合"
-          point={data.optimal_portfolios.min_variance}
-          accentColor="#00C853"
-        />
-        <OptimalPortfolioCard
-          title="最大夏普组合"
-          point={data.optimal_portfolios.max_sharpe}
-          accentColor="#FF1744"
-        />
+        {minVariance ? (
+          <OptimalPortfolioCard
+            title="最小方差组合"
+            point={minVariance}
+            accentColor="#00C853"
+          />
+        ) : (
+          <EmptyState title="最小方差组合不可用" description="数据不足" size="sm" />
+        )}
+        {maxSharpe ? (
+          <OptimalPortfolioCard
+            title="最大夏普组合"
+            point={maxSharpe}
+            accentColor="#FF1744"
+          />
+        ) : (
+          <EmptyState title="最大夏普组合不可用" description="数据不足" size="sm" />
+        )}
       </div>
     </>
   );
@@ -810,7 +645,7 @@ const MonteCarloVaRCanvas = memo(function MonteCarloVaRCanvas({ data }: { data: 
     const padB = 36;
     const chartW = w - padL - padR;
     const chartH = h - padT - padB;
-    const maxFreq = Math.max(...bins, 0.01);
+    const maxFreq = safeMax(bins, 0.01);
     const toX = (val: number) => padL + ((val - rangeMin) / (rangeMax - rangeMin)) * chartW;
     const toY = (freq: number) => padT + chartH - (freq / maxFreq) * chartH;
 
@@ -940,13 +775,18 @@ const MonteCarloVaRPanel = memo(function MonteCarloVaRPanel() {
 const CorrelationPanel = memo(function CorrelationPanel() {
   const { data, isLoading } = useCorrelationMatrix();
 
+  const matrixValues = useMemo(() => {
+    if (!data) return [];
+    const symbols = data.symbols;
+    return symbols.map(row =>
+      symbols.map(col => data.full_correlation[row]?.[col] ?? 0)
+    );
+  }, [data]);
+
   if (isLoading) return <LoadingPlaceholder />;
   if (!data) return <EmptyState title="暂无相关性数据" description="请先添加持仓" size="md" />;
 
   const symbols = data.symbols;
-  const matrixValues = useMemo(() => symbols.map(row =>
-    symbols.map(col => data.full_correlation[row]?.[col] ?? 0)
-  ), [symbols, data.full_correlation]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -975,11 +815,11 @@ const CorrelationPanel = memo(function CorrelationPanel() {
 const BlackLittermanPanel = memo(function BlackLittermanPanel() {
   const { data, isLoading } = useBlackLitterman();
 
+  const weightEntries = useMemo(() => data?.weights ? Object.entries(data.weights) : [], [data]);
+  const returnEntries = useMemo(() => data?.posterior_returns ? Object.entries(data.posterior_returns) : [], [data]);
+
   if (isLoading) return <LoadingPlaceholder />;
   if (!data) return <EmptyState title="暂无优化数据" description="请先添加持仓" size="md" />;
-
-  const weightEntries = useMemo(() => Object.entries(data.weights), [data.weights]);
-  const returnEntries = useMemo(() => Object.entries(data.posterior_returns), [data.posterior_returns]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1250,7 +1090,7 @@ const DiversificationPanel = memo(function DiversificationPanel() {
   const fetchData = () => {
     let cancelled = false;
     setLoading(true); setError(false);
-    apiGet<DiversificationData>('/portfolio/diversification', { symbols: symbols.split(',').map(s => s.trim()) })
+    apiGet<DiversificationData>('/portfolio/diversification', { symbols: symbols.split(',').map(s => s.trim()).join(',') })
       .then(res => { if (!cancelled) { setData(res); setLoading(false); } })
       .catch(() => { if (!cancelled) { setError(true); setLoading(false); } });
     return () => { cancelled = true; };
@@ -1311,7 +1151,7 @@ const PortfolioAttributionPanel = memo(function PortfolioAttributionPanel() {
   const fetchData = () => {
     let cancelled = false;
     setLoading(true); setError(false);
-    apiGet<AttributionData>('/portfolio/attribution', { symbols: symbols.split(',').map(s => s.trim()) })
+    apiGet<AttributionData>('/portfolio/attribution', { symbols: symbols.split(',').map(s => s.trim()).join(',') })
       .then(res => { if (!cancelled) { setData(res); setLoading(false); } })
       .catch(() => { if (!cancelled) { setError(true); setLoading(false); } });
     return () => { cancelled = true; };
@@ -1414,14 +1254,6 @@ export function RiskPage() {
   const volDates = metrics?.volDates ?? FALLBACK_VOL_DATES;
   const historicalVol = metrics?.historicalVol ?? FALLBACK_HISTORICAL_VOL;
   const impliedVol = metrics?.impliedVol ?? FALLBACK_IMPLIED_VOL;
-
-  const topMetrics = useMemo<Array<{ label: string; value: string; color: string; subtitle: string; borderColor: BorderColor }>>(() => [
-    { label: 'VaR(95%)', value: formatRatio(var95), color: metricColor(var95), subtitle: 'Value at Risk', borderColor: varBorderColor(var95) },
-    { label: 'CVaR', value: formatRatio(cvar), color: metricColor(cvar), subtitle: 'Conditional VaR', borderColor: varBorderColor(cvar) },
-    { label: 'MAX DRAWDOWN', value: formatRatio(maxDrawdown), color: metricColor(maxDrawdown, true), subtitle: 'Peak to Trough', borderColor: '#FF1744' },
-    { label: 'SHARPE', value: sharpe.toFixed(2), color: metricColor(sharpe), subtitle: 'Risk-Adj Return', borderColor: sharpeBorderColor(sharpe) },
-    { label: 'BETA', value: beta.toFixed(2), color: beta > 1 ? '#FF9100' : '#00C853', subtitle: 'Market Sensitivity', borderColor: betaBorderColor(beta) },
-  ], [var95, cvar, maxDrawdown, sharpe, beta]);
 
   const effectiveRiskLevel: RiskLevel = loading ? 'LOW' : riskLevel;
 
@@ -1591,7 +1423,7 @@ export function RiskPage() {
                     回撤周期 (Top 5)
                   </div>
                   {(() => {
-                    const maxDepth = Math.max(...drawdownData.episodes.map(e => Math.abs(e.depth)), 0.01);
+                    const maxDepth = safeMax(drawdownData.episodes.map(e => Math.abs(e.depth)), 0.01);
                     return drawdownData.episodes.slice(0, 5).map((ep, idx) => {
                       const depthPct = Math.abs(ep.depth) / maxDepth;
                       return (

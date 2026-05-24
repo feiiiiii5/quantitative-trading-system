@@ -114,29 +114,31 @@ export const useMarketStore = create<MarketState>()(devtools((set, get) => ({
     set({ loading: true, error: null });
     try {
       const raw = await apiGet<{
-        advance_decline: Record<string, unknown>;
-        percent_above_ma: Record<string, unknown>;
+        advance_decline?: Record<string, unknown>;
+        percent_above_ma?: Record<string, unknown>;
       }>('/market/breadth', { symbols: BREADTH_SYMBOLS });
       const ad = raw?.advance_decline;
       const pma = raw?.percent_above_ma;
-      if (!ad) { set({ breadth: null, loading: false, error: null }); return; }
+      if (!ad || 'error' in ad) { set({ breadth: null, loading: false, error: null }); return; }
+      const num = (v: unknown, fallback = 0): number => typeof v === 'number' && isFinite(v) ? v : fallback;
+      const str = (v: unknown, fallback = 'neutral'): string => typeof v === 'string' ? v : fallback;
       set({
         breadth: {
-          advancing: (ad.advancing as number) ?? 0,
-          declining: (ad.declining as number) ?? 0,
-          unchanged: (ad.unchanged as number) ?? 0,
-          total_stocks: (ad.total_stocks as number) ?? 0,
-          breadth_score: (ad.breadth_score as number) ?? 0,
-          limit_up: (ad.limit_up as number) ?? 0,
-          limit_down: (ad.limit_down as number) ?? 0,
-          advance_decline_ratio: (ad.advance_decline_ratio as number) ?? 0,
-          advance_decline_spread: (ad.advance_decline_spread as number) ?? 0,
-          regime: (ad.regime as string) ?? 'neutral',
-          avg_advance_pct: (ad.avg_advance_pct as number) ?? 0,
-          avg_decline_pct: (ad.avg_decline_pct as number) ?? 0,
-          thrust_ratio: (ad.thrust_ratio as number) ?? 0,
-          pct_above_ma: (pma?.pct_above_ma as number) ?? 0,
-          ma_signal: (pma?.signal as string) ?? 'neutral',
+          advancing: num(ad.advancing),
+          declining: num(ad.declining),
+          unchanged: num(ad.unchanged),
+          total_stocks: num(ad.total_stocks),
+          breadth_score: num(ad.breadth_score),
+          limit_up: num(ad.limit_up),
+          limit_down: num(ad.limit_down),
+          advance_decline_ratio: num(ad.advance_decline_ratio),
+          advance_decline_spread: num(ad.advance_decline_spread),
+          regime: str(ad.regime),
+          avg_advance_pct: num(ad.avg_advance_pct),
+          avg_decline_pct: num(ad.avg_decline_pct),
+          thrust_ratio: num(ad.thrust_ratio),
+          pct_above_ma: num(pma?.pct_above_ma),
+          ma_signal: str(pma?.signal),
         },
         loading: false,
         error: null,

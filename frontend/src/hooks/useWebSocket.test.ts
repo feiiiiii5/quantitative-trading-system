@@ -59,7 +59,7 @@ describe('useWebSocket', () => {
       ({ handler }) => useWebSocket('trades', handler),
       { initialProps: { handler: handler1 } },
     );
-    const stableHandler = mockSubscribe.mock.calls[0][1] as (data: unknown) => void;
+    const stableHandler = (mockSubscribe.mock.calls[0] as unknown as [string, (data: unknown) => void])[1];
     stableHandler({ price: 100 });
     expect(handler1).toHaveBeenCalledWith({ price: 100 });
     rerender({ handler: handler2 });
@@ -157,7 +157,7 @@ describe('useWsConnectionState', () => {
   it('updates state when connection change callback fires', async () => {
     mockIsConnected.mockReturnValue(false);
     let connectionCallback: ((connected: boolean) => void) | undefined;
-    mockOnConnectionChange.mockImplementation((cb: (connected: boolean) => void) => {
+    (mockOnConnectionChange as ReturnType<typeof vi.fn>).mockImplementation((cb: (connected: boolean) => void) => {
       connectionCallback = cb;
       return vi.fn();
     });

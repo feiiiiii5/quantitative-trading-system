@@ -27,8 +27,6 @@ interface CommandPaletteProps {
   onClose: () => void;
 }
 
-const CATEGORY_ORDER: Record<string, number> = { '操作': 0, '导航': 1, '搜索': 2 };
-
 const RECENT_KEY = 'qc_recent_searches';
 const MAX_RECENT = 5;
 
@@ -126,6 +124,7 @@ export const CommandPalette = memo(function CommandPalette({ open, onClose }: Co
         label: `${s.symbol} ${s.name}`,
         category: '搜索' as const,
         keywords: [],
+        shortcut: undefined as string | undefined,
         action: () => { addToRecent(s.symbol); navigate(`/stock/${s.symbol}`); onClose(); },
       },
     }));
@@ -138,6 +137,7 @@ export const CommandPalette = memo(function CommandPalette({ open, onClose }: Co
             label: sym,
             category: '搜索' as const,
             keywords: [],
+            shortcut: undefined as string | undefined,
             action: () => { addToRecent(sym); navigate(`/stock/${sym}`); onClose(); },
           },
         }))

@@ -7,6 +7,8 @@ import { useReadiness } from '@/hooks/queries/useSystemQueries';
 import { Sparkline } from '@/components/charts/Sparkline';
 import { HeatmapCanvas } from '@/components/charts/HeatmapCanvas';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { SkeletonCard } from '@/components/ui/Skeleton';
 import { RiskBanner } from '@/components/ui/RiskBanner';
 import { SignalBadge } from '@/components/ui/SignalBadge';
 import { PriceAlertPanel } from '@/components/PriceAlertPanel';
@@ -259,13 +261,13 @@ const PortfolioDashboardPanel = memo(function PortfolioDashboardPanel() {
     return () => { cancelled = true; };
   }, []);
 
-  if (loading) return <div style={{ height: 180, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>LOADING...</span></div>;
-  if (!data) return null;
+  if (loading) return <div style={{ height: 180 }}><SkeletonCard rows={4} /></div>;
+  if (!data) return <EmptyState title="加载失败" description="无法获取组合数据" size="sm" action={{ label: '重试', onClick: () => window.location.reload() }} />;
 
   if (!('risk_metrics' in data)) {
     const positions = data as Array<{ symbol: string; name: string; price: number; change_pct: number; market: string }>;
     if (positions.length === 0) {
-      return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 120, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>暂无持仓数据</div>;
+      return <EmptyState title="暂无持仓" description="当前没有任何持仓数据" size="sm" />;
     }
     return (
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -342,7 +344,7 @@ const PortfolioDashboardPanel = memo(function PortfolioDashboardPanel() {
 });
 
 const MarketBreadthPanel = memo(function MarketBreadthPanel({ data }: { data: MarketOverviewData | null }) {
-  if (!data?.market_breadth) return <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>NO DATA</span></div>;
+  if (!data?.market_breadth) return <EmptyState title="暂无数据" description="市场广度数据未就绪" size="sm" />;
 
   const { up, down, flat } = data.market_breadth;
   const total = up + down + flat;
@@ -377,7 +379,7 @@ const MarketBreadthPanel = memo(function MarketBreadthPanel({ data }: { data: Ma
 });
 
 const GlobalIndicesPanel = memo(function GlobalIndicesPanel({ data }: { data: MarketOverviewData | null }) {
-  if (!data) return <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>NO DATA</span></div>;
+  if (!data) return <EmptyState title="暂无数据" description="全球指数数据未就绪" size="sm" />;
 
   const allIndices = useMemo(() => [
     ...Object.entries(data.cn_indices ?? {}).map(([k, v]) => ({ ...v, code: k })),
@@ -716,30 +718,6 @@ const UnusualActivity = memo(function UnusualActivity({ stocks }: { stocks: Arra
   );
 });
 
-const WatchlistPanel = memo(function WatchlistPanel({ stocks }: { stocks: Array<{ symbol: string; name: string; price: number; change_pct: number }> }) {
-  if (stocks.length === 0) return <div style={{ padding: 'var(--s5)', fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--label-quaternary)' }}>暂无自选股</div>;
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column' }}>
-      {stocks.slice(0, 6).map(s => (
-        <div key={s.symbol} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px var(--s5)', borderBottom: '1px solid var(--separator)' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--label-primary)', fontVariantNumeric: 'tabular-nums' }}>{s.symbol}</span>
-            <span style={{ fontFamily: 'var(--font-sans)', fontSize: '10px', color: 'var(--label-tertiary)' }}>{s.name}</span>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--label-primary)', fontVariantNumeric: 'tabular-nums' }}>
-              {s.price?.toFixed(2) ?? '—'}
-            </span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: s.change_pct >= 0 ? '#FF1744' : '#00C853', fontVariantNumeric: 'tabular-nums' }}>
-              {s.change_pct >= 0 ? '+' : ''}{s.change_pct.toFixed(2)}%
-            </span>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-});
-
 const AISummaryCard = memo(function AISummaryCard() {
   return (
     <div style={{ background: 'var(--bg-glass)', backdropFilter: 'blur(24px) saturate(120%)', borderRadius: 'var(--r-lg)', border: '1px solid var(--separator)', padding: 'var(--s5)', display: 'flex', gap: 'var(--s4)', alignItems: 'flex-start' }}>
@@ -759,13 +737,12 @@ const AISummaryCard = memo(function AISummaryCard() {
 export function DashboardPage() {
   const { data: marketData } = useMarketOverview();
   const { data: stocks = [] } = useMarketStocks('A');
-  const { data: sectors = {} } = useMarketSectors();
-  const { data: watchlistData } = useWatchlist();
+  const { data: sectors } = useMarketSectors();
+  const { data: _watchlistData } = useWatchlist();
   const { data: riskDashboard } = usePortfolioRiskDashboard();
-  const { data: systemHealth } = useReadiness();
+  const { data: _systemHealth } = useReadiness();
   const [systemExpanded, setSystemExpanded] = useState(false);
 
-  const watchlistSymbols = watchlistData?.symbols ?? [];
   const indices = useMemo(() => {
     if (!marketData?.cn_indices) return [];
     return Object.entries(marketData.cn_indices).map(([code, v]) => ({
@@ -798,27 +775,24 @@ export function DashboardPage() {
     }));
   }, [stocks]);
 
-  const watchlistStocks = useMemo(
-    () => stocks.filter(s => watchlistSymbols.includes(s.symbol)),
-    [stocks, watchlistSymbols],
-  );
-
   const sectorList = useMemo<SectorData[]>(() => {
     if (!sectors) return [];
-    const maybeItems = (sectors as Record<string, unknown>).items;
-    if (Array.isArray(maybeItems)) return maybeItems as SectorData[];
-    return Object.entries(sectors).map(([key, val]) => ({
-      name: val?.name ?? key,
-      change_pct: val?.change_pct ?? 0,
-      amount: val?.amount ?? val?.volume ?? 0,
-      volume: val?.volume ?? 0,
-    }));
+    if (Array.isArray(sectors.items)) {
+      return sectors.items.map(v => ({
+        name: v.name,
+        change_pct: v.change_pct ?? 0,
+        amount: v.amount ?? 0,
+        volume: v.volume ?? 0,
+        leading_stock: v.leading_stock ?? undefined,
+      }));
+    }
+    return [];
   }, [sectors]);
 
   const toggleSystem = useCallback(() => setSystemExpanded(v => !v), []);
 
   return (
-    <div style={{ background: 'var(--bg-base)', minHeight: '100%', display: 'flex', flexDirection: 'column', padding: 'var(--s6)' }}>
+    <div style={{ background: 'var(--bg-base)', height: '100%', display: 'flex', flexDirection: 'column', padding: 'var(--s6)', overflow: 'hidden' }}>
       <div style={{ ...GLASS_PANEL, marginBottom: '16px' }}>
         <HeroTickerBar indices={displayIndices} />
         <div style={{ borderTop: '1px solid var(--separator)', padding: '0 var(--s6)' }}>
@@ -835,36 +809,39 @@ export function DashboardPage() {
       <div style={{
         display: 'grid',
         gridTemplateColumns: '45fr 30fr 25fr',
+        gridTemplateRows: '1fr',
         gap: '16px',
         padding: '0 24px',
         flex: 1,
+        minHeight: 0,
+        overflow: 'hidden',
       }}>
-        <div style={{ ...GLASS_PANEL, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ ...GLASS_PANEL, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
           <div style={SECTION_LABEL}>板块热力</div>
-          <div style={{ flex: 1, padding: 'var(--s4)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ flex: 1, padding: 'var(--s4)', minHeight: 0, overflow: 'hidden' }}>
             <ErrorBoundary fallback={<div style={{ color: 'var(--label-tertiary)', padding: 16 }}>Chart unavailable</div>}>
               <HeatmapCanvas sectors={sectorList} />
             </ErrorBoundary>
           </div>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', minHeight: 0, overflow: 'hidden' }}>
           <div style={{ ...GLASS_PANEL }}>
             <div style={SECTION_LABEL}>市场广度</div>
-            <MarketBreadthPanel data={marketData} />
+            <MarketBreadthPanel data={marketData ?? null} />
           </div>
-          <div style={{ ...GLASS_PANEL, flex: 1 }}>
+          <div style={{ ...GLASS_PANEL, flex: 1, minHeight: 0, overflow: 'hidden' }}>
             <div style={SECTION_LABEL}>全球指数</div>
-            <GlobalIndicesPanel data={marketData} />
+            <GlobalIndicesPanel data={marketData ?? null} />
           </div>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', minHeight: 0, overflow: 'hidden' }}>
           <div style={{ ...GLASS_PANEL }}>
             <div style={SECTION_LABEL}>实时信号</div>
             <SignalList signals={signals} />
           </div>
-          <div style={{ ...GLASS_PANEL, flex: 1 }}>
+          <div style={{ ...GLASS_PANEL, flex: 1, minHeight: 0, overflow: 'hidden' }}>
             <div style={SECTION_LABEL}>异动行情</div>
             <UnusualActivity stocks={stocks} />
           </div>

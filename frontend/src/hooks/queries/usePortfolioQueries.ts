@@ -96,7 +96,7 @@ export function useBuyStock() {
   return useMutation({
     mutationFn: (params: { symbol: string; shares: number; price?: number }) =>
       apiPost('/trading/buy', params),
-    onMutate: async (params) => {
+    onMutate: async (_params) => {
       await qc.cancelQueries({ queryKey: portfolioKeys.holdings() });
       const prev = qc.getQueryData(portfolioKeys.holdings());
       return { prev };
@@ -116,7 +116,7 @@ export function useSellStock() {
   return useMutation({
     mutationFn: (params: { symbol: string; shares: number; price?: number }) =>
       apiPost('/trading/sell', params),
-    onMutate: async (params) => {
+    onMutate: async (_params) => {
       await qc.cancelQueries({ queryKey: portfolioKeys.holdings() });
       const prev = qc.getQueryData(portfolioKeys.holdings());
       return { prev };

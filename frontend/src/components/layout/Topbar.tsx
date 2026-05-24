@@ -1,7 +1,8 @@
-import { useEffect, useCallback, memo } from 'react';
+import { useEffect, useCallback, useState, memo } from 'react';
 import { useMarketStore } from '@/stores/market';
 import { formatPrice, formatPercent, priceColor } from '@/utils/format';
 import { MarketStatusBadge } from '@/components/MarketStatusBadge';
+import { AlertNotificationPanel } from '@/components/AlertNotificationPanel';
 import { useWsConnectionState } from '@/hooks/useWebSocket';
 import type { IndexQuote } from '@/types';
 
@@ -19,6 +20,7 @@ export const Topbar = memo(function Topbar({ onSearchOpen }: TopbarProps) {
   const indices = useMarketStore((s) => s.indices);
   const fetchIndices = useMarketStore((s) => s.fetchIndices);
   const wsConnected = useWsConnectionState();
+  const [alertOpen, setAlertOpen] = useState(false);
 
   useEffect(() => {
     fetchIndices();
@@ -136,6 +138,17 @@ export const Topbar = memo(function Topbar({ onSearchOpen }: TopbarProps) {
           fontSize: '11px',
         }}
       >
+        <button
+          onClick={() => setAlertOpen(v => !v)}
+          style={{
+            background: 'none', border: '1px solid var(--separator)',
+            borderRadius: 'var(--r-sm)', padding: '4px 8px',
+            color: 'var(--label-tertiary)', cursor: 'pointer',
+            fontSize: 13, lineHeight: 1, display: 'flex', alignItems: 'center',
+          }}
+        >
+          🔔
+        </button>
         {displayIndices.map((idx) => (
           <span
             key={idx.code || idx.name}
@@ -166,6 +179,7 @@ export const Topbar = memo(function Topbar({ onSearchOpen }: TopbarProps) {
           </span>
         ))}
       </div>
+      <AlertNotificationPanel open={alertOpen} onClose={() => setAlertOpen(false)} />
     </header>
   );
 });

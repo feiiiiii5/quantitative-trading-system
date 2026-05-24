@@ -1,7 +1,7 @@
 import { memo, useCallback } from 'react';
 import { useCanvas } from '@/hooks/useCanvas';
 import { colors } from '@/design/tokens/colors';
-import { formatAmount } from '@/utils/format';
+import { formatAmount, safeMin, safeMax } from '@/utils/format';
 
 interface WaterfallItem {
   label: string;
@@ -32,8 +32,8 @@ export const WaterfallChart = memo(function WaterfallChart({ items, height = 260
     });
 
     const allVals = bars.flatMap(b => [b.base, b.top]);
-    const minV = Math.min(...allVals, 0);
-    const maxV = Math.max(...allVals, 0);
+    const minV = safeMin([...allVals, 0]);
+    const maxV = safeMax([...allVals, 0]);
     const range = Math.max(maxV - minV, 1);
 
     const gap = chartW / items.length;

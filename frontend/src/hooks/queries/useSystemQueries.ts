@@ -17,7 +17,7 @@ export function useSystemHealth() {
       checks: Record<string, string>;
       timestamp: string;
     }>('/system/health'),
-    staleTime: 30_000,
+    staleTime: 60_000,
   });
 }
 
@@ -30,7 +30,7 @@ export function useSystemStatus() {
       memory_usage: number;
       active_connections: number;
     }>('/system/status'),
-    staleTime: 15_000,
+    staleTime: 30_000,
   });
 }
 
@@ -42,6 +42,6 @@ export function useReadiness() {
       checks: Record<string, string>;
       timestamp: string;
     }>('/readiness'),
-    staleTime: 30_000,
+    staleTime: 60_000,
   });
 }

@@ -24,7 +24,7 @@ export function useRiskPortfolio() {
       position_count: number;
       annualized_vol: number;
     }>('/risk/portfolio'),
-    staleTime: 30_000,
+    staleTime: 120_000,
   });
 }
 
@@ -37,7 +37,7 @@ export function useRiskExposure() {
       position_count: number;
       diversification_score: number;
     }>('/risk/exposure'),
-    staleTime: 30_000,
+    staleTime: 60_000,
   });
 }
 
@@ -60,7 +60,7 @@ export function useDrawdownAnalysis(symbol: string) {
       recovery_rate: number;
       total_episodes: number;
     }>(`/drawdown/analysis/${symbol}`),
-    staleTime: 60_000,
+    staleTime: 120_000,
   });
 }
 
@@ -73,11 +73,11 @@ export function useEfficientFrontier() {
       risk_free_rate: number;
       frontier: Array<{ return: number; volatility: number; sharpe_ratio: number; weights: Record<string, number> }>;
       optimal_portfolios: {
-        min_variance: { return: number; volatility: number; sharpe_ratio: number; weights: Record<string, number> };
-        max_sharpe: { return: number; volatility: number; sharpe_ratio: number; weights: Record<string, number> };
+        min_variance: { return: number; volatility: number; sharpe_ratio: number; weights: Record<string, number> } | null;
+        max_sharpe: { return: number; volatility: number; sharpe_ratio: number; weights: Record<string, number> } | null;
       };
     }>('/portfolio/efficient-frontier', { symbols: ['600519', '000001', '601318'], n_points: 15 }),
-    staleTime: 300_000,
+    staleTime: 600_000,
   });
 }
 
@@ -96,7 +96,7 @@ export function useMonteCarloVaR() {
       method: string;
       message: string;
     }>('/portfolio/monte-carlo-var', { symbols: ['600519', '000001', '601318'], n_simulations: 1000, time_horizon: 22 }),
-    staleTime: 300_000,
+    staleTime: 600_000,
   });
 }
 
@@ -110,7 +110,7 @@ export function useCorrelationMatrix() {
       rolling_correlation: Record<string, Record<string, number>>;
       rolling_window: number;
     }>('/correlation/matrix', { symbols: ['600519', '000001', '601318'], period: '3mo' }),
-    staleTime: 300_000,
+    staleTime: 600_000,
   });
 }
 
@@ -125,7 +125,7 @@ export function useBlackLitterman() {
       sharpe_ratio: number;
       message: string;
     }>('/portfolio/black-litterman', { symbols: ['600519', '000001', '601318'], market_portfolio: '600519' }),
-    staleTime: 300_000,
+    staleTime: 600_000,
   });
 }
 
@@ -159,7 +159,9 @@ export function useRunStressTest() {
         recovery_days: number;
       }>;
       summary: { worst_case: number; average_impact: number; stress_score: number };
-    }>('/portfolio/stress/run', { symbols }),
+    }>('/portfolio/stress/run', {
+      positions: symbols.map(s => ({ symbol: s, value: 10000 })),
+    }),
     onSettled: () => {
       qc.invalidateQueries({ queryKey: riskKeys.all });
     },

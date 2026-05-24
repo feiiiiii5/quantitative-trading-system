@@ -229,8 +229,8 @@ const KlineChart = memo(function KlineChart({ symbol }: { symbol: string }) {
     const chart = createQuantChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height: 200,
-      layout: { textColor: 'rgba(255,255,255,0.35)' },
-      grid: { vertLines: { color: 'rgba(255,255,255,0.06)' }, horzLines: { color: 'rgba(255,255,255,0.06)' } },
+      layout: { textColor: 'rgba(255,255,255,0.35)' } as any,
+      grid: { vertLines: { color: 'rgba(255,255,255,0.06)' }, horzLines: { color: 'rgba(255,255,255,0.06)' } } as any,
     });
     const series = chart.addSeries(CandlestickSeries, CANDLE_STYLE);
     chartRef.current = chart;
@@ -1205,7 +1205,7 @@ const StockDrawer = memo(function StockDrawer({
 });
 
 export function MarketPage() {
-  const { data: stocks = [], isLoading: loading } = useMarketStocks('A');
+  const { data: stocks = [], isLoading: loading, error: stocksError, refetch: refetchStocks } = useMarketStocks('A');
   const { data: sectorsData = {} } = useMarketSectors();
   const { data: watchlistData } = useWatchlist();
   const addMutation = useAddToWatchlist();
@@ -1282,7 +1282,7 @@ export function MarketPage() {
   }, [stocks, activeTab, filter, changeRangeIdx, sectorFilter]);
 
   const [sorted, setSorted] = useState<StockQuote[]>([]);
-  const [sorting, setSorting] = useState(false);
+  const [_sorting, setSorting] = useState(false);
   const workerRef = useRef<Worker | null>(null);
 
   useEffect(() => {
@@ -1705,6 +1705,10 @@ export function MarketPage() {
       <div style={{ flex: 1, position: 'relative', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         {loading ? (
           <LoadingState />
+        ) : stocksError ? (
+          <EmptyState title="加载失败" description="无法获取行情数据，请检查网络连接" size="md" action={{ label: '重试', onClick: () => refetchStocks() }} />
+        ) : sorted.length === 0 ? (
+          <EmptyState title="暂无数据" description="当前筛选条件下没有匹配的股票" size="md" />
         ) : (
           <VirtualList items={sorted} itemHeight={40} renderItem={renderItem} overscan={10} />
         )}

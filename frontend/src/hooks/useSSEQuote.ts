@@ -20,7 +20,7 @@ export function useSSEQuote(symbol: string) {
     if (!symbol) return;
 
     const connect = () => {
-      const url = `/sse/realtime?symbols=${encodeURIComponent(symbol)}`;
+      const url = `/api/sse/realtime?symbols=${encodeURIComponent(symbol)}`;
       const es = new EventSource(url);
       esRef.current = es;
 

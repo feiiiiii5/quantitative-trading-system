@@ -4,7 +4,8 @@ import { useStrategyList, useStrategyParamSpecs, useFactorRegistry, useAlphaList
 import { useCanvas } from '@/hooks/useCanvas';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { formatRatio, formatPrice } from '@/utils/format';
+import { SkeletonCard } from '@/components/ui/Skeleton';
+import { formatRatio, formatPrice, safeMin, safeMax } from '@/utils/format';
 import type { BacktestResult } from '@/types';
 
 type Difficulty = 'BASIC' | 'PRO' | 'EXPERT';
@@ -15,14 +16,6 @@ interface FactorInfo {
   description: string;
 }
 
-interface ParamSpec {
-  type: string;
-  min: number;
-  max: number;
-  step: number;
-  default: number;
-}
-
 interface AlphaFactor {
   name: string;
   expression: string;
@@ -30,26 +23,9 @@ interface AlphaFactor {
   description: string;
 }
 
-interface BacktestHistoryEntry {
-  id: string;
-  strategy_name: string;
-  symbol: string;
-  start_date: string;
-  end_date: string;
-  created_at: string;
-  sharpe_ratio: number;
-  total_return: number;
-  max_drawdown: number;
-  result?: {
-    total_return: number;
-    annual_return: number;
-    max_drawdown: number;
-    sharpe_ratio: number;
-    win_rate: number;
-    profit_factor: number;
-    total_trades: number;
-  };
-}
+const ALPHA_STYLE: React.CSSProperties = {
+  fontSize: 11, color: 'rgba(255,255,255,0.4)', lineHeight: 1.5,
+};
 
 const CATEGORY_LABELS: Record<string, string> = {
   value: '价值',
@@ -177,14 +153,6 @@ const ALPHA_CATEGORY_LABELS: Record<string, string> = {
   efficiency: '效率',
 };
 
-const CENTER_CONTAINER: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', justifyContent: 'center', height: '200px',
-};
-
-const LOADING_TEXT: React.CSSProperties = {
-  fontFamily: 'var(--font-mono)', fontSize: 12, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em',
-};
-
 const ALPHA_CARD: React.CSSProperties = {
   background: 'var(--bg-elevated)', borderRadius: 'var(--r-md)',
   border: '1px solid var(--separator)', padding: '14px 16px',
@@ -214,14 +182,6 @@ const ALPHA_EXPRESSION: React.CSSProperties = {
   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
 };
 
-const ALPHA_DESCRIPTION: React.CSSProperties = {
-  fontSize: 11, color: 'rgba(255,255,255,0.4)', lineHeight: 1.5,
-};
-
-const ERROR_CONTAINER: React.CSSProperties = {
-  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '200px', gap: 8,
-};
-
 const AlphaFactorPanel = memo(function AlphaFactorPanel() {
   const { data: alphas = [], isLoading: loading, isError: error } = useAlphaList();
   const [search, setSearch] = useState('');
@@ -239,16 +199,12 @@ const AlphaFactorPanel = memo(function AlphaFactorPanel() {
   }), [alphas, search, activeCategory]);
 
   if (loading) {
-    return (
-      <div style={CENTER_CONTAINER}>
-        <span style={LOADING_TEXT}>LOADING...</span>
-      </div>
-    );
+    return <SkeletonCard rows={4} />;
   }
 
   if (error) {
     return (
-      <EmptyState title="Alpha 因子数据暂无" description="请检查网络连接或稍后重试" size="md" />
+      <EmptyState title="Alpha 因子数据暂无" description="请检查网络连接或稍后重试" size="md" action={{ label: '重试', onClick: () => window.location.reload() }} />
     );
   }
 
@@ -321,7 +277,7 @@ const AlphaFactorPanel = memo(function AlphaFactorPanel() {
             <div style={ALPHA_EXPRESSION}>
               {alpha.expression}
             </div>
-            <div style={ALPHA_DESCRIPTION}>
+            <div style={ALPHA_STYLE}>
               {alpha.description}
             </div>
           </div>
@@ -374,11 +330,7 @@ const BacktestHistoryPanel = memo(function BacktestHistoryPanel() {
   }), [history, sortKey, sortAsc]);
 
   if (loading) {
-    return (
-      <div style={CENTER_CONTAINER}>
-        <span style={LOADING_TEXT}>LOADING...</span>
-      </div>
-    );
+    return <SkeletonCard rows={4} />;
   }
 
   if (error || history.length === 0) {
@@ -465,8 +417,8 @@ const EquityCanvas = memo(function EquityCanvas({ data, showDrawdown, benchmarkC
     const sharpeH = (h - pad.top - pad.bottom) * sharpeRatio;
     const sharpeTop = pad.top + mainH + 4;
     const values = data.map(d => d.value);
-    const minVal = Math.min(...values);
-    const maxVal = Math.max(...values);
+    const minVal = safeMin(values);
+    const maxVal = safeMax(values);
     const range = maxVal - minVal || 1;
     ctx.clearRect(0, 0, w, h);
 
@@ -495,15 +447,15 @@ const EquityCanvas = memo(function EquityCanvas({ data, showDrawdown, benchmarkC
           const pEnd = new Date(period.end).getTime();
           const x1 = pad.left + Math.max(0, (pStart - startTs) / totalRange) * chartW;
           const x2 = pad.left + Math.min(1, (pEnd - startTs) / totalRange) * chartW;
-          ctx.fillStyle = color;
+          ctx.fillStyle = color!;
           ctx.fillRect(x1, pad.top, x2 - x1, mainH);
         }
       }
     }
 
     if (confidenceUpper && confidenceLower && confidenceUpper.length === values.length) {
-      const bandMin = Math.min(...confidenceLower);
-      const bandMax = Math.max(...confidenceUpper);
+      const bandMin = safeMin(confidenceLower);
+      const bandMax = safeMax(confidenceUpper);
       const bandRange = bandMax - bandMin || 1;
       ctx.beginPath();
       for (let i = 0; i < values.length; i++) {
@@ -524,8 +476,8 @@ const EquityCanvas = memo(function EquityCanvas({ data, showDrawdown, benchmarkC
 
     if (benchmarkCurve && benchmarkCurve.length > 1) {
       const bmValues = benchmarkCurve.map(d => d.value);
-      const bmMin = Math.min(...bmValues);
-      const bmMax = Math.max(...bmValues);
+      const bmMin = safeMin(bmValues);
+      const bmMax = safeMax(bmValues);
       const bmRange = bmMax - bmMin || 1;
       ctx.beginPath();
       for (let i = 0; i < bmValues.length; i++) {
@@ -578,7 +530,7 @@ const EquityCanvas = memo(function EquityCanvas({ data, showDrawdown, benchmarkC
         if (v > peak) peak = v;
         return (v - peak) / peak;
       });
-      const ddMin = Math.min(...drawdowns);
+      const ddMin = safeMin(drawdowns);
       const ddGradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + mainH);
       ddGradient.addColorStop(0, 'rgba(0,200,83,0)');
       ddGradient.addColorStop(1, 'rgba(0,200,83,0.08)');
@@ -615,8 +567,8 @@ const EquityCanvas = memo(function EquityCanvas({ data, showDrawdown, benchmarkC
       ctx.lineTo(w - pad.right, sharpeTop);
       ctx.stroke();
 
-      const srMax = Math.max(Math.max(...rollingSharpe), 2);
-      const srMin = Math.min(Math.min(...rollingSharpe), -1);
+      const srMax = Math.max(safeMax(rollingSharpe), 2);
+      const srMin = Math.min(safeMin(rollingSharpe), -1);
       const srRange = srMax - srMin || 1;
 
       const sr1Y = sharpeTop + (1 - (1 - srMin) / srRange) * sharpeH;
@@ -1395,15 +1347,10 @@ export function StrategyPage() {
         </div>
         <div style={{ flex: 1, overflow: 'auto' }}>
           {strategiesLoading && (
-            <div style={CENTER_CONTAINER}>
-              <span style={LOADING_TEXT}>LOADING...</span>
-            </div>
+            <div style={{ padding: 16 }}><SkeletonCard rows={3} /></div>
           )}
           {strategiesError && !strategiesLoading && (
-            <div style={{ padding: '20px', textAlign: 'center' }}>
-              <div style={{ fontSize: 12, color: 'var(--label-tertiary)', marginBottom: 8 }}>策略列表加载失败</div>
-              <button onClick={() => window.location.reload()} style={{ fontSize: 11, color: 'var(--accent)', background: 'transparent', border: '1px solid var(--separator)', borderRadius: 'var(--r-xs)', padding: '4px 12px', cursor: 'pointer' }}>重试</button>
-            </div>
+            <EmptyState title="策略列表加载失败" description="请检查网络连接或稍后重试" size="sm" action={{ label: '重试', onClick: () => window.location.reload() }} />
           )}
           {!strategiesLoading && !strategiesError && strategies.length === 0 && (
             <EmptyState title="暂无策略" description="请检查后端服务是否正常" size="sm" />

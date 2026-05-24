@@ -146,9 +146,9 @@ export const useStrategyStore = create<StrategyState>()(devtools((set, get) => (
       }
 
       const jobData = await jobResponse.json();
-      const jobId = jobData.job_id;
+      const jobId = jobData?.job_id;
       if (!jobId) {
-        throw new Error('No job_id returned from backtest stream endpoint');
+        throw new Error(jobData?.error ?? 'No job_id returned from backtest stream endpoint');
       }
 
       addLog(`Job created: ${jobId}`);

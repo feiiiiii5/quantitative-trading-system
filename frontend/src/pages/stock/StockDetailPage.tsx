@@ -8,8 +8,10 @@ import { useChipDistribution, useStockNews, useNewsSentiment, useGarchVolatility
 import { useCanvas } from '@/hooks/useCanvas';
 import { useSSEQuote } from '@/hooks/useSSEQuote';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { SkeletonCard } from '@/components/ui/Skeleton';
 import { WaterfallChart } from '@/components/charts/WaterfallChart';
-import { formatPrice, formatPercent, formatVolume, formatAmount } from '@/utils/format';
+import { formatPrice, formatPercent, formatVolume, formatAmount, safeMin, safeMax } from '@/utils/format';
 import type { StockQuote } from '@/types';
 
 interface MoneyFlowRealtime {
@@ -65,34 +67,6 @@ interface ChipData {
   distribution: number[];
   chip_bands: Array<{ range: string; price_low: number; price_high: number; weight: number }>;
   fire: Record<string, unknown>;
-}
-
-interface NewsItem {
-  title: string;
-  source: string;
-  url: string;
-  time: string;
-  content: string;
-  sentiment: number;
-  sentiment_label: string;
-  related_symbols: string[];
-}
-
-interface SentimentData {
-  sentiment: {
-    fear_greed_index: number;
-    label: string;
-    news_sentiment: number;
-    volume_sentiment: number;
-    momentum_sentiment: number;
-    breadth_sentiment: number;
-  };
-  summary: {
-    total: number;
-    bullish: number;
-    bearish: number;
-    neutral: number;
-  };
 }
 
 interface GarchData {
@@ -176,7 +150,7 @@ function msToTime(ts: number): Time {
 }
 
 const MoneyFlowTab = memo(function MoneyFlowTab({ symbol }: { symbol: string }) {
-  const { data: flowData, isLoading, isError } = useApiGet<MoneyFlowData>(`/moneyflow/stock/${symbol}`);
+  const { data: flowData, loading: isFlowLoading, error: flowError } = useApiGet<MoneyFlowData>(`/moneyflow/stock/${symbol}`);
 
   const { ref: chartRef, redraw: redrawChart } = useCanvas(
     useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
@@ -252,20 +226,12 @@ const MoneyFlowTab = memo(function MoneyFlowTab({ symbol }: { symbol: string }) 
 
   useEffect(() => { redrawChart(); }, [flowData, redrawChart]);
 
-  if (isLoading) {
-    return (
-      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>LOADING...</span>
-      </div>
-    );
+  if (isFlowLoading) {
+    return <SkeletonCard rows={3} />;
   }
 
-  if (isError || !flowData) {
-    return (
-      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>资金流向数据暂无</span>
-      </div>
-    );
+  if (flowError || !flowData) {
+    return <EmptyState title="资金流向数据暂无" description="请检查网络连接或稍后重试" size="sm" />;
   }
 
   const rt = flowData.realtime;
@@ -366,8 +332,8 @@ const ChipDistributionTab = memo(function ChipDistributionTab({ symbol }: { symb
       const chartH = h - padTop - padBottom;
 
       const maxVol = Math.max(1e-10, ...dist.slice(0, len));
-      const minPrice = Math.min(...prices.slice(0, len));
-      const maxPrice = Math.max(...prices.slice(0, len));
+      const minPrice = safeMin(prices.slice(0, len));
+      const maxPrice = safeMax(prices.slice(0, len));
       const priceRange = Math.max(0.01, maxPrice - minPrice);
 
       const barHeight = Math.max(2, (chartH / len) * 0.7);
@@ -430,19 +396,11 @@ const ChipDistributionTab = memo(function ChipDistributionTab({ symbol }: { symb
   useEffect(() => { redrawChart(); }, [chipData, redrawChart]);
 
   if (isLoading) {
-    return (
-      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>LOADING...</span>
-      </div>
-    );
+    return <SkeletonCard rows={3} />;
   }
 
   if (isError || !chipData) {
-    return (
-      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>筹码分布数据暂无</span>
-      </div>
-    );
+    return <EmptyState title="筹码分布数据暂无" description="请检查网络连接或稍后重试" size="sm" />;
   }
 
   return (
@@ -496,19 +454,11 @@ const NewsTab = memo(function NewsTab({ symbol }: { symbol: string }) {
   const isError = newsError || sentimentError;
 
   if (isLoading) {
-    return (
-      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>LOADING...</span>
-      </div>
-    );
+    return <SkeletonCard rows={3} />;
   }
 
   if (isError) {
-    return (
-      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>资讯数据暂无</span>
-      </div>
-    );
+    return <EmptyState title="资讯数据暂无" description="请检查网络连接或稍后重试" size="sm" />;
   }
 
   const fgIndex = sentiment?.sentiment?.fear_greed_index ?? 50;
@@ -647,8 +597,8 @@ const VolatilityTab = memo(function VolatilityTab({ symbol }: { symbol: string }
       const chartH = h - padTop - padBottom;
 
       const vols = series.map(s => s.volatility_annualized);
-      const minVol = Math.min(...vols, garch.current_volatility) * 0.9;
-      const maxVol = Math.max(...vols, garch.current_volatility) * 1.1;
+      const minVol = safeMin([...vols, garch.current_volatility]) * 0.9;
+      const maxVol = safeMax([...vols, garch.current_volatility]) * 1.1;
       const volRange = Math.max(0.001, maxVol - minVol);
 
       ctx.strokeStyle = 'rgba(255,255,255,0.06)';
@@ -709,19 +659,11 @@ const VolatilityTab = memo(function VolatilityTab({ symbol }: { symbol: string }
   useEffect(() => { redrawChart(); }, [garch, redrawChart]);
 
   if (isLoading) {
-    return (
-      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>LOADING...</span>
-      </div>
-    );
+    return <SkeletonCard rows={4} />;
   }
 
   if (isError) {
-    return (
-      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>波动率数据暂无</span>
-      </div>
-    );
+    return <EmptyState title="波动率数据暂无" description="请检查网络连接或稍后重试" size="sm" />;
   }
 
   const stateBadgeColor = (label: string): { color: string; bg: string } => {
@@ -847,8 +789,8 @@ const RollingRiskTab = memo(function RollingRiskTab({ symbol }: { symbol: string
       const chartH = h - padTop - padBottom;
 
       const sharpes = history.map(p => p.sharpe);
-      const minSharpe = Math.min(...sharpes, 0) * 1.1;
-      const maxSharpe = Math.max(...sharpes, 0) * 1.1;
+      const minSharpe = safeMin([...sharpes, 0]) * 1.1;
+      const maxSharpe = safeMax([...sharpes, 0]) * 1.1;
       const sharpeRange = Math.max(0.01, maxSharpe - minSharpe);
 
       const zeroY = padTop + ((maxSharpe - 0) / sharpeRange) * chartH;
@@ -906,19 +848,11 @@ const RollingRiskTab = memo(function RollingRiskTab({ symbol }: { symbol: string
   useEffect(() => { redrawChart(); }, [riskData, redrawChart]);
 
   if (isLoading) {
-    return (
-      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>LOADING...</span>
-      </div>
-    );
+    return <SkeletonCard rows={4} />;
   }
 
   if (isError || !riskData) {
-    return (
-      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>滚动风险数据暂无</span>
-      </div>
-    );
+    return <EmptyState title="滚动风险数据暂无" description="请检查网络连接或稍后重试" size="sm" />;
   }
 
   const latest = riskData.latest;
@@ -1051,19 +985,11 @@ const SeasonalityTab = memo(function SeasonalityTab({ symbol }: { symbol: string
   useEffect(() => { redrawChart(); }, [seasonData, redrawChart]);
 
   if (isLoading) {
-    return (
-      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>LOADING...</span>
-      </div>
-    );
+    return <SkeletonCard rows={4} />;
   }
 
   if (isError || !seasonData) {
-    return (
-      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>季节性数据暂无</span>
-      </div>
-    );
+    return <EmptyState title="季节性数据暂无" description="请检查网络连接或稍后重试" size="sm" />;
   }
 
   const dayReturns = seasonData.day_of_week_returns ?? {};
@@ -1242,9 +1168,9 @@ const KlineChart = memo(function KlineChart({ symbol, period }: { symbol: string
     const chart = createQuantChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height: 480,
-      layout: { textColor: 'rgba(255,255,255,0.35)' },
-      grid: { vertLines: { color: 'rgba(255,255,255,0.06)' }, horzLines: { color: 'rgba(255,255,255,0.06)' } },
-      timeScale: { timeVisible: periodConfig.period === '1min' },
+      layout: { textColor: 'rgba(255,255,255,0.35)' } as any,
+      grid: { vertLines: { color: 'rgba(255,255,255,0.06)' }, horzLines: { color: 'rgba(255,255,255,0.06)' } } as any,
+      timeScale: { timeVisible: periodConfig.period === '1min' } as any,
     });
     chartRef.current = chart;
 
@@ -1350,7 +1276,7 @@ const IndicatorPanel = memo(function IndicatorPanel({ symbol }: { symbol: string
     const chart = createQuantChart(macdContainerRef.current, {
       width: macdContainerRef.current.clientWidth,
       height: 140,
-      timeScale: { timeVisible: false },
+      timeScale: { timeVisible: false } as any,
     });
     macdChartRef.current = chart;
 
@@ -1404,7 +1330,7 @@ const IndicatorPanel = memo(function IndicatorPanel({ symbol }: { symbol: string
     const chart = createQuantChart(rsiContainerRef.current, {
       width: rsiContainerRef.current.clientWidth,
       height: 120,
-      timeScale: { timeVisible: false },
+      timeScale: { timeVisible: false } as any,
     });
     rsiChartRef.current = chart;
 
@@ -1510,7 +1436,7 @@ export function StockDetailPage() {
   const [activeTab, setActiveTab] = useState<ChartTab>('kline');
   const [chartPeriod, setChartPeriod] = useState<TimePeriodKey>('3M');
 
-  const { data: quoteRaw, isLoading, isError } = useStockRealtime(symbol ?? '');
+  const { data: quoteRaw, isLoading, isError: _isError } = useStockRealtime(symbol ?? '');
   const quote = quoteRaw ? (quoteRaw as unknown as StockQuote) : null;
 
   const { quote: sseQuote } = useSSEQuote(symbol ?? '');
@@ -1528,9 +1454,7 @@ export function StockDetailPage() {
   if (isLoading) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#000000' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', color: 'rgba(255,255,255,0.20)', letterSpacing: '0.06em' }}>
-          LOADING...
-        </span>
+        <SkeletonCard rows={5} />
       </div>
     );
   }
@@ -1559,6 +1483,8 @@ export function StockDetailPage() {
       </div>
     );
   }
+
+  if (!liveQuote) return null;
 
   const isRise = liveQuote.change_pct >= 0;
   const priceClr = isRise ? '#FF1744' : '#00C853';

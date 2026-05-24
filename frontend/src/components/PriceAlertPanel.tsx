@@ -23,32 +23,6 @@ function saveAlerts(alerts: PriceAlert[]): void {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(alerts)); } catch { /* silent */ }
 }
 
-function playAlertSound(type: 'rise' | 'fall'): void {
-  try {
-    const ctx = new AudioContext();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.frequency.value = type === 'rise' ? 880 : 440;
-    gain.gain.setValueAtTime(0.3, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
-    osc.start(ctx.currentTime);
-    osc.stop(ctx.currentTime + 0.5);
-    osc.onended = () => { try { ctx.close(); } catch { /* already closed */ } };
-  } catch { /* silent */ }
-}
-
-async function sendBrowserNotification(alert: PriceAlert, price: number): Promise<void> {
-  if (Notification.permission !== 'granted') return;
-  try {
-    new Notification(`⚡ ${alert.symbol} 价格预警`, {
-      body: `当前价格 ${formatPrice(price)}，已${alert.condition === 'above' ? '超过' : '低于'} ${formatPrice(alert.threshold)}`,
-      tag: alert.id,
-    });
-  } catch { /* silent */ }
-}
-
 const CONDITION_LABELS: Record<PriceAlert['condition'], string> = {
   above: '价格高于',
   below: '价格低于',

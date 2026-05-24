@@ -125,17 +125,17 @@ class TTLCache:
         }
 
 
-rt_cache = TTLCache(maxsize=30000)
-kline_cache = TTLCache(maxsize=2000)
-sector_cache = TTLCache(maxsize=200)
-search_cache = TTLCache(maxsize=500)
-overview_cache = TTLCache(maxsize=20)
-breadth_cache = TTLCache(maxsize=20)
-backtest_result_cache = TTLCache(maxsize=1000)
-fundamental_cache = TTLCache(maxsize=1000)
-index_cache = TTLCache(maxsize=200)
-northbound_cache = TTLCache(maxsize=100)
-alert_cache = TTLCache(maxsize=500)
+rt_cache = TTLCache(maxsize=60000)
+kline_cache = TTLCache(maxsize=4000)
+sector_cache = TTLCache(maxsize=400)
+search_cache = TTLCache(maxsize=1000)
+overview_cache = TTLCache(maxsize=40)
+breadth_cache = TTLCache(maxsize=40)
+backtest_result_cache = TTLCache(maxsize=2000)
+fundamental_cache = TTLCache(maxsize=2000)
+index_cache = TTLCache(maxsize=400)
+northbound_cache = TTLCache(maxsize=200)
+alert_cache = TTLCache(maxsize=1000)
 
 CACHE_TTL = {
     "realtime": 3.0,

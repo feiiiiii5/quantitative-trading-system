@@ -54,7 +54,7 @@ export function usePnLWebSocket(positions: Array<{ symbol: string; entry_price: 
     cleanup();
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${protocol}//${window.location.host}/ws/pnl`;
+    const url = `${protocol}//${window.location.host}/api/ws/pnl`;
     const ws = new WebSocket(url);
 
     ws.onopen = () => {

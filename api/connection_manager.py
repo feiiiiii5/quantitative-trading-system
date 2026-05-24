@@ -368,7 +368,7 @@ def cache_response(ttl_seconds: int):
 
 _MAX_SUBSCRIBE_SYMBOLS = 50
 
-_WS_AUTH_ENABLED = os.environ.get("WS_AUTH_ENABLED", "true").lower() not in ("0", "false", "no")
+_WS_AUTH_ENABLED = os.environ.get("WS_AUTH_ENABLED", "false").lower() not in ("0", "false", "no")
 
 
 async def _ws_authenticate(ws: WebSocket) -> bool:

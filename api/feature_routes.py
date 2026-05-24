@@ -834,7 +834,6 @@ async def optimize_portfolio(request: Request):
         min_len = min(len(v) for v in price_data.values())
         aligned_data = {sym: v[-min_len:] for sym, v in price_data.items()}
 
-        import pandas as pd
         prices_df = pd.DataFrame(aligned_data)
 
         mpt = ModernPortfolioTheory(
@@ -888,6 +887,7 @@ async def get_efficient_frontier(request: Request):
 
         n_points = _clamp(n_points, 10, 100)
 
+        import pandas as pd
         from core.data_fetcher import get_fetcher
         from core.portfolio_theory import ModernPortfolioTheory
 
@@ -943,7 +943,7 @@ async def get_efficient_frontier(request: Request):
                     "volatility": round(max_sharpe.expected_volatility, 4),
                     "sharpe_ratio": round(max_sharpe.sharpe_ratio, 4),
                 } if max_sharpe.is_valid else None,
-                "min_volatility": {
+                "min_variance": {
                     "weights": {
                         sym: round(w, 4) for sym, w in min_vol.weights.items()
                     },

@@ -65,7 +65,7 @@ describe('createQuantChart', () => {
 
   it('merges user options into defaults', () => {
     const container = document.createElement('div');
-    createQuantChart(container, { crosshair: { mode: 1 } });
+    createQuantChart(container, { crosshair: { mode: 1 } as any });
     expect(createChart).toHaveBeenCalledWith(
       container,
       expect.objectContaining({

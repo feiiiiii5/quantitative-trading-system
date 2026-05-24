@@ -1,5 +1,6 @@
 import { memo, useCallback } from 'react';
 import { useCanvas } from '@/hooks/useCanvas';
+import { safeMin, safeMax } from '@/utils/format';
 
 interface VolatilityConeProps {
   dates: string[];
@@ -18,8 +19,8 @@ export const VolatilityCone = memo(function VolatilityCone({ dates, historical, 
     const ch = h - pad.top - pad.bottom;
     const allVals = [...historical, ...implied].filter(v => isFinite(v));
     if (allVals.length === 0) return;
-    const minV = Math.min(...allVals) * 0.9;
-    const maxV = Math.max(...allVals) * 1.1;
+    const minV = safeMin(allVals) * 0.9;
+    const maxV = safeMax(allVals) * 1.1;
     const range = maxV - minV || 1;
 
     ctx.strokeStyle = 'rgba(255,255,255,0.03)';

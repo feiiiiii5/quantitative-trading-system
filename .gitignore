@@ -22,3 +22,4 @@ target/
 /package.json
 /package-lock.json
 .trae/
+*.png
