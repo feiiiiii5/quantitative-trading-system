@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "generated"))
 
 from ai_engine_pb2 import (
     AnomalyAlert,
+    AnomalyStreamRequest,
     FactorMiningRequest,
     FactorMiningResponse,
     FactorResult,
@@ -244,7 +245,7 @@ class AIEngineServicer(AIEngineServiceServicer):
                     timestamp_ns=time.time_ns(),
                 )
 
-        except Exception as e:
+        except Exception:
             logger.exception("StreamAnomalies failed")
 
 

@@ -548,15 +548,17 @@ class AdaptiveStrategyEngine:
 
         regimes = classify_market_regime(df)
 
-        c = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
-        h = pd.to_numeric(df["high"], errors="coerce").dropna().values.astype(float)
-        low_arr = pd.to_numeric(df["low"], errors="coerce").dropna().values.astype(float)
-        opens = pd.to_numeric(df["open"], errors="coerce").dropna().values.astype(float) if "open" in df.columns else c
-        dates_col = df["date"].values if "date" in df.columns else np.arange(len(c))
+        price_cols = [col for col in ["close", "high", "low"] if col in df.columns]
+        work_df = df.dropna(subset=price_cols).reset_index(drop=True) if price_cols else df
+        c = pd.to_numeric(work_df["close"], errors="coerce").fillna(0).values.astype(float)
+        h = pd.to_numeric(work_df["high"], errors="coerce").fillna(0).values.astype(float)
+        low_arr = pd.to_numeric(work_df["low"], errors="coerce").fillna(0).values.astype(float)
+        opens = pd.to_numeric(work_df["open"], errors="coerce").fillna(0).values.astype(float) if "open" in work_df.columns else c
+        dates_col = work_df["date"].values if "date" in work_df.columns else np.arange(len(c))
         atr_full = calc_atr(h, low_arr, c, period=14)
         chandelier_long, chandelier_short = self._calc_chandelier(h, low_arr, c, atr_full)
-        volumes = pd.to_numeric(df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in df.columns else None
-        amounts_col = pd.to_numeric(df["amount"], errors="coerce").dropna().values.astype(float) if "amount" in df.columns else None
+        volumes = pd.to_numeric(work_df["volume"], errors="coerce").fillna(0).values.astype(float) if "volume" in work_df.columns else None
+        amounts_col = pd.to_numeric(work_df["amount"], errors="coerce").fillna(0).values.astype(float) if "amount" in work_df.columns else None
 
         strategy_instances = {}
         for regime, alloc in STRATEGY_ALLOCATION.items():
@@ -751,7 +753,7 @@ class AdaptiveStrategyEngine:
                                 if max_shares_by_amount > 0 and sell_shares > max_shares_by_amount:
                                     sell_shares = max_shares_by_amount
 
-                    sell_amount = sell_shares * fill_price
+                    sell_shares * fill_price
                     date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
                     result = self._record_trade(
                         trades, "sell", fill_price, sell_shares,
@@ -945,7 +947,7 @@ class AdaptiveStrategyEngine:
             ds = str(d)[:10] if hasattr(d, "__str__") else str(d)[:10]
             dates_list.append(ds)
 
-        initial_equity = equity_curve[0] if equity_curve else 1.0
+        equity_curve[0] if equity_curve else 1.0
         eq_arr = np.array(equity_curve)
         peak_arr = np.maximum.accumulate(eq_arr)
         drawdown_curve = ((peak_arr - eq_arr) / np.where(peak_arr > 0, peak_arr, 1) * 100).tolist()
@@ -1041,7 +1043,7 @@ class AdaptiveStrategyEngine:
             dates_out = dates_list
 
         kline_with_signals = []
-        vols = pd.to_numeric(df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in df.columns else np.zeros(len(c))
+        vols = pd.to_numeric(work_df["volume"], errors="coerce").fillna(0).values.astype(float) if "volume" in work_df.columns else np.zeros(len(c))
         for idx in range(len(c)):
             item = {
                 "date": dates_list[idx] if idx < len(dates_list) else "",

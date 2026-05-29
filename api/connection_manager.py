@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -16,10 +17,10 @@ from fastapi import Request, WebSocket
 from fastapi.responses import JSONResponse, Response
 
 from api.auth import decode_token
+from core.data_fetcher import SmartDataFetcher
 from core.database import OptimizedTTLCache
 from core.market_hours import MarketHours
 from core.smart_alerts import get_smart_alert_engine
-from core.data_fetcher import SmartDataFetcher
 
 logger = logging.getLogger(__name__)
 
@@ -326,7 +327,11 @@ def cache_response(ttl_seconds: int):
                         "ETag": f'"{etag}"',
                     },
                 )
-            result = await func(request, *args, **kwargs)
+            func_params = inspect.signature(func).parameters
+            call_kwargs = dict(kwargs)
+            if 'request' in func_params:
+                call_kwargs['request'] = request
+            result = await func(*args, **call_kwargs)
             if isinstance(result, Response):
                 result.headers["Cache-Control"] = f"max-age={ttl_seconds}"
                 result.headers["X-Cache"] = "MISS"
@@ -362,6 +367,14 @@ def cache_response(ttl_seconds: int):
                     },
                 )
             return result
+
+        wrapper.__wrapped__ = func
+        sig = inspect.signature(func)
+        params = list(sig.parameters.values())
+        has_request = any(p.name == 'request' for p in params)
+        if not has_request:
+            params.insert(0, inspect.Parameter('request', inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Request))
+        wrapper.__signature__ = sig.replace(parameters=params)
         return wrapper
     return decorator
 

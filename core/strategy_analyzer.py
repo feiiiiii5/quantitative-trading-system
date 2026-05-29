@@ -1,26 +1,22 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any
-
-import numpy as np
-import pandas as pd
+from dataclasses import dataclass
+from enum import StrEnum
 
 from core.strategy_schema import (
     AssetClass,
     MarketType,
-    StrategyDefinition,
-    StopLossType,
-    TakeProfitType,
     PositionSizing,
+    StopLossType,
+    StrategyDefinition,
+    TakeProfitType,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class MarketRegime(str, Enum):
+class MarketRegime(StrEnum):
     BULL_TREND = "bull_trend"
     BEAR_TREND = "bear_trend"
     HIGH_VOL_CHOP = "high_vol_chop"
@@ -127,7 +123,6 @@ _REGIME_PERF_TEMPLATES: dict[MarketType, dict[MarketRegime, tuple[float, float, 
 
 
 def analyze_strategy(definition: StrategyDefinition, backtest_trades: int = 0, backtest_period_years: float = 0.0) -> StrategyAnalysis:
-    meta = definition.strategy_meta
     n_params = len(definition.parameters)
     edge = _analyze_edge(definition, n_params, backtest_trades, backtest_period_years)
     deps = _analyze_indicator_dependencies(definition)

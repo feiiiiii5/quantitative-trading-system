@@ -93,12 +93,23 @@ class BlackLittermanModel:
         omega: K x K — view uncertainty matrix
         """
         tau_sigma = self.tau * sigma
-        tau_sigma_inv = np.linalg.inv(tau_sigma)
+        try:
+            tau_sigma_inv = np.linalg.inv(tau_sigma)
+        except np.linalg.LinAlgError:
+            tau_sigma_inv = np.linalg.pinv(tau_sigma)
 
-        posterior_cov_inv = tau_sigma_inv + pick_matrix.T @ np.linalg.inv(omega) @ pick_matrix
-        posterior_cov = np.linalg.inv(posterior_cov_inv)
+        try:
+            omega_inv = np.linalg.inv(omega)
+        except np.linalg.LinAlgError:
+            omega_inv = np.linalg.pinv(omega)
 
-        posterior_returns = posterior_cov @ (tau_sigma_inv @ pi + pick_matrix.T @ np.linalg.inv(omega) @ view_returns)
+        posterior_cov_inv = tau_sigma_inv + pick_matrix.T @ omega_inv @ pick_matrix
+        try:
+            posterior_cov = np.linalg.inv(posterior_cov_inv)
+        except np.linalg.LinAlgError:
+            posterior_cov = np.linalg.pinv(posterior_cov_inv)
+
+        posterior_returns = posterior_cov @ (tau_sigma_inv @ pi + pick_matrix.T @ omega_inv @ view_returns)
         posterior_cov_sum = sigma + posterior_cov
 
         return posterior_returns, posterior_cov_sum

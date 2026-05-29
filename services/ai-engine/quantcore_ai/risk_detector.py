@@ -73,10 +73,7 @@ class AIRiskDetector:
         if returns.empty:
             return 0.0
 
-        if isinstance(returns, pd.DataFrame):
-            portfolio_returns = returns.mean(axis=1)
-        else:
-            portfolio_returns = returns
+        portfolio_returns = returns.mean(axis=1) if isinstance(returns, pd.DataFrame) else returns
 
         clean = portfolio_returns.dropna()
         if len(clean) < _MIN_DATA_POINTS:
@@ -215,10 +212,7 @@ class AIRiskDetector:
             impact = 0.0
             for symbol, weight in positions.items():
                 matching = [j for j, fn in enumerate(factor_names) if fn.lower() in symbol.lower() or symbol.lower() in fn.lower()]
-                if matching:
-                    factor_impact = sum(sim[j] for j in matching) / len(matching)
-                else:
-                    factor_impact = float(np.mean(sim))
+                factor_impact = sum(sim[j] for j in matching) / len(matching) if matching else float(np.mean(sim))
                 impact += weight * factor_impact
             portfolio_impacts[i] = impact
 
@@ -258,7 +252,7 @@ class AIRiskDetector:
         if n < 2 * min_length:
             return []
 
-        cumsum = np.cumsum(returns)
+        np.cumsum(returns)
         change_points: list[int] = []
 
         threshold = np.std(returns) * 2.0

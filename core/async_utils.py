@@ -3,7 +3,7 @@ import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 try:
     import orjson
@@ -48,7 +48,7 @@ class TTLCache:
         self._hits = 0
         self._misses = 0
 
-    async def get(self, key: str) -> Optional[Any]:
+    async def get(self, key: str) -> Any | None:
         async with self._lock:
             entry = self._store.get(key)
             if entry is None:
@@ -63,14 +63,17 @@ class TTLCache:
             self._hits += 1
             return entry.value
 
-    def get_sync(self, key: str) -> Optional[Any]:
+    def get_sync(self, key: str) -> Any | None:
         entry = self._store.get(key)
         if entry is None:
+            self._misses += 1
             return None
         if time.monotonic() > entry.expires_at:
             del self._store[key]
+            self._misses += 1
             return None
         entry.hit_count += 1
+        self._hits += 1
         return entry.value
 
     async def set(self, key: str, value: Any, ttl: float):

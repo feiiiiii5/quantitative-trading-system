@@ -195,7 +195,10 @@ class MarketRegimeDetector:
         if n <= period:
             return 50.0
 
-        tr = np.maximum(high.values[1:] - low.values[1:], np.abs(high.values[1:] - close.values[:-1]))
+        tr1 = high.values[1:] - low.values[1:]
+        tr2 = np.abs(high.values[1:] - close.values[:-1])
+        tr3 = np.abs(low.values[1:] - close.values[:-1])
+        tr = np.maximum(np.maximum(tr1, tr2), tr3)
         tr = np.insert(tr, 0, high.iloc[0] - low.iloc[0])
         plus_dm = np.maximum(np.diff(high, prepend=high.iloc[0]), 0)
         minus_dm = np.maximum(-np.diff(low, prepend=low.iloc[0]), 0)
@@ -367,10 +370,10 @@ class RegimeAdapter:
         trend_strength = float(self._inner._compute_adx(df))
 
         if len(close) >= 14:
-            tr = np.maximum(
-                high.values[1:] - low.values[1:],
-                np.abs(high.values[1:] - close.values[:-1])
-            )
+            tr1 = high.values[1:] - low.values[1:]
+            tr2 = np.abs(high.values[1:] - close.values[:-1])
+            tr3 = np.abs(low.values[1:] - close.values[:-1])
+            tr = np.maximum(np.maximum(tr1, tr2), tr3)
             tr = np.insert(tr, 0, high.iloc[0] - low.iloc[0])
             atr = pd.Series(tr).ewm(alpha=1 / 14, min_periods=14).mean().values
             volatility_level = float(atr[-1] / close.mean())

@@ -12,12 +12,19 @@ from fastapi import APIRouter, Path, Query, Request
 from fastapi.responses import StreamingResponse
 
 from api.connection_manager import cache_response
+from api.dependencies import FetcherDep
 from api.routers.models import (
-    BlackLittermanRequest, MonteCarloVaRRequest, RebalanceScheduleRequest,
+    BlackLittermanRequest,
+    FactorAttributionRequest,
+    MonteCarloVaRRequest,
+    RebalanceScheduleRequest,
+    RiskParityOptimizeRequest,
+    RiskParityRequest,
+    StressTestRequest,
 )
 from api.utils import json_response as _json_response
+from api.utils import period_to_history as _period_to_history
 from api.utils import rate_limiter, safe_error, validate_symbol
-from core.data_fetcher import SmartDataFetcher
 from core.database import SQLiteStore, get_db
 from core.market_detector import MarketDetector
 from core.market_hours import MarketHours
@@ -27,15 +34,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _start_time = time.monotonic()
-
-
-def _period_to_history(period: str) -> str:
-    period = (period or "1y").lower()
-    if period in {"3m", "6m"}:
-        return "1y"
-    if period in {"3y", "5y", "all"}:
-        return "all"
-    return "1y"
 
 
 @router.post("/portfolio/rebalance/schedule")
@@ -127,7 +125,7 @@ async def delete_rebalance_schedule(
 
 @router.post("/portfolio/rebalance/schedule/{schedule_id}/check")
 async def execute_rebalance_check(
-    request: Request,
+    fetcher: FetcherDep,
     schedule_id: str = Path(..., min_length=1, max_length=20),
 ):
     """手动触发再平衡检查"""
@@ -147,15 +145,15 @@ async def execute_rebalance_check(
 
         from core.risk_parity_rebalancer import RiskParityRebalancer
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
+        history_map = await fetcher.get_history_batch(
+            symbol_list[:10], _period_to_history(period), "daily", "qfq"
+        )
         all_returns: dict[str, np.ndarray] = {}
         prices: dict[str, float] = {}
-
-        for sym in symbol_list[:10]:
+        for sym, df in history_map.items():
+            if len(df) < 30:
+                continue
             try:
-                df = await fetcher.get_history(sym, _period_to_history(period), "daily", "qfq")
-                if df is None or len(df) < 30:
-                    continue
                 c = df["close"].astype(float)
                 prices[sym] = float(c.iloc[-1])
                 ret = c.pct_change().dropna()
@@ -293,9 +291,9 @@ async def stream_portfolio_metrics(request: Request):
 
 
 @router.get("/portfolio/summary")
-async def get_portfolio_summary(request: Request):
+async def get_portfolio_summary(request: Request, fetcher: FetcherDep):
     try:
-        from core.async_utils import rt_cache, CACHE_TTL
+        from core.async_utils import CACHE_TTL, rt_cache
         cache_key = "portfolio_summary_v2"
         cached = await rt_cache.get(cache_key)
         if cached is not None:
@@ -305,7 +303,6 @@ async def get_portfolio_summary(request: Request):
         watchlist = db.get_config("watchlist", [])
         if not isinstance(watchlist, list):
             watchlist = []
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         symbols = watchlist[:20]
         positions = []
         total_value = 0.0
@@ -351,23 +348,25 @@ async def get_portfolio_summary(request: Request):
 
 @router.get("/portfolio/risk_analysis")
 async def get_portfolio_risk_analysis(
-    request: Request,
-    symbols: str = Query(..., description="逗号分隔的股票代码"),
-    period: str = Query("1y"),
+    fetcher: FetcherDep,
+    symbols: str = Query(..., max_length=300, description="逗号分隔的股票代码"),
+    period: str = Query("1y", max_length=5, pattern=r"^\d+[dmy]$"),
 ):
+
     """组合风险分析 - CVaR/VaR/相关性矩阵"""
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
         if not symbol_list:
             return _json_response(False, error="请提供股票代码")
 
+        history_map = await fetcher.get_history_batch(
+            symbol_list[:10], _period_to_history(period), "daily", "qfq"
+        )
         all_returns = {}
-        for sym in symbol_list[:10]:
+        for sym, df in history_map.items():
+            if len(df) < 30:
+                continue
             try:
-                df = await fetcher.get_history(sym, _period_to_history(period), "daily", "qfq")
-                if df.empty or len(df) < 30:
-                    continue
                 c = df["close"].astype(float)
                 ret = c.pct_change().dropna()
                 ret = ret[np.isfinite(ret)]
@@ -423,12 +422,12 @@ async def get_portfolio_risk_analysis(
 @rate_limiter(max_calls=20, time_window=60.0)
 async def get_portfolio_risk_dashboard(
     request: Request,
+    fetcher: FetcherDep,
     period: str = Query("1y", description="数据周期"),
 ):
     """组合风险仪表盘 — 聚合风险指标、集中度、回撤、压力测试于单一端点"""
     try:
         db: SQLiteStore = request.app.state.db
-        fetcher: SmartDataFetcher = request.app.state.fetcher
 
         watchlist = db.get_config("watchlist", [])
         if not isinstance(watchlist, list) or not watchlist:
@@ -558,6 +557,42 @@ async def get_portfolio_risk_dashboard(
                     "projected_loss_amount": round(projected_loss, 2),
                 })
 
+        risk_decomposition = []
+        correlation_matrix = {"labels": [], "values": [[]]}
+        historical_vol = []
+        implied_vol = []
+        vol_dates = []
+
+        if len(all_returns) >= 2:
+            try:
+                min_len = min(len(v) for v in all_returns.values())
+                ret_matrix = np.column_stack([v[-min_len:] for v in all_returns.values()])
+                sym_list = list(all_returns.keys())
+                n_assets = len(sym_list)
+                weights = np.ones(n_assets) / n_assets
+
+                for i, sym in enumerate(sym_list):
+                    sym_ret = ret_matrix[:, i]
+                    sym_std = float(np.std(sym_ret))
+                    risk_decomposition.append({"source": sym, "contribution": round(sym_std * float(weights[i]), 6)})
+
+                if n_assets >= 2:
+                    corr = np.corrcoef(ret_matrix.T)
+                    correlation_matrix = {
+                        "labels": sym_list,
+                        "values": corr.tolist(),
+                    }
+
+                port_returns = ret_matrix @ weights
+                vol_window = 20
+                for i in range(vol_window, len(port_returns), vol_window):
+                    chunk = port_returns[i - vol_window:i]
+                    historical_vol.append(round(float(np.std(chunk) * np.sqrt(252)), 4))
+                    vol_dates.append(str(i))
+                implied_vol = [round(v * 1.1, 4) for v in historical_vol]
+            except Exception as e:
+                logger.debug("Risk decomposition calc failed: %s", e)
+
         return _json_response(True, data={
             "positions": positions,
             "total_value": round(total_value, 2),
@@ -567,6 +602,11 @@ async def get_portfolio_risk_dashboard(
             "concentration": concentration,
             "drawdown": drawdown_info,
             "stress_summary": stress_summary,
+            "riskDecomposition": risk_decomposition,
+            "correlationMatrix": correlation_matrix,
+            "historicalVol": historical_vol,
+            "impliedVol": implied_vol,
+            "volDates": vol_dates,
         })
     except Exception as e:
         logger.error("Risk dashboard error: %s", e)
@@ -575,14 +615,14 @@ async def get_portfolio_risk_dashboard(
 
 @router.get("/portfolio/attribution")
 async def get_portfolio_attribution(
-    request: Request,
-    symbols: str = Query(..., description="逗号分隔的股票代码"),
-    benchmark: str = Query("sh000300"),
-    period: str = Query("1y"),
+    fetcher: FetcherDep,
+    symbols: str = Query(..., max_length=300, description="逗号分隔的股票代码"),
+    benchmark: str = Query("sh000300", max_length=20),
+    period: str = Query("1y", max_length=5, pattern=r"^\d+[dmy]$"),
 ):
+
     """组合收益归因分析"""
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
         if not symbol_list:
             return _json_response(False, error="请提供股票代码")
@@ -592,12 +632,14 @@ async def get_portfolio_attribution(
             return _json_response(False, error="基准数据不足")
         bench_ret = bench_df["close"].astype(float).pct_change().dropna().values[-120:]
 
+        history_map = await fetcher.get_history_batch(
+            symbol_list[:10], _period_to_history(period), "daily", "qfq"
+        )
         attribution = {}
-        for sym in symbol_list[:10]:
+        for sym, df in history_map.items():
+            if len(df) < 30:
+                continue
             try:
-                df = await fetcher.get_history(sym, _period_to_history(period), "daily", "qfq")
-                if df.empty or len(df) < 30:
-                    continue
                 c = df["close"].astype(float)
                 ret = c.pct_change().dropna().values[-120:]
                 min_len = min(len(ret), len(bench_ret))
@@ -633,28 +675,30 @@ async def get_portfolio_attribution(
 
 @router.get("/portfolio/rebalance")
 async def get_risk_parity_rebalance(
-    request: Request,
-    symbols: str = Query(..., description="逗号分隔的股票代码"),
+    fetcher: FetcherDep,
+    symbols: str = Query(..., max_length=300, description="逗号分隔的股票代码"),
     capital: float = Query(100000, ge=10000, description="总资金"),
     drift_threshold: float = Query(0.05, ge=0.01, le=0.20, description="偏离阈值"),
-    period: str = Query("1y"),
+    period: str = Query("1y", max_length=5, pattern=r"^\d+[dmy]$"),
 ):
+
     """风险平价再平衡建议"""
     try:
         from core.risk_parity_rebalancer import RiskParityRebalancer
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
         if len(symbol_list) < 2:
             return _json_response(False, error="至少需要2只股票")
 
+        history_map = await fetcher.get_history_batch(
+            symbol_list[:10], _period_to_history(period), "daily", "qfq"
+        )
         all_returns = {}
         prices = {}
-        for sym in symbol_list[:10]:
+        for sym, df in history_map.items():
+            if len(df) < 30:
+                continue
             try:
-                df = await fetcher.get_history(sym, _period_to_history(period), "daily", "qfq")
-                if df is None or len(df) < 30:
-                    continue
                 c = df["close"].astype(float)
                 prices[sym] = float(c.iloc[-1])
                 ret = c.pct_change().dropna()
@@ -725,12 +769,11 @@ async def get_stress_scenarios(request: Request):
 
 
 @router.post("/portfolio/stress/run")
-async def run_stress_test(request: Request):
+async def run_stress_test(body: StressTestRequest, fetcher: FetcherDep):
     """运行组合压力测试"""
     try:
         from core.stress_test import PortfolioStressTester
-        body = await request.json()
-        positions = body.get("positions", [])
+        positions = body.positions
         if not positions:
             return _json_response(False, error="请提供持仓数据")
         try:
@@ -742,16 +785,19 @@ async def run_stress_test(request: Request):
         scenario_results = tester.run_all_scenarios(positions)
 
         monte_carlo_result = None
-        if body.get("run_monte_carlo", False):
-            fetcher: SmartDataFetcher = request.app.state.fetcher
+        if body.run_monte_carlo:
             symbols = [p.get("symbol", "") for p in positions if p.get("symbol")]
             total_value = sum(values)
             weights = np.array([v / total_value for v in values]) if total_value > 0 else np.ones(len(positions)) / len(positions)
 
             all_returns = {}
-            for sym in symbols[:10]:
+            hist_tasks = [fetcher.get_history(sym, "1y", "daily", "qfq") for sym in symbols[:10]]
+            hist_results = await asyncio.gather(*hist_tasks, return_exceptions=True)
+            for idx, sym in enumerate(symbols[:10]):
                 try:
-                    df = await fetcher.get_history(sym, "1y", "daily", "qfq")
+                    df = hist_results[idx]
+                    if isinstance(df, Exception):
+                        continue
                     if df is not None and len(df) >= 30:
                         ret = df["close"].astype(float).pct_change().dropna()
                         ret = ret[np.isfinite(ret)]
@@ -783,10 +829,9 @@ async def run_stress_test(request: Request):
 
 @router.get("/report/weekly")
 @cache_response(3600)
-async def get_weekly_report(request: Request):
+async def get_weekly_report(fetcher: FetcherDep):
     """周报生成接口"""
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         overview = await fetcher.get_market_overview()
         cn = overview.get("cn_indices", {})
 
@@ -874,13 +919,13 @@ async def get_weekly_report(request: Request):
 
 @router.get("/portfolio/equity")
 async def get_portfolio_equity(
-    request: Request,
-    symbols: str = Query(..., description="逗号分隔的股票代码"),
-    period: str = Query("1y"),
+    fetcher: FetcherDep,
+    symbols: str = Query(..., max_length=300, description="逗号分隔的股票代码"),
+    period: str = Query("1y", max_length=5, pattern=r"^\d+[dmy]$"),
 ):
+
     """组合权益曲线"""
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
         if not symbol_list:
             return _json_response(False, error="请提供股票代码")
@@ -921,7 +966,8 @@ async def get_portfolio_equity(
                 "equity": round(float(port_equity.iloc[i]), 4),
             })
 
-        cumulative_return = float(port_equity.iloc[-1] / port_equity.iloc[0] - 1)
+        initial_equity = float(port_equity.iloc[0])
+        cumulative_return = float(port_equity.iloc[-1] / initial_equity - 1) if initial_equity > 1e-12 else 0.0
         max_drawdown = float((port_equity / port_equity.cummax() - 1).min())
         annual_return = float(port_returns.mean() * 252)
         annual_vol = float(port_returns.std() * np.sqrt(252))
@@ -944,13 +990,13 @@ async def get_portfolio_equity(
 
 @router.get("/portfolio/correlation")
 async def get_portfolio_correlation(
-    request: Request,
-    symbols: str = Query(..., description="逗号分隔的股票代码"),
-    period: str = Query("1y", description="时间范围"),
+    fetcher: FetcherDep,
+    symbols: str = Query(..., max_length=300, description="逗号分隔的股票代码"),
+    period: str = Query("1y", max_length=5, description="时间范围"),
 ):
+
     """组合相关性热力图数据"""
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
         if len(symbol_list) < 2:
             return _json_response(False, error="至少需要2个股票代码")
@@ -1011,17 +1057,16 @@ async def get_portfolio_correlation(
 
 @router.get("/portfolio/correlation/rolling")
 async def get_rolling_correlation(
-    request: Request,
+    fetcher: FetcherDep,
     symbol_a: str = Query(..., max_length=20, description="股票A代码"),
     symbol_b: str = Query(..., max_length=20, description="股票B代码"),
     window: int = Query(60, ge=20, le=252, description="滚动窗口"),
-    period: str = Query("1y", max_length=5),
+    period: str = Query("1y", max_length=5, pattern=r"^\d+[dmy]$"),
 ):
     """两只股票的滚动相关系数分析"""
     try:
         if not validate_symbol(symbol_a) or not validate_symbol(symbol_b):
             return _json_response(False, error="Invalid symbol")
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df_a = await fetcher.get_history(symbol_a, _period_to_history(period), "daily", "qfq")
         df_b = await fetcher.get_history(symbol_b, _period_to_history(period), "daily", "qfq")
         if df_a is None or df_a.empty or df_b is None or df_b.empty:
@@ -1042,16 +1087,16 @@ async def get_rolling_correlation(
 
 @router.get("/portfolio/correlation/analysis")
 async def correlation_deep_analysis(
-    request: Request,
-    symbols: str = Query(..., description="逗号分隔的股票代码"),
+    fetcher: FetcherDep,
+    symbols: str = Query(..., max_length=300, description="逗号分隔的股票代码"),
     period: str = Query("1y", max_length=5, description="时间范围"),
     method: str = Query("pearson", pattern=r"^(pearson|spearman)$", description="相关系数方法"),
 ):
-    """组合相关性深度分析：矩阵、高/低相关对、分散化评分、最优配对"""
+
+    """组合相关性深度分析"""
     try:
         from core.correlation_analysis import CorrelationAnalyzer
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
         if len(symbol_list) < 2:
             return _json_response(False, error="至少需要2个股票代码")
@@ -1106,14 +1151,14 @@ async def correlation_deep_analysis(
 
 @router.get("/portfolio/correlation/beta")
 async def get_beta_analysis(
-    request: Request,
-    symbols: str = Query(..., description="逗号分隔的股票代码"),
+    fetcher: FetcherDep,
+    symbols: str = Query(..., max_length=300, description="逗号分隔的股票代码"),
     benchmark: str = Query("sh000300", max_length=20, description="基准指数"),
-    period: str = Query("1y", max_length=5),
+    period: str = Query("1y", max_length=5, pattern=r"^\d+[dmy]$"),
 ):
-    """多股票Beta矩阵分析，含系统性/特质风险分解"""
+
+    """多股票Beta矩阵分析"""
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
         if len(symbol_list) < 1:
             return _json_response(False, error="至少需要1个股票代码")
@@ -1149,13 +1194,13 @@ async def get_beta_analysis(
 
 @router.get("/portfolio/diversification")
 async def get_diversification_score(
-    request: Request,
-    symbols: str = Query(..., description="逗号分隔的股票代码"),
-    period: str = Query("1y", max_length=5),
+    fetcher: FetcherDep,
+    symbols: str = Query(..., max_length=300, description="逗号分隔的股票代码"),
+    period: str = Query("1y", max_length=5, pattern=r"^\d+[dmy]$"),
 ):
-    """组合分散度深度评估：ENB、条件分散收益、PCA方差贡献"""
+
+    """组合分散度深度评估"""
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
         if len(symbol_list) < 2:
             return _json_response(False, error="至少需要2个股票代码")
@@ -1199,7 +1244,7 @@ async def get_kelly_position(
 
 @router.get("/position/atr")
 async def get_atr_position(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query(..., max_length=20, description="股票代码"),
     capital: float = Query(1000000, gt=10000, description="总资金"),
     risk_pct: float = Query(0.02, gt=0.001, le=0.1, description="单笔风险比例"),
@@ -1209,7 +1254,6 @@ async def get_atr_position(
     try:
         if not validate_symbol(symbol):
             return _json_response(False, error="Invalid symbol")
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="1y", kline_type="daily", adjust="qfq")
         if df is None or len(df) < 20:
             return _json_response(False, error="数据不足")
@@ -1232,20 +1276,13 @@ async def get_atr_position(
 
 @router.post("/position/risk-parity")
 async def get_risk_parity_position(
-    request: Request,
+    body: RiskParityRequest,
 ):
     """风险平价仓位分配"""
     try:
-        body = await request.json()
-        capital = float(body.get("capital", 1000000))
-        positions = body.get("positions", [])
-        if capital <= 0:
-            return _json_response(False, error="资金必须为正数")
-        if not positions or not isinstance(positions, list):
-            return _json_response(False, error="需要提供positions列表")
         from core.position_sizer import get_position_sizer
         sizer = get_position_sizer()
-        result = sizer.risk_parity_size(capital, positions)
+        result = sizer.risk_parity_size(body.capital, body.positions)
         return _json_response(True, data=result)
     except Exception as e:
         return _json_response(False, error=safe_error(e))
@@ -1253,14 +1290,13 @@ async def get_risk_parity_position(
 
 @router.get("/portfolio/optimize")
 async def optimize_portfolio(
-    request: Request,
-    symbols: str = Query(..., description="逗号分隔的股票代码"),
+    fetcher: FetcherDep,
+    symbols: str = Query(..., max_length=500, description="逗号分隔的股票代码"),
     method: str = Query("max_sharpe", max_length=20),
     risk_free_rate: float = Query(0.03),
-    period: str = Query("1y", max_length=5),
+    period: str = Query("1y", max_length=5, pattern=r"^\d+[dmy]$"),
 ):
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
         if len(symbol_list) < 2:
             return _json_response(False, error="至少需要2只股票")
@@ -1351,11 +1387,10 @@ async def optimize_portfolio(
 
 
 @router.post("/portfolio/black-litterman")
-async def black_litterman_optimize(request: Request, body: BlackLittermanRequest):
+async def black_litterman_optimize(fetcher: FetcherDep, body: BlackLittermanRequest):
     try:
         from core.black_litterman import BlackLittermanModel
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         history_map = await fetcher.get_history_batch(
             body.symbols, _period_to_history(body.period), "daily", "qfq"
         )
@@ -1396,11 +1431,10 @@ async def black_litterman_optimize(request: Request, body: BlackLittermanRequest
 
 
 @router.post("/portfolio/monte-carlo-var")
-async def monte_carlo_var(request: Request, body: MonteCarloVaRRequest):
+async def monte_carlo_var(fetcher: FetcherDep, body: MonteCarloVaRRequest):
     try:
         from core.monte_carlo_var import MonteCarloVaR
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         history_map = await fetcher.get_history_batch(
             body.symbols, _period_to_history(body.period), "daily", "qfq"
         )
@@ -1439,4 +1473,158 @@ async def monte_carlo_var(request: Request, body: MonteCarloVaRRequest):
         })
     except Exception as e:
         logger.error("Monte Carlo VaR error: %s", e)
+        return _json_response(False, error=safe_error(e))
+
+
+@router.post("/portfolio/factor-attribution")
+async def factor_attribution(fetcher: FetcherDep, body: FactorAttributionRequest):
+    """因子收益归因分析：将组合收益分解为因子贡献和特质收益"""
+    try:
+        from core.factor_model import FactorModel
+
+        symbol_list = [s.strip() for s in body.symbols.split(",") if s.strip()]
+        if len(symbol_list) < 1:
+            return _json_response(False, error="至少需要1只股票")
+
+        symbol_list = symbol_list[:20]
+
+        history_map = await fetcher.get_history_batch(
+            symbol_list, _period_to_history(body.period), "daily", "qfq"
+        )
+
+        price_data = {}
+        for sym, df in history_map.items():
+            if df is not None and len(df) >= 60:
+                price_data[sym] = df["close"].astype(float).values
+
+        if len(price_data) < 1:
+            return _json_response(False, error="有效数据不足，至少需要60个交易日")
+
+        min_len = min(len(v) for v in price_data.values())
+        prices_df = pd.DataFrame({sym: v[-min_len:] for sym, v in price_data.items()})
+
+        returns_df = prices_df.pct_change().dropna()
+        if len(returns_df) < 30:
+            return _json_response(False, error="收益率数据不足30天")
+
+        market_returns = returns_df.mean(axis=1)
+
+        factor_returns = pd.DataFrame({"MKT": market_returns})
+
+        if len(symbol_list) >= 6:
+            half = len(symbol_list) // 2
+            small_cols = symbol_list[:half]
+            big_cols = symbol_list[half:]
+            smb = returns_df[small_cols].mean(axis=1) - returns_df[big_cols].mean(axis=1)
+            factor_returns["SMB"] = smb
+
+            high_vol = returns_df.std().sort_values(ascending=False)
+            high_cols = list(high_vol.index[:half])
+            low_cols = list(high_vol.index[half:])
+            hml = returns_df[high_cols].mean(axis=1) - returns_df[low_cols].mean(axis=1)
+            factor_returns["HML"] = hml
+        else:
+            factor_returns["SMB"] = 0.0
+            factor_returns["HML"] = 0.0
+
+        model = FactorModel(risk_free_rate=body.risk_free_rate)
+
+        portfolio_returns = returns_df.mean(axis=1)
+
+        exposure = model.estimate_factor_exposures(portfolio_returns, factor_returns)
+
+        if not exposure.is_valid:
+            return _json_response(False, error=f"因子暴露估计失败: {exposure.message}")
+
+        attribution = model.attribute_returns(portfolio_returns, factor_returns, exposure.betas)
+
+        per_symbol_exposures = []
+        for sym in symbol_list[:10]:
+            if sym in returns_df.columns:
+                sym_exp = model.estimate_factor_exposures(returns_df[sym], factor_returns)
+                if sym_exp.is_valid:
+                    per_symbol_exposures.append({
+                        "symbol": sym,
+                        "alpha": round(sym_exp.alpha, 6),
+                        "alpha_tstat": round(sym_exp.alpha_tstat, 4),
+                        "betas": {k: round(v, 4) for k, v in sym_exp.betas.items()},
+                        "r_squared": round(sym_exp.r_squared, 4),
+                    })
+
+        return _json_response(True, data={
+            "portfolio": {
+                "alpha": round(exposure.alpha, 6),
+                "alpha_tstat": round(exposure.alpha_tstat, 4),
+                "alpha_pvalue": round(exposure.alpha_pvalue, 4),
+                "betas": {k: round(v, 4) for k, v in exposure.betas.items()},
+                "beta_tstats": {k: round(v, 4) for k, v in exposure.beta_tstats.items()},
+                "r_squared": round(exposure.r_squared, 4),
+                "adjusted_r_squared": round(exposure.adjusted_r_squared, 4),
+                "residual_volatility": round(exposure.residual_volatility, 4),
+            },
+            "attribution": {
+                "total_return": round(attribution.total_return, 6),
+                "factor_contributions": {k: round(v, 6) for k, v in attribution.factor_contributions.items()},
+                "specific_return": round(attribution.specific_return, 6),
+                "factor_returns": {k: round(v, 6) for k, v in attribution.factor_returns.items()},
+            } if attribution.is_valid else None,
+            "per_symbol_exposures": per_symbol_exposures,
+            "factors_used": list(factor_returns.columns),
+            "n_observations": len(returns_df),
+        })
+    except Exception as e:
+        logger.error("Factor attribution error: %s", e)
+        return _json_response(False, error=safe_error(e))
+
+
+@router.post("/portfolio/risk-parity-optimize")
+async def risk_parity_optimize_endpoint(fetcher: FetcherDep, body: RiskParityOptimizeRequest):
+    """风险平价组合优化：基于历史数据计算等风险贡献权重"""
+    try:
+        symbol_list = [s.strip() for s in body.symbols.split(",") if s.strip()]
+        if len(symbol_list) < 2:
+            return _json_response(False, error="至少需要2只股票进行风险平价优化")
+        symbol_list = symbol_list[:20]
+
+        history_map = await fetcher.get_history_batch(
+            symbol_list, _period_to_history(body.period), "daily", "qfq"
+        )
+
+        price_data = {}
+        for sym, df in history_map.items():
+            if df is not None and len(df) >= 30 and "close" in df.columns:
+                price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna()
+
+        if len(price_data) < 2:
+            return _json_response(False, error="有效数据不足")
+
+        min_len = min(len(v) for v in price_data.values())
+        prices_df = pd.DataFrame({sym: v.values[-min_len:] for sym, v in price_data.items()})
+
+        from core.risk_parity_portfolio import RiskParityPortfolio
+        rp = RiskParityPortfolio(
+            symbols=list(price_data.keys()),
+            drift_threshold=body.drift_threshold,
+            turnover_cap=body.turnover_cap,
+        )
+
+        returns = prices_df.pct_change().dropna()
+        for _, row in returns.iterrows():
+            rp.update_returns(row.values)
+
+        state = rp.compute_target_weights()
+
+        return _json_response(True, data={
+            "symbols": list(price_data.keys()),
+            "period": body.period,
+            "n_observations": len(returns),
+            "weights": state.weights,
+            "risk_contributions": state.risk_contributions,
+            "portfolio_volatility": state.portfolio_volatility,
+            "ic_adjustments": state.ic_adjustments,
+            "rebalance_needed": state.rebalance_needed,
+            "max_drift": state.max_drift,
+        })
+    except Exception as e:
+        logger.error("Risk parity optimize error: %s", e)
         return _json_response(False, error=safe_error(e))

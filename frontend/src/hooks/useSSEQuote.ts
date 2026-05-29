@@ -39,6 +39,7 @@ export function useSSEQuote(symbol: string) {
       es.onerror = () => {
         es.close();
         setError('SSE connection lost');
+        if (reconnectTimer.current) clearTimeout(reconnectTimer.current);  // 清除旧定时器，防止并发重连
         reconnectTimer.current = setTimeout(() => {
           reconnectDelay.current = Math.min(reconnectDelay.current * 2, 30000);
           connect();

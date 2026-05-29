@@ -11,6 +11,14 @@ ROOT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _enable_per_ip_rate_limit_testing():
+    from api.middleware import PerIPRateLimitMiddleware
+    PerIPRateLimitMiddleware._testing = True
+    yield
+    PerIPRateLimitMiddleware._testing = False
+
+
 @pytest.fixture(scope="session")
 def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
     loop = asyncio.new_event_loop()

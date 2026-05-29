@@ -20,13 +20,13 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 def _validate_identifier(name: str, context: str = "identifier") -> None:
     if not _IDENTIFIER_RE.match(name):
         raise ValueError(
-            "Invalid %s: %r (must match [A-Za-z_][A-Za-z0-9_]*)" % (context, name)
+            f"Invalid {context}: {name!r} (must match [A-Za-z_][A-Za-z0-9_]*)"
         )
 
 
 def _validate_path(path: str) -> None:
     if ".." in path or path.startswith("/"):
-        raise ValueError("Invalid path: %r (must be relative, no parent traversal)" % path)
+        raise ValueError(f"Invalid path: {path!r} (must be relative, no parent traversal)")
 
 
 try:
@@ -75,20 +75,20 @@ class DuckDBAnalytics:
     def correlation_matrix(
         self, prices: pd.DataFrame, method: str = "pearson"
     ) -> pd.DataFrame | None:
+        safe_cols = []
+        for col in prices.columns:
+            if col == "date":
+                continue
+            _validate_identifier(col, context="column name")
+            safe_cols.append(col)
         if DUCKDB_AVAILABLE:
             try:
                 self.register_price_data(prices, "price_data")
-                safe_cols = []
-                for col in prices.columns:
-                    if col == "date":
-                        continue
-                    _validate_identifier(col, context="column name")
-                    safe_cols.append(col)
                 col_list = ", ".join(
-                    '"%s"' % col for col in safe_cols
+                    f'"{col}"' for col in safe_cols
                 )
                 result = self._conn.sql(
-                    "SELECT CORR_MATRIX(%s) FROM price_data" % col_list
+                    f"SELECT CORR_MATRIX({col_list}) FROM price_data"
                 ).fetchdf()
                 return result
             except Exception as e:
@@ -120,22 +120,19 @@ class DuckDBAnalytics:
             try:
                 self.register_price_data(prices, "price_data")
                 result = self._conn.sql(
-                    """
+                    f"""
                     SELECT date,
                            CORR(
-                               "%s_ret",
-                               "%s_ret"
-                           ) OVER (ORDER BY date ROWS BETWEEN %d PRECEDING AND CURRENT ROW) AS rolling_corr
+                               "{symbol_a}_ret",
+                               "{symbol_b}_ret"
+                           ) OVER (ORDER BY date ROWS BETWEEN {window - 1} PRECEDING AND CURRENT ROW) AS rolling_corr
                     FROM (
                         SELECT date,
-                               "%s" - LAG("%s") OVER (ORDER BY date) AS "%s_ret",
-                               "%s" - LAG("%s") OVER (ORDER BY date) AS "%s_ret"
+                               "{symbol_a}" - LAG("{symbol_a}") OVER (ORDER BY date) AS "{symbol_a}_ret",
+                               "{symbol_b}" - LAG("{symbol_b}") OVER (ORDER BY date) AS "{symbol_b}_ret"
                         FROM price_data
                     )
                     """
-                    % (symbol_a, symbol_b, window - 1,
-                       symbol_a, symbol_a, symbol_a,
-                       symbol_b, symbol_b, symbol_b)
                 ).fetchdf()
                 return result.set_index("date")["rolling_corr"]
             except Exception as e:
@@ -191,13 +188,13 @@ class DuckDBAnalytics:
         for col in agg_expressions:
             _validate_identifier(col, context="aggregation column")
         aggs = ", ".join(
-            "%s AS %s_agg" % (func, col)
+            f"{func} AS {col}_agg"
             for col, func in agg_expressions.items()
         )
-        sql = "SELECT %s, %s FROM %s" % (group_by, aggs, table_name)
+        sql = f"SELECT {group_by}, {aggs} FROM {table_name}"
         if where_clause:
-            sql += " WHERE %s" % where_clause
-        sql += " GROUP BY %s" % group_by
+            sql += f" WHERE {where_clause}"
+        sql += f" GROUP BY {group_by}"
         return self.query(sql)
 
     def run_parquet_analytics(
@@ -207,7 +204,7 @@ class DuckDBAnalytics:
             return None
         _validate_path(parquet_path)
         try:
-            self._conn.sql("SELECT * FROM read_parquet('%s')" % parquet_path).fetchdf()
+            self._conn.sql(f"SELECT * FROM read_parquet('{parquet_path}')").fetchdf()
             return self.query(sql)
         except Exception as e:
             logger.error("Parquet analytics failed: %s", e)
@@ -218,7 +215,7 @@ class DuckDBAnalytics:
             return None
         _validate_identifier(table_name, context="table_name")
         try:
-            return self._conn.sql("DESCRIBE %s" % table_name).fetchall()
+            return self._conn.sql(f"DESCRIBE {table_name}").fetchall()
         except Exception as e:
             logger.warning("DuckDB DESCRIBE failed (%s) for table %s", e, table_name)
             return None

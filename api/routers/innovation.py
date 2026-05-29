@@ -9,6 +9,7 @@ import pandas as pd
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
+from api.dependencies import FetcherDep
 from api.utils import json_response as _json_response
 from api.utils import safe_error
 
@@ -25,9 +26,8 @@ class SmartStoplossRequest(BaseModel):
 
 
 @router.get("/market/sentiment-radar")
-async def get_sentiment_radar(request: Request):
+async def get_sentiment_radar(fetcher: FetcherDep):
     try:
-        fetcher = request.app.state.fetcher
         signals = {}
 
         try:
@@ -107,7 +107,7 @@ async def get_sentiment_radar(request: Request):
 
 @router.get("/strategy/health-check")
 async def strategy_health_check(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query(..., max_length=20),
     days: int = Query(30, ge=7, le=90),
 ):
@@ -115,7 +115,6 @@ async def strategy_health_check(
         from core.backtest import BacktestEngine
         from core.strategies import STRATEGY_REGISTRY
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or len(df) < 60:
             return _json_response(False, error="数据不足")
@@ -152,9 +151,8 @@ async def strategy_health_check(
 
 
 @router.post("/risk/smart-stoploss")
-async def smart_stoploss(request: Request, body: SmartStoplossRequest):
+async def smart_stoploss(fetcher: FetcherDep, body: SmartStoplossRequest):
     try:
-        fetcher = request.app.state.fetcher
         current_price = body.current_price
         if current_price <= 0:
             rt = await fetcher.get_realtime(body.symbol)
@@ -167,9 +165,10 @@ async def smart_stoploss(request: Request, body: SmartStoplossRequest):
         if df is None or len(df) < 30:
             return _json_response(False, error="历史数据不足")
 
-        close = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
-        high = pd.to_numeric(df["high"], errors="coerce").dropna().values.astype(float) if "high" in df.columns else close
-        low = pd.to_numeric(df["low"], errors="coerce").dropna().values.astype(float) if "low" in df.columns else close
+        work_df = df.dropna(subset=["close", "high", "low"]).reset_index(drop=True) if all(c in df.columns for c in ["close", "high", "low"]) else df.dropna(subset=["close"]).reset_index(drop=True)
+        close = pd.to_numeric(work_df["close"], errors="coerce").fillna(0).values.astype(float)
+        high = pd.to_numeric(work_df["high"], errors="coerce").fillna(0).values.astype(float) if "high" in work_df.columns else close
+        low = pd.to_numeric(work_df["low"], errors="coerce").fillna(0).values.astype(float) if "low" in work_df.columns else close
 
         tr = np.maximum(high[1:] - low[1:], np.maximum(
             np.abs(high[1:] - close[:-1]),

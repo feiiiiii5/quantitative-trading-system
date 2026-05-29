@@ -55,7 +55,7 @@ class TestValidatePath:
 class TestDuckDBAnalyticsSecurity:
     @pytest.fixture()
     def analytics(self) -> None:
-        duckdb = pytest.importorskip("duckdb")
+        pytest.importorskip("duckdb")
         from core.duckdb_analytics import DuckDBAnalytics
         inst = DuckDBAnalytics()
         yield inst

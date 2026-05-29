@@ -72,7 +72,7 @@ class BlackLittermanIC:
                 prior_weights=market_weights.copy(),
             )
 
-        P = np.zeros((len(views), n))
+        P = np.zeros((len(views), n))  # noqa: N806
         q = np.zeros(len(views))
         omega = np.zeros((len(views), len(views)))
 
@@ -91,11 +91,11 @@ class BlackLittermanIC:
 
         omega_inv = np.linalg.inv(omega) if np.linalg.det(omega) != 0 else np.zeros_like(omega)
 
-        M = tau_cov_inv + P.T @ omega_inv @ P
+        M = tau_cov_inv + P.T @ omega_inv @ P  # noqa: N806
         try:
-            M_inv = np.linalg.inv(M)
+            M_inv = np.linalg.inv(M)  # noqa: N806
         except np.linalg.LinAlgError:
-            M_inv = np.linalg.pinv(M)
+            M_inv = np.linalg.pinv(M)  # noqa: N806
 
         posterior_returns = M_inv @ (tau_cov_inv @ pi + P.T @ omega_inv @ q)
         posterior_cov = M_inv + cov

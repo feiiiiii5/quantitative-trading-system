@@ -110,7 +110,7 @@ class TestAdaptiveFactorCombiner:
             max_weight=0.6,
             reweight_interval=1,
         )
-        rng = np.random.default_rng(42)
+        np.random.default_rng(42)
         for _ in range(20):
             scores = {"a": 1.0, "b": 0.0}
             combiner.update(scores, actual_return=0.01)

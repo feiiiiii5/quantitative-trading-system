@@ -161,7 +161,7 @@ async def fetch_all_a_stocks_async() -> list[dict]:
             with _all_a_stocks_lock:
                 _all_a_stocks_cache = data
                 _all_a_stocks_ts = now
-            logger.info("Fetched %s A-share stocks from Sina", len)
+            logger.info("Fetched %s A-share stocks from Sina", len(data))
             return data
 
         try:

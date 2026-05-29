@@ -45,11 +45,13 @@ class StrategySandbox:
         import math
         import datetime
 
-        safe_builtins = {
-            k: v for k, v in __builtins__.items()
-            if isinstance(__builtins__, dict) and k not in _BLOCKED_BUILTINS
-        }
-        if not isinstance(__builtins__, dict):
+        safe_builtins = {}
+        if isinstance(__builtins__, dict):
+            safe_builtins = {
+                k: v for k, v in __builtins__.items()
+                if k not in _BLOCKED_BUILTINS
+            }
+        else:
             import builtins as _builtins_mod
             safe_builtins = {
                 k: getattr(_builtins_mod, k)
@@ -130,13 +132,11 @@ class StrategySandbox:
                         f"Blocked builtin call: '{node.func.id}' at line {node.lineno}"
                     )
 
-            elif isinstance(node, ast.Attribute):
-                if isinstance(node.value, ast.Name):
-                    if node.value.id == "__builtins__" and node.attr in _BLOCKED_BUILTINS:
-                        errors.append(
-                            f"Blocked builtin access: __builtins__.{node.attr} "
-                            f"at line {node.lineno}"
-                        )
+            elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "__builtins__" and node.attr in _BLOCKED_BUILTINS:
+                errors.append(
+                        f"Blocked builtin access: __builtins__.{node.attr} "
+                        f"at line {node.lineno}"
+                    )
 
         if not errors and not self._has_entry_point(tree):
             warnings.append(

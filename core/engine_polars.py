@@ -225,14 +225,16 @@ class PolarsBacktestAccelerator:
         if df is None or len(df) < 2:
             return np.array([]), [], {}
 
-        n = len(df)
+        work_df = df.dropna(subset=["close"]).reset_index(drop=True)
+        close_arr = pd.to_numeric(work_df["close"], errors="coerce").fillna(0).values.astype(float)
+        high_arr = pd.to_numeric(work_df["high"], errors="coerce").fillna(0).values.astype(float) if "high" in work_df.columns else close_arr
+        low_arr = pd.to_numeric(work_df["low"], errors="coerce").fillna(0).values.astype(float) if "low" in work_df.columns else close_arr
+        volume_arr = pd.to_numeric(work_df["volume"], errors="coerce").fillna(0).values.astype(float) if "volume" in work_df.columns else np.zeros(len(close_arr))
+
+        n = len(close_arr)
         equity = np.ones(n) * initial_capital
         cash = np.full(n, initial_capital)
         trades: list[dict] = []
-        close_arr = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
-        high_arr = pd.to_numeric(df.get("high", close_arr), errors="coerce").dropna().values.astype(float) if "high" in df else close_arr
-        low_arr = pd.to_numeric(df.get("low", close_arr), errors="coerce").dropna().values.astype(float) if "low" in df else close_arr
-        volume_arr = pd.to_numeric(df.get("volume", np.zeros(n)), errors="coerce").dropna().values.astype(float) if "volume" in df else np.zeros(n)
 
         signal_bar_to_type = {}
         for sig in signals:

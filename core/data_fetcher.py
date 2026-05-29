@@ -18,7 +18,7 @@ import aiohttp
 import numpy as np
 import pandas as pd
 
-from core.database import SQLiteStore, OptimizedTTLCache, ThreadSafeLRU, get_db
+from core.database import OptimizedTTLCache, SQLiteStore, ThreadSafeLRU, get_db
 from core.market_detector import MarketDetector
 
 logger = logging.getLogger(__name__)
@@ -241,7 +241,7 @@ class RequestCoalescer:
                 self._pending[key].append(fut)
                 try:
                     return await asyncio.wait_for(fut, timeout=self._timeout)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     async with self._lock:
                         waiters = self._pending.get(key, [])
                         if fut in waiters:
@@ -654,7 +654,7 @@ class EastMoneySource:
         if market != "A":
             return None
         code = EastMoneySource._clean_symbol(symbol)
-        fields = "f43,f44,f45,f46,f47,f48,f57,f58,f60,f116,f117,f168,f169,f170"
+        fields = "f43,f44,f45,f46,f47,f48,f57,f58,f60,f116,f117,f168,f169,f170,f19,f20,f21,f22,f23,f24,f25,f26,f27,f28,f29,f30,f31,f32,f33,f34,f35,f36,f37,f38"
         url = f"{EastMoneySource.QUOTE_URL}?secid={EastMoneySource._secid(code, market)}&fields={fields}"
         text = await async_http_get(url, headers={"Referer": "https://finance.eastmoney.com"}, timeout=TIMEOUT_TIERS["realtime"])
         if not text:
@@ -666,6 +666,11 @@ class EastMoneySource:
                 return None
             price = EastMoneySource._num(data.get("f43"))
             last_close = EastMoneySource._num(data.get("f60"))
+            bid_prices = [EastMoneySource._num(data.get(f"f{19 + i * 2}")) for i in range(5)]
+            bid_volumes = [EastMoneySource._num(data.get(f"f{20 + i * 2}")) for i in range(5)]
+            ask_prices = [EastMoneySource._num(data.get(f"f{29 + i * 2}")) for i in range(5)]
+            ask_volumes = [EastMoneySource._num(data.get(f"f{30 + i * 2}")) for i in range(5)]
+            has_depth = any(v > 0 for v in bid_volumes) or any(v > 0 for v in ask_volumes)
             return {
                 "symbol": code,
                 "market": market,
@@ -682,6 +687,11 @@ class EastMoneySource:
                 "turnover_rate": EastMoneySource._num(data.get("f168")),
                 "total_market_cap": EastMoneySource._num(data.get("f116")),
                 "float_market_cap": EastMoneySource._num(data.get("f117")),
+                "bid_prices": bid_prices,
+                "bid_volumes": bid_volumes,
+                "ask_prices": ask_prices,
+                "ask_volumes": ask_volumes,
+                "has_depth": has_depth,
                 "timestamp": time.time(),
             }
         except (json.JSONDecodeError, TypeError, ValueError) as e:
@@ -839,22 +849,19 @@ class EastMoneySource:
     @staticmethod
     def simulate_level2_depth(current_price: float, volume: float,
                               avg_volume: float = 0, n_levels: int = 5) -> dict:
-        """基于1分钟K线模拟盘口深度（买一到买五/卖一到卖五）"""
         if current_price <= 0:
             return {"bids": [], "asks": []}
         tick = max(current_price * 0.001, 0.01)
         vol_ratio = (volume / avg_volume) if avg_volume > 0 else 1.0
         base_qty = max(volume * 0.05, 100)
-        rng = np.random.default_rng()
         bids = []
         asks = []
         for i in range(n_levels):
             bid_price = round(current_price - tick * (i + 1), 2)
             ask_price = round(current_price + tick * (i + 1), 2)
             depth_decay = 1.0 / (i + 1)
-            noise = rng.uniform(0.5, 1.5)
-            bid_qty = int(base_qty * depth_decay * noise * min(vol_ratio, 3.0))
-            ask_qty = int(base_qty * depth_decay * noise * min(vol_ratio, 3.0))
+            bid_qty = int(base_qty * depth_decay * min(vol_ratio, 3.0))
+            ask_qty = int(base_qty * depth_decay * min(vol_ratio, 3.0))
             bids.append({"price": bid_price, "quantity": bid_qty})
             asks.append({"price": ask_price, "quantity": ask_qty})
         return {"bids": bids, "asks": asks}
@@ -1470,10 +1477,7 @@ class SmartDataFetcher:
         inflight_key = f"rt:{cache_key}"
         fut = None
         async with _get_inflight_lock():
-            if inflight_key in _inflight_requests:
-                existing_fut = _inflight_requests[inflight_key]
-            else:
-                existing_fut = None
+            existing_fut = _inflight_requests.get(inflight_key)
             if existing_fut is None:
                 loop = asyncio.get_running_loop()
                 fut = loop.create_future()
@@ -1590,10 +1594,8 @@ class SmartDataFetcher:
         cached = _history_cache.get(cache_key)
         if cached is not None:
             if _history_cache.is_stale(cache_key):
-                try:
+                with contextlib.suppress(RuntimeError):
                     asyncio.create_task(self._refresh_history_cache(clean_symbol, market, kline_type, adjust, period, cache_key))
-                except RuntimeError:
-                    pass
             return cached
 
         db_df = self._db.load_kline_rows(clean_symbol, market, kline_type, adjust)
@@ -1605,10 +1607,7 @@ class SmartDataFetcher:
         fut = None
         should_fetch_direct = False
         async with _get_inflight_lock():
-            if inflight_key in _inflight_requests:
-                existing_fut = _inflight_requests[inflight_key]
-            else:
-                existing_fut = None
+            existing_fut = _inflight_requests.get(inflight_key)
             if existing_fut is None and len(_inflight_requests) >= _INFLIGHT_MAX:
                 should_fetch_direct = True
             elif existing_fut is None:
@@ -1728,8 +1727,8 @@ class SmartDataFetcher:
                 srcs = list(results.keys())
                 len_min = min(len(dfs[0]), len(dfs[1]))
                 if len_min > 0:
-                    close_a = pd.to_numeric(dfs[0]["close"].iloc[-len_min:], errors="coerce").dropna().values.astype(float)
-                    close_b = pd.to_numeric(dfs[1]["close"].iloc[-len_min:], errors="coerce").dropna().values.astype(float)
+                    close_a = pd.to_numeric(dfs[0]["close"].iloc[-len_min:], errors="coerce").fillna(0).values.astype(float)
+                    close_b = pd.to_numeric(dfs[1]["close"].iloc[-len_min:], errors="coerce").fillna(0).values.astype(float)
                     diff_pct = np.mean(np.abs(close_a - close_b) / np.maximum(close_a, 1e-8))
                     if diff_pct > 0.05:
                         price_cols = [c for c in ["open", "high", "low", "close"] if c in dfs[0].columns and c in dfs[1].columns]
@@ -1853,15 +1852,24 @@ class SmartDataFetcher:
         price = EastMoneySource._num((realtime_data or {}).get("price"))
         if price <= 0:
             return {"symbol": symbol, "bids": [], "asks": []}
+        bid_prices = (realtime_data or {}).get("bid_prices", [])
+        bid_volumes = (realtime_data or {}).get("bid_volumes", [])
+        ask_prices = (realtime_data or {}).get("ask_prices", [])
+        ask_volumes = (realtime_data or {}).get("ask_volumes", [])
+        has_depth = (realtime_data or {}).get("has_depth", False)
+        if has_depth and bid_prices and ask_prices:
+            bids = [{"price": float(bid_prices[i]), "volume": int(bid_volumes[i])} for i in range(min(5, len(bid_prices))) if bid_prices[i] > 0]
+            asks = [{"price": float(ask_prices[i]), "volume": int(ask_volumes[i])} for i in range(min(5, len(ask_prices))) if ask_prices[i] > 0]
+            return {"symbol": symbol, "bids": bids, "asks": asks, "timestamp": time.time()}
         tick = 0.01 if price < 1000 else 0.1
         volume = max(EastMoneySource._num((realtime_data or {}).get("volume")), 1000)
-        rng = np.random.default_rng(abs(hash(symbol)) % (2 ** 32))
-        base_sizes = np.maximum(rng.normal(volume / 500, volume / 2000, size=5), 100)
+        base_qty = max(volume * 0.05, 100)
         bids = []
         asks = []
         for i in range(5):
-            bids.append({"price": round(price - tick * (i + 1), 2), "volume": round(float(base_sizes[i]), 0)})
-            asks.append({"price": round(price + tick * (i + 1), 2), "volume": round(float(base_sizes[::-1][i]), 0)})
+            decay = 1.0 / (i + 1)
+            bids.append({"price": round(price - tick * (i + 1), 2), "volume": int(base_qty * decay)})
+            asks.append({"price": round(price + tick * (i + 1), 2), "volume": int(base_qty * decay)})
         return {"symbol": symbol, "bids": bids, "asks": asks, "timestamp": time.time()}
 
     async def get_market_overview(self) -> dict:
@@ -2074,7 +2082,7 @@ class SmartDataFetcher:
     async def get_batch_realtime_optimized(self, symbols: list[str]) -> dict[str, dict]:
         if not symbols:
             return {}
-        from core.async_utils import rt_cache, CACHE_TTL
+        from core.async_utils import CACHE_TTL, rt_cache
         cache_key = f"batch_rt_{','.join(sorted(symbols[:20]))}"
         cached = await rt_cache.get(cache_key)
         if cached is not None:
@@ -2125,7 +2133,7 @@ class SmartDataFetcher:
             return await self.get_realtime_batch(symbols)
 
     async def get_sector_heatmap(self) -> dict:
-        from core.async_utils import sector_cache, CACHE_TTL
+        from core.async_utils import CACHE_TTL, sector_cache
         cache_key = "sector_heatmap"
         cached = await sector_cache.get(cache_key)
         if cached is not None:
@@ -2153,7 +2161,7 @@ class SmartDataFetcher:
             return {"items": [], "timestamp": time.time()}
 
     async def get_market_breadth(self) -> dict:
-        from core.async_utils import breadth_cache, CACHE_TTL
+        from core.async_utils import CACHE_TTL, breadth_cache
         cache_key = "market_breadth"
         cached = await breadth_cache.get(cache_key)
         if cached is not None:

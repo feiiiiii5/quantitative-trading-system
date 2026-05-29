@@ -1,4 +1,4 @@
-import { memo, type ReactNode, type CSSProperties } from 'react';
+import { Fragment, memo, type ReactNode, type CSSProperties } from 'react';
 import { useVirtualScroll } from '@/hooks/useVirtualScroll';
 
 interface VirtualListProps<T> {
@@ -27,7 +27,7 @@ export const VirtualList = memo(function VirtualList<T>({
       style={{ flex: 1, overflow: 'auto', position: 'relative' }}
     >
       <div style={{ height: totalHeight, position: 'relative' }}>
-        {visibleItems.map((idx) => renderItem(items[idx]!, idx, getItemStyle(idx)))}
+        {visibleItems.map((idx) => <Fragment key={idx}>{renderItem(items[idx]!, idx, getItemStyle(idx))}</Fragment>)}
       </div>
     </div>
   );

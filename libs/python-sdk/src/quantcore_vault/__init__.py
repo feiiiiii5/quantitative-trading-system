@@ -44,7 +44,7 @@ class VaultClient:
                 self._session = requests.Session()
                 self._session.headers.update({"X-Vault-Token": self._token})
             except ImportError:
-                raise RuntimeError("requests library required for Vault client")
+                raise RuntimeError("requests library required for Vault client") from None
         return self._session
 
     def _url(self, path: str) -> str:

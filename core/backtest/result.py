@@ -27,7 +27,7 @@ def _vectorized_equity_curve(
     equity_curve[0] = equity
 
     exit_pnl_map: dict[int, float] = {}
-    for entry, exit_bar, pnl in zip(entry_indices, exit_indices, pnl_list, strict=True):
+    for _entry, exit_bar, pnl in zip(entry_indices, exit_indices, pnl_list, strict=True):
         if exit_bar < 0 or exit_bar > n_bars:
             continue
         exit_pnl_map[exit_bar] = exit_pnl_map.get(exit_bar, 0.0) + pnl
@@ -172,11 +172,11 @@ class BacktestResult:
         """Get a concise performance summary for strategy comparison."""
         return {
             "strategy": self.strategy_name,
-            "total_return_pct": round(self.total_return * 100, 2),
-            "annual_return_pct": round(self.annual_return * 100, 2),
+            "total_return_pct": round(self.total_return, 2),
+            "annual_return_pct": round(self.annual_return, 2),
             "sharpe": round(self.sharpe_ratio, 2),
-            "max_drawdown_pct": round(self.max_drawdown * 100, 2),
-            "win_rate_pct": round(self.win_rate * 100, 1),
+            "max_drawdown_pct": round(self.max_drawdown, 2),
+            "win_rate_pct": round(self.win_rate, 1),
             "total_trades": self.total_trades,
             "calmar": round(self.calmar_ratio, 2),
             "sortino": round(self.sortino_ratio, 2),
@@ -191,8 +191,8 @@ class BacktestResult:
             "this": self.get_performance_summary(),
             "other": other.get_performance_summary(),
             "sharpe_diff": round(self.sharpe_ratio - other.sharpe_ratio, 2),
-            "return_diff_pct": round((self.annual_return - other.annual_return) * 100, 2),
-            "drawdown_diff_pct": round((self.max_drawdown - other.max_drawdown) * 100, 2),
+            "return_diff_pct": round(self.annual_return - other.annual_return, 2),
+            "drawdown_diff_pct": round(self.max_drawdown - other.max_drawdown, 2),
             "trade_count_diff": self.total_trades - other.total_trades,
             "recommended": self.strategy_name if self.sharpe_ratio >= other.sharpe_ratio else other.strategy_name,
         }

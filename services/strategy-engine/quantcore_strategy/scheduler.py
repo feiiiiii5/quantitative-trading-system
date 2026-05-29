@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Any, Optional
 
 from quantcore_strategy.sandbox import StrategySandbox
+import contextlib
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,7 @@ class StrategyScheduler:
             record.state = StrategyState.STOPPED
             logger.info("Strategy '%s' was stopped", deployment_id)
             return
-        except Exception as e:
+        except Exception:
             record.state = StrategyState.ERROR
             logger.exception("Strategy '%s' failed with exception", deployment_id)
             return
@@ -167,10 +168,8 @@ class StrategyScheduler:
             return False
 
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError):
             await asyncio.wait_for(task, timeout=10.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            pass
 
         self._running.pop(deployment_id, None)
 
@@ -222,7 +221,7 @@ class StrategyScheduler:
                 *(self.stop_strategy(did) for did in deployment_ids),
                 return_exceptions=True,
             )
-            for did, result in zip(deployment_ids, results):
+            for did, result in zip(deployment_ids, results, strict=False):
                 if isinstance(result, Exception):
                     logger.error("Error stopping deployment '%s': %s", did, result)
         logger.info("StrategyScheduler shutdown complete")

@@ -49,10 +49,12 @@ class TechnicalIndicators:
         if cached is not None:
             return cached
 
-        c = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
-        h = pd.to_numeric(df["high"], errors="coerce").dropna().values.astype(float)
-        low_arr = pd.to_numeric(df["low"], errors="coerce").dropna().values.astype(float)
-        v = pd.to_numeric(df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in df.columns else np.zeros(len(df))
+        price_cols = [col for col in ["close", "high", "low"] if col in df.columns]
+        work_df = df.dropna(subset=price_cols).reset_index(drop=True) if price_cols else df
+        c = pd.to_numeric(work_df["close"], errors="coerce").fillna(0).values.astype(float)
+        h = pd.to_numeric(work_df["high"], errors="coerce").fillna(0).values.astype(float)
+        low_arr = pd.to_numeric(work_df["low"], errors="coerce").fillna(0).values.astype(float)
+        v = pd.to_numeric(work_df["volume"], errors="coerce").fillna(0).values.astype(float) if "volume" in work_df.columns else np.zeros(len(c))
 
         tp = (h + low_arr + c) / 3
 

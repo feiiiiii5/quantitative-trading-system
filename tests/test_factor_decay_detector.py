@@ -15,7 +15,7 @@ class TestFactorDecayDetector:
 
     def test_insufficient_data(self):
         detector = FactorDecayDetector(min_observations=30)
-        for i in range(10):
+        for _i in range(10):
             detector.update("alpha", 0.05)
         report = detector.detect("alpha")
         assert report.verdict == DecayVerdict.INSUFFICIENT_DATA
@@ -123,6 +123,6 @@ class TestFactorDecayDetector:
 
     def test_lookback_truncation(self):
         detector = FactorDecayDetector(min_observations=10, lookback=30)
-        for i in range(100):
+        for _i in range(100):
             detector.update("truncated", 0.05)
         assert len(detector._ic_history["truncated"]) <= 30

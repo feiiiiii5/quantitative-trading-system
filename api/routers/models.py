@@ -323,3 +323,75 @@ class SignalReplayRequest(BaseModel):
     start_bar: int = Field(0, ge=0, description="起始bar索引")
     end_bar: int = Field(50, ge=1, le=500, description="结束bar索引")
     params: dict | None = Field(None, description="策略参数覆盖")
+
+
+class JournalEntryRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20, pattern=r'^[0-9a-zA-Z\.]{1,20}$')
+    name: str = Field("", max_length=20)
+    trade_type: str = Field("buy", pattern=r'^(buy|sell)$')
+    price: float = Field(..., gt=0)
+    quantity: int = Field(..., gt=0, le=1000000)
+    notes: str = Field("", max_length=2000)
+    tags: list[str] = Field(default_factory=list, max_length=10)
+    emotion: str = Field("", max_length=20)
+    rating: int = Field(0, ge=0, le=5)
+
+
+class StressTestRequest(BaseModel):
+    positions: list[dict] = Field(default_factory=list, max_length=100)
+    run_monte_carlo: bool = Field(False)
+
+
+class JournalUpdateRequest(BaseModel):
+    symbol: str | None = Field(None, min_length=1, max_length=20, pattern=r'^[0-9a-zA-Z\.]{1,20}$')
+    name: str | None = Field(None, max_length=20)
+    trade_type: str | None = Field(None, pattern=r'^(buy|sell)$')
+    price: float | None = Field(None, gt=0)
+    quantity: int | None = Field(None, gt=0, le=1000000)
+    notes: str | None = Field(None, max_length=2000)
+    tags: list[str] | None = Field(None, max_length=10)
+    emotion: str | None = Field(None, max_length=20)
+    rating: int | None = Field(None, ge=0, le=5)
+
+
+class RiskParityRequest(BaseModel):
+    capital: float = Field(1000000, gt=0, le=100000000)
+    positions: list[dict] = Field(default_factory=list, max_length=100)
+
+
+class FactorAttributionRequest(BaseModel):
+    symbols: str = Field(..., min_length=1, max_length=300, description="逗号分隔的股票代码")
+    period: str = Field("1y", max_length=5, description="时间范围")
+    risk_free_rate: float = Field(0.03, ge=0.0, le=0.5, description="无风险利率")
+    factors: list[str] = Field(default_factory=lambda: ["MKT", "SMB", "HML"], description="因子列表")
+
+
+class RegimeDetectRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20, description="股票代码")
+    period: str = Field("1y", max_length=5, description="历史数据范围")
+    n_states: int = Field(3, ge=2, le=6, description="HMM状态数")
+
+
+class GarchVolatilityRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20, description="股票代码")
+    period: str = Field("1y", max_length=5, description="历史数据范围")
+    iterations: int = Field(5, ge=1, le=20, description="GARCH拟合迭代次数")
+
+
+class RiskParityOptimizeRequest(BaseModel):
+    symbols: str = Field(..., min_length=3, max_length=300, description="逗号分隔的股票代码列表")
+    period: str = Field("1y", max_length=5, description="历史数据范围")
+    drift_threshold: float = Field(0.05, ge=0.01, le=0.20, description="权重漂移阈值")
+    turnover_cap: float = Field(0.30, ge=0.05, le=1.0, description="换手率上限")
+
+
+class PortfolioAnalyticsRequest(BaseModel):
+    symbols: str = Field(..., min_length=3, max_length=300, description="逗号分隔的股票代码列表")
+    period: str = Field("1y", max_length=5, description="历史数据范围")
+    n_simulations: int = Field(5000, ge=1000, le=50000, description="蒙特卡洛模拟次数")
+    time_horizon: int = Field(1, ge=1, le=22, description="风险预测天数")
+    n_regime_states: int = Field(3, ge=2, le=6, description="HMM状态数")
+    include_factor_attribution: bool = Field(True, description="是否包含因子归因")
+    include_regime: bool = Field(True, description="是否包含市场状态检测")
+    include_var: bool = Field(True, description="是否包含蒙特卡洛VaR")
+    include_risk_parity: bool = Field(True, description="是否包含风险平价优化")

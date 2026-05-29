@@ -1,6 +1,7 @@
-import { useState, useCallback, useEffect, memo } from 'react';
+import { useState, useCallback, useEffect, useRef, memo, useOptimistic } from 'react';
 import { formatPrice } from '@/utils/format';
 import { useToastStore } from '@/stores/toast';
+import { useMarketStore } from '@/stores/market';
 import { colors } from '@/design/tokens/colors';
 
 interface PriceAlert {
@@ -13,14 +14,33 @@ interface PriceAlert {
   notify: Array<'toast' | 'sound' | 'browser'>;
 }
 
+interface TriggeredLogEntry {
+  alertId: string;
+  symbol: string;
+  condition: PriceAlert['condition'];
+  threshold: number;
+  triggerPrice: number;
+  triggerTime: string;
+}
+
 const STORAGE_KEY = 'qc_price_alerts';
+const HISTORY_KEY = 'qc_alert_history';
+const MAX_HISTORY = 50;
 
 function loadAlerts(): PriceAlert[] {
   try { const raw = localStorage.getItem(STORAGE_KEY); return raw ? JSON.parse(raw) : []; } catch { return []; }
 }
 
 function saveAlerts(alerts: PriceAlert[]): void {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(alerts)); } catch { /* silent */ }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(alerts)); } catch {}
+}
+
+function loadHistory(): TriggeredLogEntry[] {
+  try { const raw = localStorage.getItem(HISTORY_KEY); return raw ? JSON.parse(raw) : []; } catch { return []; }
+}
+
+function saveHistory(entries: TriggeredLogEntry[]): void {
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, MAX_HISTORY))); } catch {}
 }
 
 const CONDITION_LABELS: Record<PriceAlert['condition'], string> = {
@@ -33,12 +53,74 @@ const CONDITION_LABELS: Record<PriceAlert['condition'], string> = {
 
 export const PriceAlertPanel = memo(function PriceAlertPanel() {
   const [alerts, setAlerts] = useState<PriceAlert[]>(loadAlerts);
+  const [history, setHistory] = useState<TriggeredLogEntry[]>(loadHistory);
+  const [optimisticHistory, addOptimisticEntry] = useOptimistic(
+    history,
+    (state, newEntry: TriggeredLogEntry) => [newEntry, ...state].slice(0, MAX_HISTORY),
+  );
   const [symbol, setSymbol] = useState('');
   const [condition, setCondition] = useState<PriceAlert['condition']>('above');
   const [threshold, setThreshold] = useState('');
+  const [showHistory, setShowHistory] = useState(false);
   const addToast = useToastStore(s => s.addToast);
 
   useEffect(() => { saveAlerts(alerts); }, [alerts]);
+  useEffect(() => { saveHistory(history); }, [history]);
+
+  const triggeredRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const activeAlerts = alerts.filter(a => a.active && !a.triggered);
+    if (activeAlerts.length === 0) return;
+
+    const stocks = useMarketStore.getState().stocks;
+    let changed = false;
+    const updated = alerts.map(alert => {
+      if (!alert.active || alert.triggered || triggeredRef.current.has(alert.id)) return alert;
+      const stock = stocks[alert.symbol];
+      if (!stock || !stock.price) return alert;
+      const price = stock.price;
+      const triggered =
+        (alert.condition === 'above' && price >= alert.threshold) ||
+        (alert.condition === 'below' && price <= alert.threshold) ||
+        (alert.condition === 'change_up' && stock.change_pct >= alert.threshold) ||
+        (alert.condition === 'change_down' && stock.change_pct <= -alert.threshold) ||
+        (alert.condition === 'volume_spike' && stock.volume >= alert.threshold);
+      if (triggered) {
+        triggeredRef.current.add(alert.id);
+        changed = true;
+        const triggerTime = new Date().toLocaleTimeString();
+        addToast({
+          type: 'info',
+          title: '价格预警触发',
+          body: `${alert.symbol} ${CONDITION_LABELS[alert.condition]} ${alert.threshold}，当前价 ${formatPrice(price)}`,
+          duration: 8000,
+        });
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification(`${alert.symbol} 预警触发`, { body: `${CONDITION_LABELS[alert.condition]} ${alert.threshold}` });
+        }
+        addOptimisticEntry({
+          alertId: alert.id,
+          symbol: alert.symbol,
+          condition: alert.condition,
+          threshold: alert.threshold,
+          triggerPrice: price,
+          triggerTime,
+        });
+        setHistory(prev => [{
+          alertId: alert.id,
+          symbol: alert.symbol,
+          condition: alert.condition,
+          threshold: alert.threshold,
+          triggerPrice: price,
+          triggerTime,
+        }, ...prev].slice(0, MAX_HISTORY));
+        return { ...alert, triggered: { price, time: triggerTime } };
+      }
+      return alert;
+    });
+    if (changed) setAlerts(updated);
+  }, [alerts, addToast]);
 
   const requestNotificationPermission = useCallback(async () => {
     if ('Notification' in window && Notification.permission === 'default') {
@@ -111,13 +193,13 @@ export const PriceAlertPanel = memo(function PriceAlertPanel() {
         </button>
       </div>
 
-      {alerts.length === 0 && (
+      {alerts.length === 0 && !showHistory && (
         <div style={{ textAlign: 'center', padding: '32px 0', color: 'var(--label-quaternary)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
           NO ALERTS SET
         </div>
       )}
 
-      {alerts.map(alert => (
+      {!showHistory && alerts.map(alert => (
         <div
           key={alert.id}
           style={{
@@ -148,6 +230,39 @@ export const PriceAlertPanel = memo(function PriceAlertPanel() {
           </button>
         </div>
       ))}
+
+      <div style={{ display: 'flex', justifyContent: 'center', borderTop: '1px solid var(--separator)', paddingTop: 8, marginTop: 4 }}>
+        <button
+          onClick={() => setShowHistory(v => !v)}
+          style={{ background: 'transparent', border: '1px solid var(--separator)', borderRadius: 'var(--r-sm)', padding: '4px 12px', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--label-tertiary)', cursor: 'pointer' }}
+        >
+          {showHistory ? '← 返回预警列表' : `📋 触发历史 (${optimisticHistory.length})`}
+        </button>
+      </div>
+
+      {showHistory && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 240, overflowY: 'auto' }}>
+          {optimisticHistory.length === 0 && (
+            <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--label-quaternary)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+              NO TRIGGERED HISTORY
+            </div>
+          )}
+          {optimisticHistory.map((entry, i) => (
+            <div
+              key={`${entry.alertId}-${i}`}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', background: 'var(--bg-overlay)', borderRadius: 'var(--r-sm)', fontSize: 11 }}
+            >
+              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)', width: 64 }}>{entry.symbol}</span>
+              <span style={{ fontFamily: 'var(--font-sans)', color: 'var(--label-tertiary)' }}>{CONDITION_LABELS[entry.condition]}</span>
+              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--signal-rise)', fontVariantNumeric: 'tabular-nums' }}>{formatPrice(entry.threshold)}</span>
+              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--label-quaternary)' }}>→</span>
+              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--orange)', fontVariantNumeric: 'tabular-nums' }}>{formatPrice(entry.triggerPrice)}</span>
+              <span style={{ flex: 1 }} />
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--label-quaternary)' }}>{entry.triggerTime}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 });

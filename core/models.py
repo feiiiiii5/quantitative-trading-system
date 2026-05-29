@@ -15,24 +15,24 @@ __all__ = [
 ]
 
 import time
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-class SignalTypeV2(str, Enum):
+class SignalTypeV2(StrEnum):
     BUY = "buy"
     SELL = "sell"
     HOLD = "hold"
 
 
-class OrderSide(str, Enum):
+class OrderSide(StrEnum):
     BUY = "buy"
     SELL = "sell"
 
 
-class OrderStatus(str, Enum):
+class OrderStatus(StrEnum):
     PENDING = "pending"
     FILLED = "filled"
     PARTIALLY_FILLED = "partially_filled"
@@ -194,10 +194,7 @@ class BacktestResultV2(BaseModel):
 
 def validate_signal_dict(data: dict[str, Any]) -> TradeSignalV2:
     raw_type = data.get("type", data.get("action", data.get("signal_type", "hold")))
-    if hasattr(raw_type, "value"):
-        type_value = raw_type.value
-    else:
-        type_value = str(raw_type)
+    type_value = raw_type.value if hasattr(raw_type, "value") else str(raw_type)
     return TradeSignalV2(
         signal_type=SignalTypeV2(type_value),
         strength=float(data.get("strength", 0.0)),

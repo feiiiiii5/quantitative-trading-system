@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class AssetClass(str, Enum):
+class AssetClass(StrEnum):
     SPOT = "spot"
     FUTURES = "futures"
     OPTIONS = "options"
@@ -14,7 +14,7 @@ class AssetClass(str, Enum):
     CRYPTO = "crypto"
 
 
-class Timeframe(str, Enum):
+class Timeframe(StrEnum):
     TICK = "tick"
     M1 = "1m"
     M5 = "5m"
@@ -24,7 +24,7 @@ class Timeframe(str, Enum):
     D1 = "1d"
 
 
-class MarketType(str, Enum):
+class MarketType(StrEnum):
     TREND = "trend"
     MEAN_REVERSION = "mean_reversion"
     MOMENTUM = "momentum"
@@ -33,7 +33,7 @@ class MarketType(str, Enum):
     ML_DRIVEN = "ml_driven"
 
 
-class StopLossType(str, Enum):
+class StopLossType(StrEnum):
     FIXED_PCT = "fixed_pct"
     ATR_MULTIPLE = "atr_multiple"
     TRAILING = "trailing"
@@ -42,7 +42,7 @@ class StopLossType(str, Enum):
     NONE = "none"
 
 
-class TakeProfitType(str, Enum):
+class TakeProfitType(StrEnum):
     FIXED_PCT = "fixed_pct"
     RR_RATIO = "rr_ratio"
     DYNAMIC = "dynamic"
@@ -50,7 +50,7 @@ class TakeProfitType(str, Enum):
     NONE = "none"
 
 
-class PositionSizing(str, Enum):
+class PositionSizing(StrEnum):
     FIXED = "fixed"
     PERCENT_EQUITY = "percent_equity"
     KELLY = "kelly"
@@ -58,27 +58,27 @@ class PositionSizing(str, Enum):
     ATR_BASED = "atr_based"
 
 
-class OrderType(str, Enum):
+class OrderType(StrEnum):
     MARKET = "market"
     LIMIT = "limit"
     STOP_LIMIT = "stop_limit"
 
 
-class SlippageModel(str, Enum):
+class SlippageModel(StrEnum):
     NONE = "none"
     FIXED_BPS = "fixed_bps"
     VOLUME_IMPACT = "volume_impact"
     BID_ASK_SPREAD = "bid_ask_spread"
 
 
-class FillAssumption(str, Enum):
+class FillAssumption(StrEnum):
     NEXT_OPEN = "next_open"
     SAME_CLOSE = "same_close"
     VWAP = "vwap"
     BEST_EFFORT = "best_effort"
 
 
-class SimulationMode(str, Enum):
+class SimulationMode(StrEnum):
     VECTORIZED = "vectorized"
     EVENT_DRIVEN = "event_driven"
     WALK_FORWARD = "walk_forward"

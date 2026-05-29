@@ -10,6 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
+from api.dependencies import FetcherDep
 from api.utils import json_response as _json_response
 from api.utils import safe_error
 from core.json_utils import json_dumps
@@ -148,7 +149,7 @@ async def get_backtest_strategies(request: Request):
 
 
 @backtest_router.post("/backtest/heatmap")
-async def strategy_performance_heatmap(request: Request):
+async def strategy_performance_heatmap(request: Request, fetcher: FetcherDep):
     try:
         body = await request.json()
         symbol = body.get("symbol", "000001.SZ")
@@ -166,7 +167,6 @@ async def strategy_performance_heatmap(request: Request):
         from core.backtest import BacktestEngine
         from core.strategies import STRATEGY_REGISTRY
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
             return _json_response(False, error="数据不足")
@@ -243,16 +243,15 @@ async def get_strategies_categorized(
         return _json_response(False, error=safe_error(e))
 @backtest_router.post("/backtest/run")
 async def run_backtest(
-    request: Request,
+    fetcher: FetcherDep,
     body: BacktestRunRequest,
 ):
-    cache_key = "%s:%s:%s:%s" % (body.symbol, body.strategy_type, body.start_date, body.end_date)
-    from core.async_utils import backtest_result_cache, CACHE_TTL
+    cache_key = f"{body.symbol}:{body.strategy_type}:{body.start_date}:{body.end_date}"
+    from core.async_utils import CACHE_TTL, backtest_result_cache
     bt_cached = await backtest_result_cache.get(cache_key)
     if bt_cached is not None:
         return _compressed_response({"success": True, "data": bt_cached, "cached": True})
 
-    fetcher = request.app.state.fetcher
     df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
     if df is None or df.empty:
         return _json_response(False, error=f"无法获取 {body.symbol} 的历史数据")
@@ -269,12 +268,12 @@ async def run_backtest(
 
 @backtest_router.post("/backtest/run/stream")
 async def run_backtest_stream(
-    request: Request,
+    fetcher: FetcherDep,
     body: BacktestRunRequest,
 ):
     async def generate():
-        cache_key = "%s:%s:%s:%s" % (body.symbol, body.strategy_type, body.start_date, body.end_date)
-        from core.async_utils import backtest_result_cache, CACHE_TTL
+        cache_key = f"{body.symbol}:{body.strategy_type}:{body.start_date}:{body.end_date}"
+        from core.async_utils import CACHE_TTL, backtest_result_cache
         bt_cached = await backtest_result_cache.get(cache_key)
         if bt_cached is not None:
             yield f"data: {json_dumps({'type': 'result', 'data': bt_cached, 'cached': True})}\n\n"
@@ -282,7 +281,6 @@ async def run_backtest_stream(
 
         yield f"data: {json_dumps({'type': 'log', 'message': 'Fetching historical data...'})}\n\n"
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
             yield f"data: {json_dumps({'type': 'error', 'message': f'无法获取 {body.symbol} 的历史数据'})}\n\n"
@@ -299,6 +297,7 @@ async def run_backtest_stream(
         def run_backtest_sync():
             try:
                 import pandas as pd
+
                 from core.backtest import run_backtest as run_bt
                 work_df = df.copy()
                 if "date" in work_df.columns:
@@ -319,7 +318,7 @@ async def run_backtest_stream(
                 yield f"data: {json_dumps(msg)}\n\n"
                 if msg.get("type") in ("result", "error"):
                     break
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 yield f"data: {json_dumps({'type': 'error', 'message': 'Backtest timeout'})}\n\n"
                 break
 
@@ -342,7 +341,7 @@ async def backtest_progress_stream(request: Request):
 
     bus = get_event_bus()
     progress_queue: asyncio.Queue = asyncio.Queue()
-    _PROGRESS_EVENT_TYPES = {
+    progress_event_types = {
         EventType.BACKTEST_PROGRESS,
         EventType.BACKTEST_TRADE,
         EventType.BACKTEST_COMPLETED,
@@ -351,14 +350,14 @@ async def backtest_progress_stream(request: Request):
     }
 
     def _on_event(event):
-        if event.event_type in _PROGRESS_EVENT_TYPES:
+        if event.event_type in progress_event_types:
             try:
                 loop = asyncio.get_running_loop()
                 loop.call_soon_threadsafe(progress_queue.put_nowait, event)
             except RuntimeError:
                 pass
 
-    for et in _PROGRESS_EVENT_TYPES:
+    for et in progress_event_types:
         bus.subscribe(et, _on_event)
 
     async def generate():
@@ -376,10 +375,10 @@ async def backtest_progress_stream(request: Request):
                     yield f"data: {json_dumps(_sanitize_numpy(payload))}\n\n"
                     if event.event_type in (EventType.BACKTEST_COMPLETED, EventType.BACKTEST_ERROR):
                         break
-                except asyncio.TimeoutError:
-                    yield f": keepalive\n\n"
+                except TimeoutError:
+                    yield ": keepalive\n\n"
         finally:
-            for et in _PROGRESS_EVENT_TYPES:
+            for et in progress_event_types:
                 bus.unsubscribe(et, _on_event)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -398,20 +397,20 @@ _COMPARE_CACHE_MAX = 600
 @backtest_router.get("/backtest/compare")
 async def compare_strategies(
     request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
     start_date: str = Query("2024-01-01", pattern=r"^\d{4}-\d{2}-\d{2}$"),
     end_date: str = Query("2025-12-31", pattern=r"^\d{4}-\d{2}-\d{2}$"),
     period: str = Query("1y", max_length=5),
 ):
     try:
-        cache_key = "cmp:%s:%s:%s" % (symbol, start_date, end_date)
+        cache_key = f"cmp:{symbol}:{start_date}:{end_date}"
         cached_entry = _compare_cache.get(cache_key)
         if cached_entry is not None:
             ts, cached_data = cached_entry
             if time.monotonic() - ts < _COMPARE_CACHE_TTL:
                 return _compressed_response({"success": True, "data": cached_data, "cached": True})
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
             return _json_response(False, error="数据不足")
@@ -451,7 +450,7 @@ async def compare_strategies(
 
 @backtest_router.get("/backtest/recommend")
 async def recommend_strategy(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
     start_date: str = Query("2024-01-01", pattern=r"^\d{4}-\d{2}-\d{2}$"),
     end_date: str = Query("2025-12-31", pattern=r"^\d{4}-\d{2}-\d{2}$"),
@@ -464,7 +463,6 @@ async def recommend_strategy(
         from core.indicators import calc_adx, calc_atr
         from core.strategies import STRATEGY_REGISTRY
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
             return _json_response(False, error="无法获取历史数据")
@@ -477,15 +475,17 @@ async def recommend_strategy(
         if "date" in work_df.columns:
             work_df = work_df[(work_df["date"] >= start_date) & (work_df["date"] <= end_date)].reset_index(drop=True)
 
+        work_df = work_df.dropna(subset=["close", "high", "low"]).reset_index(drop=True)
         if len(work_df) < 30:
             work_df = df.tail(252).reset_index(drop=True)
+            work_df = work_df.dropna(subset=["close", "high", "low"]).reset_index(drop=True)
             if len(work_df) < 30:
                 return _json_response(False, error="数据不足，请更换股票代码或时间范围")
 
-        c = pd.to_numeric(work_df["close"], errors="coerce").dropna().values.astype(float)
-        h = pd.to_numeric(work_df["high"], errors="coerce").dropna().values.astype(float)
-        low_arr = pd.to_numeric(work_df["low"], errors="coerce").dropna().values.astype(float)
-        v = pd.to_numeric(work_df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in work_df.columns else np.ones(len(c))
+        c = pd.to_numeric(work_df["close"], errors="coerce").to_numpy(dtype=float)
+        h = pd.to_numeric(work_df["high"], errors="coerce").to_numpy(dtype=float)
+        low_arr = pd.to_numeric(work_df["low"], errors="coerce").to_numpy(dtype=float)
+        v = pd.to_numeric(work_df.get("volume", pd.Series([0] * len(c))), errors="coerce").to_numpy(dtype=float)
 
         returns = np.diff(c) / np.where(c[:-1] > 0, c[:-1], 1)
         returns = np.where(np.isfinite(returns), returns, 0)
@@ -656,7 +656,7 @@ def _serialize_result(result, initial_capital, df):
 
 @backtest_router.post("/backtest/export")
 async def export_backtest(
-    request: Request,
+    fetcher: FetcherDep,
     body: BacktestRunRequest,
     format: str = Query("json", pattern=r"^(json|csv)$"),
 ):
@@ -664,7 +664,6 @@ async def export_backtest(
         import json as json_lib
 
         import pandas as pd
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
             return _json_response(False, error=f"无法获取 {body.symbol} 的历史数据")
@@ -714,7 +713,7 @@ async def export_backtest(
 
 @backtest_router.get("/backtest/performance_overview")
 async def performance_overview(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query("600000", min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
     period: str = Query("1y", max_length=5),
 ):
@@ -727,11 +726,11 @@ async def performance_overview(
 
     try:
         import numpy as np
+        import pandas as pd
 
         from core.backtest import BacktestEngine
         from core.strategies import STRATEGY_REGISTRY
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period=period, kline_type="daily", adjust="qfq")
         if df is None or df.empty:
             return _json_response(False, error="无法获取历史数据")
@@ -761,7 +760,7 @@ async def performance_overview(
 
         strategy_results.sort(key=lambda x: x["sharpe_ratio"], reverse=True)
 
-        c = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
+        c = pd.to_numeric(df["close"], errors="coerce").fillna(0).values.astype(float)
         bh_return = round((c[-1] - c[0]) / c[0], 4) if len(c) > 1 and c[0] > 0 else 0
         returns = np.diff(c) / np.where(c[:-1] > 0, c[:-1], 1)
         returns = np.where(np.isfinite(returns), returns, 0)
@@ -812,7 +811,7 @@ class StrategyCompareRequest(BaseModel):
 
 
 @backtest_router.post("/backtest/strategy_compare")
-async def strategy_compare(request: Request, body: StrategyCompareRequest):
+async def strategy_compare(fetcher: FetcherDep, body: StrategyCompareRequest):
     """多策略深度比较：收益曲线叠加、统计显著性检验、风险指标对比"""
     try:
         from scipy import stats as sp_stats
@@ -820,7 +819,6 @@ async def strategy_compare(request: Request, body: StrategyCompareRequest):
         from core.backtest import BacktestEngine
         from core.strategies import STRATEGY_REGISTRY
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
             return _json_response(False, error="数据不足")
@@ -924,7 +922,7 @@ class ParamGridRequest(BaseModel):
 
 
 @backtest_router.post("/backtest/param_grid")
-async def param_grid_scan(request: Request, body: ParamGridRequest):
+async def param_grid_scan(fetcher: FetcherDep, body: ParamGridRequest):
     """二维参数网格扫描，生成热图数据用于前端可视化"""
     try:
         from core.backtest import BacktestEngine
@@ -933,7 +931,6 @@ async def param_grid_scan(request: Request, body: ParamGridRequest):
         if body.strategy not in STRATEGY_REGISTRY:
             return _json_response(False, error=f"未知策略: {body.strategy}")
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
             return _json_response(False, error="数据不足")
@@ -977,7 +974,7 @@ class ParamSensitivityRequest(BaseModel):
 
 
 @backtest_router.post("/backtest/param_sensitivity")
-async def param_sensitivity_analysis(request: Request, body: ParamSensitivityRequest):
+async def param_sensitivity_analysis(fetcher: FetcherDep, body: ParamSensitivityRequest):
     try:
         from core.backtest import BacktestEngine
         from core.strategies import STRATEGY_REGISTRY
@@ -985,7 +982,6 @@ async def param_sensitivity_analysis(request: Request, body: ParamSensitivityReq
         if body.strategy not in STRATEGY_REGISTRY:
             return _json_response(False, error=f"未知策略: {body.strategy}")
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
             return _json_response(False, error="数据不足")
@@ -1023,11 +1019,10 @@ class EfficientFrontierRequest(BaseModel):
 
 
 @backtest_router.post("/portfolio/efficient_frontier")
-async def compute_efficient_frontier(request: Request, body: EfficientFrontierRequest):
+async def compute_efficient_frontier(fetcher: FetcherDep, body: EfficientFrontierRequest):
     try:
         from core.portfolio_optimizer import PortfolioOptimizer
 
-        fetcher = request.app.state.fetcher
         returns_list = []
         valid_symbols = []
 
@@ -1039,7 +1034,7 @@ async def compute_efficient_frontier(request: Request, body: EfficientFrontierRe
                 df = df.tail(body.period)
                 if "close" not in df.columns:
                     return sym, None
-                closes = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
+                closes = np.asarray(df["close"], dtype=float)
                 rets = np.diff(closes) / np.where(closes[:-1] > 0, closes[:-1], 1)
                 rets = np.where(np.isfinite(rets), rets, 0)
                 return sym, rets
@@ -1088,7 +1083,7 @@ class WalkForwardOOSRequest(BaseModel):
 
 
 @backtest_router.post("/backtest/walk_forward_oos")
-async def walk_forward_oos(request: Request, body: WalkForwardOOSRequest):
+async def walk_forward_oos(fetcher: FetcherDep, body: WalkForwardOOSRequest):
     """Walk-Forward Out-of-Sample验证：过拟合检测、参数稳定性分析"""
     try:
         from core.backtest import walk_forward_oos_validation
@@ -1097,7 +1092,6 @@ async def walk_forward_oos(request: Request, body: WalkForwardOOSRequest):
         if body.strategy not in STRATEGY_REGISTRY:
             return _json_response(False, error=f"未知策略: {body.strategy}")
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
             return _json_response(False, error="数据不足")
@@ -1134,7 +1128,7 @@ class SignalQualityRequest(BaseModel):
 
 
 @backtest_router.post("/backtest/signal_quality")
-async def signal_quality(request: Request, body: SignalQualityRequest):
+async def signal_quality(fetcher: FetcherDep, body: SignalQualityRequest):
     try:
         from core.signal_quality import evaluate_signal_quality
         from core.strategies import STRATEGY_REGISTRY
@@ -1142,7 +1136,6 @@ async def signal_quality(request: Request, body: SignalQualityRequest):
         if body.strategy not in STRATEGY_REGISTRY:
             return _json_response(False, error=f"未知策略: {body.strategy}")
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(body.symbol, period=body.period, kline_type="daily", adjust="qfq")
         if df is None or df.empty:
             return _json_response(False, error="数据不足")
@@ -1174,7 +1167,7 @@ class WalkForwardAnalysisRequest(BaseModel):
 
 
 @backtest_router.post("/backtest/walk_forward_analysis")
-async def walk_forward_analysis_endpoint(request: Request, body: WalkForwardAnalysisRequest):
+async def walk_forward_analysis_endpoint(fetcher: FetcherDep, body: WalkForwardAnalysisRequest):
     try:
         from core.strategies import STRATEGY_REGISTRY
         from core.walk_forward import walk_forward_analysis
@@ -1182,7 +1175,6 @@ async def walk_forward_analysis_endpoint(request: Request, body: WalkForwardAnal
         if body.strategy not in STRATEGY_REGISTRY:
             return _json_response(False, error=f"未知策略: {body.strategy}")
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
             return _json_response(False, error="数据不足")
@@ -1223,7 +1215,7 @@ class AutoOptimizeRequest(BaseModel):
 
 @backtest_router.post("/backtest/auto_optimize")
 async def auto_optimize(
-    request: Request,
+    fetcher: FetcherDep,
     body: AutoOptimizeRequest,
     background_tasks: BackgroundTasks,
 ):
@@ -1243,7 +1235,6 @@ async def auto_optimize(
 
                 strategy_cls = STRATEGY_REGISTRY[body.strategy_name]
                 runner = BatchStrategyRunner()
-                fetcher = request.app.state.fetcher
                 df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
                 if df is None or df.empty:
                     _optimization_tasks[task_id].update({"status": "error", "error": "无法获取数据"})

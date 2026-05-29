@@ -2,9 +2,15 @@ import { createChart as lcCreateChart } from 'lightweight-charts';
 import type { IChartApi, ChartOptions } from 'lightweight-charts';
 import { colors } from '@/design/tokens/colors';
 
+type DeepPartial<T> = {
+  [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P];
+};
+
+export type ChartOptionsDeepPartial = DeepPartial<ChartOptions>;
+
 export function createQuantChart(
   container: HTMLDivElement,
-  options: Partial<ChartOptions> = {},
+  options: ChartOptionsDeepPartial = {},
 ): IChartApi {
   return lcCreateChart(container, {
     layout: {
@@ -37,7 +43,7 @@ export function createQuantChart(
     handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true },
     handleScale: { mouseWheel: true, pinch: true },
     ...options,
-  } as Partial<ChartOptions>);
+  } as ChartOptions);
 }
 
 export const CANDLE_STYLE = {

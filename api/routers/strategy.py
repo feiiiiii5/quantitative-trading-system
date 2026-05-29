@@ -7,10 +7,12 @@ import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Path, Query, Request
 
+from api.dependencies import FetcherDep
 from api.routers.models import AlphaEvolveRequest, AuditStrategyRequest
 from api.utils import json_response as _json_response
+from api.utils import period_to_history as _period_to_history
 from api.utils import safe_error, validate_symbol
-from core.data_fetcher import SmartDataFetcher, get_fetcher
+from core.data_fetcher import get_fetcher
 from core.database import get_db
 from core.strategies import STRATEGY_REGISTRY
 
@@ -18,26 +20,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _period_to_history(period: str) -> str:
-    period = (period or "1y").lower()
-    if period in {"3m", "6m"}:
-        return "1y"
-    if period in {"3y", "5y", "all"}:
-        return "all"
-    return "1y"
-
-
 @router.get("/strategy/performance")
 async def get_strategy_performance(
-    request: Request,
-    symbol: str = Query(..., description="股票代码"),
+    fetcher: FetcherDep,
+    symbol: str = Query(..., max_length=20, description="股票代码"),
     period: int = Query(120, description="回测天数", ge=30, le=500),
 ):
     try:
         from core.backtest import run_parallel_backtest
         from core.strategies import CompositeStrategy
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or len(df) < 50:
             return _json_response(False, error="数据不足")
@@ -91,7 +83,7 @@ async def get_strategy_performance(
 
 @router.get("/strategy/rolling-metrics")
 async def get_rolling_strategy_metrics(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query(..., max_length=20, description="股票代码"),
     strategy_name: str = Query("adaptive", max_length=30, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$"),
     period: str = Query("1y", max_length=5),
@@ -101,7 +93,6 @@ async def get_rolling_strategy_metrics(
     try:
         if not validate_symbol(symbol):
             return _json_response(False, error="Invalid symbol")
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
         if df is None or len(df) < 80:
             return _json_response(False, error="数据不足，至少需要80个交易日")
@@ -148,14 +139,13 @@ async def list_alpha_factors(request: Request):
 
 @router.get("/alpha/compute/{symbol}")
 async def compute_alpha_factors(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
     period: str = Query("1y", max_length=5),
 ):
     try:
         from core.alpha_engine import AlphaGenerator
         from core.alpha_screener import AlphaScreener, AlphaScreeningConfig
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
         if df.empty or len(df) < 60:
             return _json_response(False, error="数据不足")
@@ -185,13 +175,12 @@ async def compute_alpha_factors(
 
 @router.get("/regime/detect/{symbol}")
 async def detect_market_regime(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
     period: str = Query("1y", max_length=5),
 ):
     try:
         from core.regime_detector import RegimeDetector
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
         if df.empty or len(df) < 30:
             return _json_response(False, error="数据不足")
@@ -206,13 +195,12 @@ async def detect_market_regime(
 
 @router.get("/risk/monitor/{symbol}")
 async def get_risk_monitor(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
     period: str = Query("1y", max_length=5),
 ):
     try:
         from core.risk_monitor import EnhancedRiskMonitor
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
         if df.empty or len(df) < 30:
             return _json_response(False, error="数据不足")
@@ -247,14 +235,13 @@ async def get_risk_monitor(
 
 @router.get("/metrics/institutional/{symbol}")
 async def get_institutional_metrics(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
     benchmark: str = Query("sh000300", max_length=20),
     period: str = Query("1y", max_length=5),
 ):
     try:
         from core.metrics import calc_all_metrics, metrics_to_dict
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
         if df.empty or len(df) < 30:
             return _json_response(False, error="数据不足")
@@ -279,12 +266,11 @@ async def get_institutional_metrics(
 
 @router.post("/alpha/evolve")
 async def run_alpha_evolution(
-    request: Request,
+    fetcher: FetcherDep,
     body: AlphaEvolveRequest,
 ):
     try:
         from core.self_evolver import EvolutionConfig, SelfEvolver
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(body.symbol, _period_to_history(body.period), "daily", "qfq")
         if df.empty or len(df) < 60:
             return _json_response(False, error="数据不足")
@@ -301,13 +287,12 @@ async def run_alpha_evolution(
 
 @router.post("/audit/strategy")
 async def audit_strategy(
-    request: Request,
+    fetcher: FetcherDep,
     body: AuditStrategyRequest,
 ):
     try:
         from core.auto_auditor import AutoAuditor
         from core.backtest import BacktestEngine
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(body.symbol, _period_to_history(body.period), "daily", "qfq")
         if df.empty or len(df) < 60:
             return _json_response(False, error="数据不足")
@@ -563,7 +548,7 @@ async def execution_methods():
 
 @router.post("/execution/simulate")
 async def execution_simulate(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query(..., max_length=10),
     side: str = Query("buy", max_length=4),
     quantity: int = Query(..., gt=0),
@@ -577,7 +562,6 @@ async def execution_simulate(
         if method not in ("market", "twap", "vwap"):
             return _json_response(False, error="method must be 'market', 'twap', or 'vwap'")
 
-        fetcher = request.app.state.fetcher
         rt = await fetcher.get_realtime(symbol)
         if not rt or rt.get("price", 0) <= 0:
             return _json_response(False, error="No realtime price available")
@@ -677,7 +661,7 @@ async def get_strategy_param_specs():
 
 @router.post("/strategy/optimize-params")
 async def optimize_strategy_params(
-    request: Request,
+    fetcher: FetcherDep,
     strategy_name: str = Query(..., max_length=50),
     symbol: str = Query(..., max_length=20),
     metric: str = Query("sharpe_ratio", max_length=20),
@@ -690,7 +674,6 @@ async def optimize_strategy_params(
         if metric not in ("sharpe_ratio", "total_return", "annual_return", "max_drawdown", "win_rate"):
             return _json_response(False, error="Invalid metric")
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
         if df.empty or len(df) < 60:
             return _json_response(False, error="Insufficient data (need at least 60 bars)")
@@ -711,7 +694,7 @@ async def optimize_strategy_params(
 
 @router.post("/strategy/bayesian-optimize")
 async def bayesian_optimize_strategy(
-    request: Request,
+    fetcher: FetcherDep,
     strategy_name: str = Query(..., max_length=50),
     symbol: str = Query(..., max_length=20),
     metric: str = Query("sharpe_ratio", max_length=20),
@@ -725,7 +708,6 @@ async def bayesian_optimize_strategy(
         if metric not in ("sharpe_ratio", "total_return", "annual_return", "max_drawdown", "win_rate"):
             return _json_response(False, error="Invalid metric")
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
         if df.empty or len(df) < 60:
             return _json_response(False, error="Insufficient data (need at least 60 bars)")
@@ -747,7 +729,7 @@ async def bayesian_optimize_strategy(
 
 @router.post("/single-stock/stress-test")
 async def run_single_stock_stress_test(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query(..., max_length=20),
     period: str = Query("1y", max_length=5),
     scenarios: str = Query("", max_length=200),
@@ -756,7 +738,6 @@ async def run_single_stock_stress_test(
         if not validate_symbol(symbol):
             return _json_response(False, error="Invalid symbol")
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
         if df.empty or len(df) < 30:
             return _json_response(False, error="Insufficient data")
@@ -772,12 +753,11 @@ async def run_single_stock_stress_test(
 
 @router.get("/volatility/garch/{symbol}")
 async def garch_volatility_forecast(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
     period: str = Query("1y", max_length=5),
 ):
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
         if df.empty or len(df) < 60:
             return _json_response(False, error="Insufficient data (need 60+ bars)")
@@ -796,13 +776,12 @@ async def garch_volatility_forecast(
 
 @router.get("/regime/hmm/{symbol}")
 async def hmm_regime_detection(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
     period: str = Query("1y", max_length=5),
     n_states: int = Query(3, ge=2, le=5),
 ):
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
         if df.empty or len(df) < 60:
             return _json_response(False, error="Insufficient data (need 60+ bars)")
@@ -820,8 +799,8 @@ async def hmm_regime_detection(
 
 @router.get("/strategy/performance_heatmap")
 async def get_strategy_performance_heatmap(
-    request: Request,
-    symbols: str = Query(..., description="逗号分隔的股票代码，最多10个"),
+    fetcher: FetcherDep,
+    symbols: str = Query(..., max_length=300, description="逗号分隔的股票代码，最多10个"),
     period: int = Query(120, description="回测天数", ge=30, le=500),
 ):
     """策略性能热力图：多股票×多策略的Sharpe比率矩阵"""
@@ -829,7 +808,6 @@ async def get_strategy_performance_heatmap(
         from core.backtest import run_parallel_backtest
         from core.strategies import CompositeStrategy
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         symbol_list = [s.strip() for s in symbols.split(",") if s.strip()][:10]
         if not symbol_list:
             return _json_response(False, error="请提供股票代码")
@@ -840,9 +818,14 @@ async def get_strategy_performance_heatmap(
         heatmap_data = []
         strategy_stats = {name: {"sharpe_sum": 0.0, "count": 0} for name in strategy_names}
 
-        for symbol in symbol_list:
+        history_tasks = [fetcher.get_history(sym, period="all", kline_type="daily", adjust="qfq") for sym in symbol_list]
+        history_results = await asyncio.gather(*history_tasks, return_exceptions=True)
+
+        for idx, symbol in enumerate(symbol_list):
             try:
-                df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
+                df = history_results[idx]
+                if isinstance(df, Exception):
+                    continue
                 if df is None or len(df) < 50:
                     continue
                 df = df.tail(period + 60)
@@ -886,9 +869,9 @@ async def get_strategy_performance_heatmap(
 
 @router.get("/strategy/compare")
 async def compare_strategies(
-    request: Request,
-    symbols: str = Query(..., description="逗号分隔的股票代码"),
-    strategies: str = Query(..., description="逗号分隔的策略名称"),
+    fetcher: FetcherDep,
+    symbols: str = Query(..., max_length=300, description="逗号分隔的股票代码"),
+    strategies: str = Query(..., max_length=300, description="逗号分隔的策略名称"),
     period: str = Query("6m", max_length=5, description="回测周期"),
     capital: float = Query(100000, ge=10000, le=10000000, description="初始资金"),
 ):
@@ -904,7 +887,6 @@ async def compare_strategies(
         from core.backtest import BacktestEngine
         from core.strategies import get_strategy_registry
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         registry = get_strategy_registry()
         results: list[dict] = []
         metrics_keys = [
@@ -914,6 +896,10 @@ async def compare_strategies(
         ]
         comparison_matrix: dict[str, dict[str, float | int]] = {}
 
+        history_map = await fetcher.get_history_batch(
+            symbol_list[:5], _period_to_history(period), "daily", "qfq"
+        )
+
         for strat_name in strategy_names:
             cls = registry.get(strat_name)
             if cls is None:
@@ -921,10 +907,9 @@ async def compare_strategies(
                 continue
 
             all_summaries = []
-            for sym in symbol_list[:5]:
+            for sym, df in history_map.items():
                 try:
-                    df = await fetcher.get_history(sym, _period_to_history(period), "daily", "qfq")
-                    if df is None or len(df) < 30:
+                    if len(df) < 30:
                         continue
                     bt = BacktestEngine(initial_capital=capital)
                     r = bt.run(cls(), df, symbol=sym)
@@ -987,7 +972,7 @@ async def compare_strategies(
 
 @router.get("/strategy/dashboard")
 async def get_strategy_dashboard(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query(..., description="股票代码"),
     period: int = Query(120, description="回测天数", ge=30, le=500),
 ):
@@ -999,7 +984,6 @@ async def get_strategy_dashboard(
         from core.risk_parity_portfolio import RiskParityPortfolio
         from core.strategies import CompositeStrategy
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or len(df) < 50:
             return _json_response(False, error="数据不足")
@@ -1063,17 +1047,29 @@ async def get_strategy_dashboard(
         try:
             if len(strategy_names) >= 2:
                 portfolio = RiskParityPortfolio(symbols=strategy_names[:5])
-                rng = np.random.default_rng(42)
-                n_assets = min(5, len(strategy_names))
-                for _ in range(30):
-                    portfolio.update_returns(rng.normal(0.001, 0.02, n_assets))
-                state = portfolio.compute_target_weights()
-                risk_data = {
-                    "weights": state.weights,
-                    "risk_contributions": state.risk_contributions,
-                    "portfolio_volatility": state.portfolio_volatility,
-                    "ic_adjustments": state.ic_adjustments,
-                }
+                returns_map = {}
+                for r in parallel_results:
+                    name = r.get("strategy", "")
+                    dr = r.get("daily_returns", [])
+                    if dr:
+                        returns_map[name] = dr
+                if returns_map:
+                    min_len = min(len(v) for v in returns_map.values())
+                    for i in range(min(30, min_len)):
+                        ret_vec = []
+                        for sn in strategy_names[:5]:
+                            vals = returns_map.get(sn, [])
+                            ret_vec.append(vals[i] if i < len(vals) else 0.0)
+                        while len(ret_vec) < min(5, len(strategy_names)):
+                            ret_vec.append(0.0)
+                        portfolio.update_returns(np.array(ret_vec[:5]))
+                    state = portfolio.compute_target_weights()
+                    risk_data = {
+                        "weights": state.weights,
+                        "risk_contributions": state.risk_contributions,
+                        "portfolio_volatility": state.portfolio_volatility,
+                        "ic_adjustments": state.ic_adjustments,
+                    }
         except Exception as e:
             logger.debug("Risk parity computation skipped: %s", e)
 
@@ -1089,4 +1085,130 @@ async def get_strategy_dashboard(
         })
     except Exception as e:
         logger.error("Strategy dashboard error: %s", e)
+        return _json_response(False, error=safe_error(e))
+
+
+@router.get("/strategy/lifecycle/list")
+async def list_strategy_lifecycle():
+    """列出所有策略的生命周期状态"""
+    try:
+        db = get_db()
+        rows = db.fetchall("SELECT version_id, strategy_name, version, state, created_at FROM strategy_versions ORDER BY created_at DESC")
+        return _json_response(True, data={
+            "strategies": [
+                {
+                    "version_id": row["version_id"],
+                    "name": row["strategy_name"],
+                    "version": row["version"],
+                    "state": row["state"],
+                    "created_at": row["created_at"],
+                }
+                for row in rows
+            ],
+            "total": len(rows),
+        })
+    except Exception as e:
+        logger.error("List lifecycle error: %s", e)
+        return _json_response(False, error=safe_error(e))
+
+
+@router.post("/strategy/lifecycle/register")
+async def register_strategy_lifecycle(request: Request):
+    """注册新策略到生命周期管理"""
+    try:
+        from core.strategy_lifecycle import StrategyConfig, StrategyLifecycleManager
+
+        body = await request.json()
+        name = body.get("name", "").strip()
+        version = body.get("version", "1.0.0").strip()
+        if not name:
+            return _json_response(False, error="策略名称不能为空")
+
+        config = StrategyConfig(
+            name=name,
+            version=version,
+            parameters=body.get("parameters", {}),
+            risk_limits=body.get("risk_limits", {}),
+            universe=body.get("universe", {}),
+            schedule=body.get("schedule", {}),
+        )
+
+        manager = StrategyLifecycleManager()
+        version_id = manager.register_strategy(config)
+
+        return _json_response(True, data={
+            "version_id": version_id,
+            "state": "research",
+            "message": "策略已注册到生命周期管理",
+        })
+    except Exception as e:
+        logger.error("Register lifecycle error: %s", e)
+        return _json_response(False, error=safe_error(e))
+
+
+@router.post("/strategy/lifecycle/promote")
+async def promote_strategy_lifecycle(request: Request):
+    """检查策略晋升资格并执行状态转换"""
+    try:
+        from core.strategy_lifecycle import StrategyLifecycleManager
+
+        body = await request.json()
+        version_id = body.get("version_id", "").strip()
+        if not version_id:
+            return _json_response(False, error="version_id不能为空")
+
+        manager = StrategyLifecycleManager()
+
+        result = manager.check_promotion_eligibility(version_id)
+        if not result.approved:
+            return _json_response(False, error=f"晋升不通过: {result.reason}", data={
+                "from_state": result.from_state.value,
+                "to_state": result.to_state.value,
+                "metrics_snapshot": result.metrics_snapshot,
+            })
+
+        from core.strategy_lifecycle import StrategyState
+        state_map = {
+            "research": StrategyState.BACKTEST_PASSED,
+            "backtest_passed": StrategyState.PAPER_TRADING,
+            "paper_trading": StrategyState.PILOT,
+            "pilot": StrategyState.LIVE,
+        }
+        new_state = state_map.get(result.from_state.value)
+        if new_state is None:
+            return _json_response(False, error="无法确定目标状态")
+
+        success = manager.update_state(version_id, new_state)
+        if not success:
+            return _json_response(False, error="状态转换失败")
+
+        return _json_response(True, data={
+            "version_id": version_id,
+            "from_state": result.from_state.value,
+            "to_state": new_state.value,
+            "message": f"策略已从 {result.from_state.value} 晋升到 {new_state.value}",
+        })
+    except Exception as e:
+        logger.error("Promote lifecycle error: %s", e)
+        return _json_response(False, error=safe_error(e))
+
+
+@router.post("/strategy/lifecycle/update-metrics")
+async def update_strategy_metrics(request: Request):
+    """更新策略指标数据"""
+    try:
+        from core.strategy_lifecycle import StrategyLifecycleManager
+
+        body = await request.json()
+        version_id = body.get("version_id", "").strip()
+        metrics = body.get("metrics", {})
+        if not version_id:
+            return _json_response(False, error="version_id不能为空")
+
+        manager = StrategyLifecycleManager()
+        manager.record_metrics(version_id, metrics)
+
+        return _json_response(True, data={"version_id": version_id, "message": "指标已更新"})
+    except Exception as e:
+        logger.error("Update metrics error: %s", e)
         return _json_response(False, error=safe_error(e))

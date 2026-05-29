@@ -23,7 +23,7 @@ from core.strategies import BaseStrategy, SignalType, TradeSignal
 from .cost_model import RealisticCostModel
 from .event_driven import run_event_driven
 from .optimization import monte_carlo_analysis, parameter_grid_scan, parameter_sensitivity, sensitivity_analysis
-from .result import BacktestResult, InsufficientDataError, MIN_BARS_REQUIRED
+from .result import MIN_BARS_REQUIRED, BacktestResult, InsufficientDataError
 from .simulation import (
     _check_limit_price,
     _excursion,
@@ -182,8 +182,8 @@ class BacktestEngine:
             from core.indicators import calc_atr
             atr_values = calc_atr(highs, lows, closes, period=14)
 
-        volumes = pd.to_numeric(df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in df.columns else None
-        amounts_col = pd.to_numeric(df["amount"], errors="coerce").dropna().values.astype(float) if "amount" in df.columns else None
+        volumes = pd.to_numeric(df["volume"], errors="coerce").fillna(0).values.astype(float) if "volume" in df.columns else None
+        amounts_col = pd.to_numeric(df["amount"], errors="coerce").fillna(0).values.astype(float) if "amount" in df.columns else None
 
         prev_closes = np.empty_like(closes)
         prev_closes[0] = closes[0] if len(closes) > 0 else 0
@@ -500,7 +500,7 @@ class BacktestEngine:
         stats = compute_backtest_statistics(equity_curve, closes, trades, dates_list)
 
         kline_with_signals = []
-        vols = pd.to_numeric(df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in df.columns else np.zeros(n)
+        vols = pd.to_numeric(df["volume"], errors="coerce").fillna(0).values.astype(float) if "volume" in df.columns else np.zeros(n)
         for idx in range(n):
             item = {
                 "d": dates_list[idx] if idx < len(dates_list) else "",

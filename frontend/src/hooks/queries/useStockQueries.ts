@@ -1,5 +1,21 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '@/api/client';
+import type { StockQuote } from '@/types';
+
+export interface KlineBar {
+  date?: string;
+  time?: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface IndicatorData {
+  macd?: Array<{ time: string; macd: number; signal: number; histogram: number }>;
+  rsi?: Array<{ time: string; value: number }>;
+}
 
 export const stockKeys = {
   all: ['stock'] as const,
@@ -13,22 +29,39 @@ export const stockKeys = {
 export function useStockRealtime(symbol: string) {
   return useQuery({
     queryKey: stockKeys.detail(symbol),
-    queryFn: () => apiGet<{
-      symbol: string;
-      name: string;
-      price: number;
-      change: number;
-      change_pct: number;
-      volume: number;
-      turnover: number;
-      open: number;
-      high: number;
-      low: number;
-      prev_close: number;
-      pe_ttm?: number;
-      pb?: number;
-      market_cap?: number;
-    }>(`/stock/realtime/${symbol}`),
+    queryFn: async (): Promise<StockQuote> => {
+      const raw = await apiGet<{
+        symbol: string;
+        name: string;
+        price: number;
+        change: number;
+        change_pct: number;
+        volume: number;
+        turnover: number;
+        open: number;
+        high: number;
+        low: number;
+        prev_close: number;
+        pe_ttm?: number;
+        pb?: number;
+        market_cap?: number;
+      }>(`/stock/realtime/${symbol}`);
+      return {
+        symbol: raw.symbol,
+        name: raw.name,
+        price: raw.price,
+        change: raw.change,
+        change_pct: raw.change_pct,
+        volume: raw.volume,
+        amount: raw.turnover ?? 0,
+        pe: raw.pe_ttm,
+        pb: raw.pb,
+        open: raw.open,
+        high: raw.high,
+        low: raw.low,
+        last_close: raw.prev_close,
+      };
+    },
     enabled: symbol.length > 0,
     staleTime: 10_000,
   });
@@ -37,7 +70,7 @@ export function useStockRealtime(symbol: string) {
 export function useStockHistory(symbol: string, period: string = '1y') {
   return useQuery({
     queryKey: stockKeys.history(symbol, period),
-    queryFn: () => apiGet<Array<{ date: string; open: number; high: number; low: number; close: number; volume: number }>>(
+    queryFn: () => apiGet<KlineBar[]>(
       `/stock/history/${symbol}`,
       { period, kline_type: 'daily', adjust: 'qfq' },
     ),
@@ -49,7 +82,7 @@ export function useStockHistory(symbol: string, period: string = '1y') {
 export function useStockIndicators(symbol: string) {
   return useQuery({
     queryKey: stockKeys.indicators(symbol),
-    queryFn: () => apiGet<Record<string, number[]>>(`/stock/indicators/${symbol}`, { indicators: 'all' }),
+    queryFn: () => apiGet<IndicatorData>(`/stock/indicators/${symbol}`, { indicators: 'all' }),
     enabled: symbol.length > 0,
     staleTime: 120_000,
   });

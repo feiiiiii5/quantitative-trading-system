@@ -9,33 +9,10 @@ import { formatRatio, safeMin, safeMax } from '@/utils/format';
 import { apiGet } from '@/api/client';
 import type { RiskLevel, RiskMetrics } from '@/types';
 import { usePortfolioRiskDashboard, useStressScenarios } from '@/hooks/queries/usePortfolioQueries';
+import { PortfolioComparisonPanel } from '@/components/PortfolioComparisonPanel';
 import { useRiskPortfolio, useRiskExposure, useDrawdownAnalysis, useEfficientFrontier, useMonteCarloVaR, useCorrelationMatrix, useBlackLitterman, useKellyCalculator, useRunStressTest } from '@/hooks/queries/useRiskQueries';
 
-const FALLBACK_DECOMPOSITION = [
-  { source: 'Market', contribution: 0.45 },
-  { source: 'Sector', contribution: 0.25 },
-  { source: 'Idiosyncratic', contribution: 0.18 },
-  { source: 'Liquidity', contribution: 0.12 },
-];
 
-const FALLBACK_CORRELATION = {
-  labels: ['SH', 'SZ', 'CY', 'HS300', 'ZZ500'],
-  values: [
-    [1.00, 0.72, 0.65, 0.78, 0.68],
-    [0.72, 1.00, 0.81, 0.74, 0.69],
-    [0.65, 0.81, 1.00, 0.58, 0.52],
-    [0.78, 0.74, 0.58, 1.00, 0.85],
-    [0.68, 0.69, 0.52, 0.85, 1.00],
-  ],
-};
-
-const FALLBACK_VOL_DATES = Array.from({ length: 20 }, (_, i) => {
-  const d = new Date(2025, 0, 1 + i * 7);
-  return d.toISOString().slice(0, 10);
-});
-
-const FALLBACK_HISTORICAL_VOL = [0.22, 0.24, 0.21, 0.26, 0.28, 0.25, 0.23, 0.27, 0.30, 0.29, 0.26, 0.24, 0.22, 0.25, 0.28, 0.31, 0.27, 0.24, 0.23, 0.26];
-const FALLBACK_IMPLIED_VOL = [0.25, 0.27, 0.24, 0.29, 0.31, 0.28, 0.26, 0.30, 0.33, 0.32, 0.29, 0.27, 0.25, 0.28, 0.31, 0.34, 0.30, 0.27, 0.26, 0.29];
 
 const LEVEL_COLORS: Record<RiskLevel, { bg: string; color: string }> = {
   LOW: { bg: 'rgba(0,200,83,0.15)', color: '#00C853' },
@@ -1088,15 +1065,21 @@ const DiversificationPanel = memo(function DiversificationPanel() {
   const [symbols, setSymbols] = useState('000001.SZ,000002.SZ,600519.SH');
 
   const fetchData = () => {
+    setLoading(true); setError(false);
+    apiGet<DiversificationData>('/portfolio/diversification', { symbols: symbols.split(',').map(s => s.trim()).join(',') })
+      .then(res => { setData(res); setLoading(false); })
+      .catch(() => { setError(true); setLoading(false); });
+  };
+
+  // 内联到 useEffect 以保证 cancelled 闭包被 cleanup 正确捕获
+  useEffect(() => {
     let cancelled = false;
     setLoading(true); setError(false);
     apiGet<DiversificationData>('/portfolio/diversification', { symbols: symbols.split(',').map(s => s.trim()).join(',') })
       .then(res => { if (!cancelled) { setData(res); setLoading(false); } })
       .catch(() => { if (!cancelled) { setError(true); setLoading(false); } });
     return () => { cancelled = true; };
-  };
-
-  useEffect(() => { fetchData(); }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scoreColor = (v: number) => v > 0.7 ? '#00C853' : v > 0.4 ? '#FF9100' : '#FF1744';
 
@@ -1149,15 +1132,21 @@ const PortfolioAttributionPanel = memo(function PortfolioAttributionPanel() {
   const [symbols, setSymbols] = useState('000001.SZ,000002.SZ,600519.SH');
 
   const fetchData = () => {
+    setLoading(true); setError(false);
+    apiGet<AttributionData>('/portfolio/attribution', { symbols: symbols.split(',').map(s => s.trim()).join(',') })
+      .then(res => { setData(res); setLoading(false); })
+      .catch(() => { setError(true); setLoading(false); });
+  };
+
+  // 内联到 useEffect 以保证 cancelled 闭包被 cleanup 正确捕获
+  useEffect(() => {
     let cancelled = false;
     setLoading(true); setError(false);
     apiGet<AttributionData>('/portfolio/attribution', { symbols: symbols.split(',').map(s => s.trim()).join(',') })
       .then(res => { if (!cancelled) { setData(res); setLoading(false); } })
       .catch(() => { if (!cancelled) { setError(true); setLoading(false); } });
     return () => { cancelled = true; };
-  };
-
-  useEffect(() => { fetchData(); }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1240,27 +1229,27 @@ export function RiskPage() {
     maxDrawdown,
     sharpe,
     beta,
-    riskDecomposition: [],
-    correlationMatrix: { labels: [], values: [[]] },
-    historicalVol: [],
-    impliedVol: [],
-    volDates: [],
+    riskDecomposition: dashboardData.riskDecomposition ?? [],
+    correlationMatrix: dashboardData.correlationMatrix ?? { labels: [], values: [[]] },
+    historicalVol: dashboardData.historicalVol ?? [],
+    impliedVol: dashboardData.impliedVol ?? [],
+    volDates: dashboardData.volDates ?? [],
   } : null, [dashboardData, riskLevel, var95, cvar, maxDrawdown, sharpe, beta]);
 
   const loading = isDataLoading(var95, cvar, maxDrawdown, sharpe, beta);
 
-  const decomposition = metrics?.riskDecomposition ?? FALLBACK_DECOMPOSITION;
-  const correlation = metrics?.correlationMatrix ?? FALLBACK_CORRELATION;
-  const volDates = metrics?.volDates ?? FALLBACK_VOL_DATES;
-  const historicalVol = metrics?.historicalVol ?? FALLBACK_HISTORICAL_VOL;
-  const impliedVol = metrics?.impliedVol ?? FALLBACK_IMPLIED_VOL;
+  const decomposition = metrics?.riskDecomposition ?? [];
+  const correlation = metrics?.correlationMatrix ?? { labels: [], values: [[]] };
+  const volDates = metrics?.volDates ?? [];
+  const historicalVol = metrics?.historicalVol ?? [];
+  const impliedVol = metrics?.impliedVol ?? [];
 
   const effectiveRiskLevel: RiskLevel = loading ? 'LOW' : riskLevel;
 
   return (
     <>
       <style>{pulseKeyframes}{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      <div style={{ minHeight: '100%', background: '#000000', padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ minHeight: '100%', background: 'var(--bg-base)', padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
         {loading && <InitBanner />}
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -1349,6 +1338,11 @@ export function RiskPage() {
               </div>
             </div>
           )}
+        </div>
+
+        <div style={RISK_PANEL}>
+          <div style={RISK_PANEL_TITLE}>组合对比</div>
+          <PortfolioComparisonPanel />
         </div>
 
         <div style={RISK_PANEL}>

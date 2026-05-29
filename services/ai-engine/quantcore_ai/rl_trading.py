@@ -107,16 +107,14 @@ if _GYM_AVAILABLE:
             reward = 0.0
             if action == 1 and self._position <= 0:
                 if self._position < 0:
-                    pnl = (self._entry_price - current_price) * abs(self._position)
-                    self._balance += pnl - abs(self._position) * current_price * self._commission
+                    self._balance -= abs(self._position) * current_price * (1 + self._commission)
                 self._position = int(self._balance / (current_price * (1 + self._commission)))
                 self._balance -= self._position * current_price * (1 + self._commission)
                 self._entry_price = current_price
 
             elif action == 2 and self._position >= 0:
                 if self._position > 0:
-                    pnl = (current_price - self._entry_price) * self._position
-                    self._balance += pnl + self._position * current_price * (1 - self._commission)
+                    self._balance += self._position * current_price * (1 - self._commission)
                 self._position = -int(self._balance / (current_price * (1 + self._commission)))
                 self._balance += abs(self._position) * current_price * (1 - self._commission)
                 self._entry_price = current_price
@@ -188,7 +186,7 @@ class _SimplePolicyGradient:
             import torch
             import torch.nn as nn
         except ImportError:
-            raise RuntimeError("PyTorch required for simple policy gradient fallback")
+            raise RuntimeError("PyTorch required for simple policy gradient fallback") from None
 
         self._gamma = gamma
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -237,7 +235,7 @@ class _SimplePolicyGradient:
             returns_tensor = (returns_tensor - returns_tensor.mean()) / (returns_tensor.std() + 1e-10)
 
         loss = torch.stack([
-            -log_prob * g for log_prob, g in zip(self._log_probs, returns_tensor)
+            -log_prob * g for log_prob, g in zip(self._log_probs, returns_tensor, strict=False)
         ]).sum()
 
         self._optimizer.zero_grad()
@@ -359,7 +357,7 @@ class RLTrainer:
         all_win_rates: list[float] = []
         all_trades: list[int] = []
 
-        for ep in range(n_episodes):
+        for _ep in range(n_episodes):
             reset_result = env.reset()
             obs = reset_result[0] if isinstance(reset_result, tuple) else reset_result
             done = False

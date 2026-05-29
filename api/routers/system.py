@@ -6,15 +6,20 @@ from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Path, Query, Request
 
 from api.connection_manager import (
-    _ALLOWED_CONFIG_KEYS, _kline_cache, _manager, _rt_cache, _start_time, _strategy_list_cache,
+    _ALLOWED_CONFIG_KEYS,
+    _kline_cache,
+    _manager,
+    _rt_cache,
+    _start_time,
+    _strategy_list_cache,
     cache_response,
 )
-from core.async_utils import backtest_result_cache
+from api.dependencies import FetcherDep
 from api.routers.models import ConfigSetRequest, FeatureFlagRegisterRequest, FeatureFlagUpdateRequest
 from api.utils import json_response as _json_response
 from api.utils import safe_error, validate_symbol
+from core.async_utils import backtest_result_cache
 from core.database import get_db
-from core.data_fetcher import SmartDataFetcher
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -145,7 +150,6 @@ async def readiness_check(request: Request):
         logger.warning("Readiness tick cache check failed: %s", e)
 
     try:
-        from core.data_fetcher import RequestCoalescer
         checks["request_coalescer"] = "ready"
     except Exception as e:
         checks["request_coalescer"] = "error"
@@ -281,7 +285,7 @@ async def list_holidays(month: int | None = Query(None, ge=1, le=12)):
 
 
 @router.get("/status")
-async def system_status(request: Request):
+async def system_status(request: Request, fetcher: FetcherDep):
     db = get_db()
     pool_status = db.get_pool_status()
     process_time = time.monotonic() - _start_time
@@ -300,7 +304,7 @@ async def system_status(request: Request):
 
     cache_stats = {}
     try:
-        from core.data_fetcher import _realtime_cache, _history_cache, _indicator_cache
+        from core.data_fetcher import _history_cache, _indicator_cache, _realtime_cache
         cache_stats = {
             "realtime": _realtime_cache.stats(),
             "history": _history_cache.stats(),
@@ -311,7 +315,6 @@ async def system_status(request: Request):
 
     circuit_breaker_status = {}
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         for name, breaker in fetcher._circuit_breakers.items():
             circuit_breaker_status[name] = {
                 "state": breaker.state,
@@ -323,6 +326,23 @@ async def system_status(request: Request):
     except Exception as e:
         logger.debug("Circuit breaker stats collection failed: %s", e)
 
+    etag_cache_stats = {}
+    try:
+        from api.middleware import ETagCacheMiddleware
+        inst = ETagCacheMiddleware._instance
+        if inst is not None:
+            etag_cache_stats = inst.status()
+    except Exception as e:
+        logger.debug("ETag cache stats collection failed: %s", e)
+
+    per_ip_rate_limit_stats = {}
+    try:
+        from api.middleware import PerIPRateLimitMiddleware
+        if PerIPRateLimitMiddleware._instance is not None:
+            per_ip_rate_limit_stats = PerIPRateLimitMiddleware._instance.status()
+    except Exception as e:
+        logger.debug("Per-IP rate limit stats collection failed: %s", e)
+
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
@@ -331,14 +351,15 @@ async def system_status(request: Request):
         "cpu_percent": cpu_percent,
         "database": pool_status,
         "cache": cache_stats,
+        "etag_cache": etag_cache_stats,
+        "per_ip_rate_limit": per_ip_rate_limit_stats,
         "circuit_breakers": circuit_breaker_status,
     }
 
 
 @router.post("/circuit-breaker/{source}/reset")
-async def reset_circuit_breaker(source: str, request: Request):
+async def reset_circuit_breaker(source: str, fetcher: FetcherDep):
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         breaker = fetcher._circuit_breakers.get(source)
         if breaker is None:
             return _json_response(False, error=f"Unknown source: {source}")
@@ -352,11 +373,10 @@ async def reset_circuit_breaker(source: str, request: Request):
 
 
 @router.get("/data/quality/{symbol}")
-async def get_data_quality(symbol: str, request: Request):
+async def get_data_quality(symbol: str, fetcher: FetcherDep):
     try:
         if not validate_symbol(symbol):
             return _json_response(False, error="股票代码格式无效")
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="1y", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
             return _json_response(False, error="无法获取数据")
@@ -766,7 +786,7 @@ async def traces_summary(request: Request):
 @router.get("/system/drain-status")
 async def drain_status(request: Request):
     try:
-        from api.middleware import is_draining, inflight_count
+        from api.middleware import inflight_count, is_draining
         return _json_response(True, data={
             "draining": is_draining(),
             "inflight_requests": inflight_count(),

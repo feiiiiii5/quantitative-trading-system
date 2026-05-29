@@ -9,10 +9,11 @@ import pandas as pd
 from fastapi import APIRouter, Path, Query, Request
 
 from api.connection_manager import cache_response
+from api.dependencies import FetcherDep
 from api.routers.models import FactorPipelineRequest
 from api.utils import json_response as _json_response
+from api.utils import period_to_history as _period_to_history
 from api.utils import safe_error
-from core.data_fetcher import SmartDataFetcher
 from core.market_hours import MarketHours
 
 logger = logging.getLogger(__name__)
@@ -28,15 +29,6 @@ BREADTH_INDICES = {
     "sh000016": "上证50",
     "sz399005": "中小100",
 }
-
-
-def _period_to_history(period: str) -> str:
-    period = (period or "1y").lower()
-    if period in {"3m", "6m"}:
-        return "1y"
-    if period in {"3y", "5y", "all"}:
-        return "all"
-    return "1y"
 
 
 def _regime_recommendation(regime) -> str:
@@ -55,9 +47,8 @@ def _regime_recommendation(regime) -> str:
 
 @router.get("/market/overview")
 @cache_response(15)
-async def get_market_overview(request: Request):
+async def get_market_overview(fetcher: FetcherDep):
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         data = await fetcher.get_market_overview()
         try:
             breadth = await fetcher.get_market_breadth()
@@ -85,7 +76,7 @@ async def get_market_status(request: Request):
 
 @router.get("/market/regime/dashboard")
 async def regime_dashboard(
-    request: Request,
+    fetcher: FetcherDep,
     symbols: str = Query(..., description="逗号分隔的股票代码"),
     period: int = Query(120, ge=60, le=500, description="分析天数"),
 ):
@@ -99,7 +90,6 @@ async def regime_dashboard(
         if len(symbol_list) > 20:
             return _json_response(False, error="最多同时扫描20只股票")
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         detector = RegimeDetector()
         per_symbol: list[dict] = []
         regime_counts: dict[str, int] = {}
@@ -319,9 +309,8 @@ async def get_market_heatmap(request: Request, market: str = Query("A")):
 
 @router.get("/market/northbound/detail")
 @cache_response(60)
-async def get_northbound_detail(request: Request):
+async def get_northbound_detail(fetcher: FetcherDep):
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         data = await fetcher.fetch_north_bound_flow()
         if data:
             sh_buy = data.get("sh_buy", 0)
@@ -340,9 +329,8 @@ async def get_northbound_detail(request: Request):
 
 @router.get("/market/limit_up")
 @cache_response(60)
-async def get_limit_up_pool(request: Request):
+async def get_limit_up_pool(fetcher: FetcherDep):
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         return _json_response(True, data=await fetcher.fetch_limit_up_pool())
     except Exception as e:
         return _json_response(False, error=safe_error(e))
@@ -350,16 +338,15 @@ async def get_limit_up_pool(request: Request):
 
 @router.get("/market/dragon_tiger")
 @cache_response(300)
-async def get_dragon_tiger(request: Request, date: str | None = None):
+async def get_dragon_tiger(fetcher: FetcherDep, date: str | None = None):
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         return _json_response(True, data=await fetcher.fetch_dragon_tiger_list(date))
     except Exception as e:
         return _json_response(False, error=safe_error(e))
 
 
 @router.get("/factor/analysis/{symbol}")
-async def get_factor_analysis(request: Request, symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"), period: str = Query("1y", max_length=5)):
+async def get_factor_analysis(fetcher: FetcherDep, symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"), period: str = Query("1y", max_length=5)):
     try:
         from core.indicators import (
             calc_composite_score,
@@ -369,7 +356,6 @@ async def get_factor_analysis(request: Request, symbol: str = Path(..., min_leng
             calc_factor_relative_volume,
             calc_factor_volume_price_trend,
         )
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
         if df.empty or len(df) < 80:
             return _json_response(False, error="数据不足")
@@ -400,7 +386,7 @@ async def get_factor_analysis(request: Request, symbol: str = Path(..., min_leng
 
 
 @router.post("/factor/pipeline")
-async def run_factor_pipeline(request: Request, body: FactorPipelineRequest):
+async def run_factor_pipeline(fetcher: FetcherDep, body: FactorPipelineRequest):
     try:
         from core.factor_pipeline import full_factor_pipeline
         from core.indicators import (
@@ -411,7 +397,6 @@ async def run_factor_pipeline(request: Request, body: FactorPipelineRequest):
             calc_factor_volume_price_trend,
         )
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(body.symbol, _period_to_history(body.period), "daily", "qfq")
         if df.empty or len(df) < 80:
             return _json_response(False, error="数据不足")
@@ -464,14 +449,13 @@ async def run_factor_pipeline(request: Request, body: FactorPipelineRequest):
 
 @router.get("/market/breadth")
 async def get_market_breadth(
-    request: Request,
+    fetcher: FetcherDep,
     symbols: str = Query(..., description="逗号分隔的股票代码"),
     period: str = Query("1y", max_length=5),
     ma_period: int = Query(50, ge=5, le=200, description="均线周期"),
 ):
     """市场宽度分析：涨跌家数、站上均线占比、麦克莱伦振荡器"""
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
         if len(symbol_list) < 5:
             return _json_response(False, error="至少需要5个股票代码进行宽度分析")
@@ -504,7 +488,7 @@ async def get_market_breadth(
 
 @router.get("/market/regime")
 async def get_market_regime(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query(..., description="股票代码"),
     period: int = Query(120, ge=60, le=500, description="分析天数"),
 ):
@@ -512,7 +496,6 @@ async def get_market_regime(
     try:
         from core.regime_detector import RegimeDetector
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or len(df) < 60:
             return _json_response(False, error="数据不足，至少需要60个交易日")
@@ -608,12 +591,10 @@ async def get_market_events(
 
 @router.get("/market/breadth/indices")
 async def get_market_breadth_indices(
-    request: Request,
+    fetcher: FetcherDep,
     period: str = Query("5d", max_length=5),
 ):
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
-
         breadth_data = {}
         advancing = 0
         declining = 0

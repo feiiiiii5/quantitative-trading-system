@@ -72,6 +72,19 @@ def safe_error(exc: Exception) -> str:
     return msg
 
 
+def period_to_history(period: str) -> str:
+    period = (period or "1y").lower()
+    if period in {"3m", "6m"}:
+        return "1y"
+    if period in {"3y", "5y", "all"}:
+        return "all"
+    return "1y"
+
+
+def clamp(value: int, lo: int, hi: int) -> int:
+    return max(lo, min(value, hi))
+
+
 def get_trading(request) -> object | None:
     trading = getattr(request.app.state, "trading", None)
     return trading

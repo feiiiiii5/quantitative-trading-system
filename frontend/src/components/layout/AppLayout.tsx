@@ -38,10 +38,7 @@ export const AppLayout = memo(function AppLayout() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setCmdOpen(false);
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault();
-        setCmdOpen((v) => !v);
-      }
+      // cmd+k 由 LayoutHotkeys 统一处理，避免双重注册导致 toggle 失效
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);

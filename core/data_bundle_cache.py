@@ -4,6 +4,7 @@ __all__ = [
     "CacheMetadata",
 ]
 
+import contextlib
 import json
 import logging
 import time
@@ -185,10 +186,8 @@ class DataBundleCache:
             return False
         file_path = self._cache_dir / entry.file_path
         if file_path.exists():
-            try:
+            with contextlib.suppress(OSError):
                 file_path.unlink()
-            except OSError:
-                pass
         self._save_metadata()
         return True
 

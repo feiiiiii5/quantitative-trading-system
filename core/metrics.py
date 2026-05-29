@@ -119,7 +119,7 @@ def calc_turnover(positions_history: list[dict[str, float]], total_equity: float
             curr_val = curr.get(key, 0.0)
             total_turnover += abs(curr_val - prev_val)
     if total_equity and total_equity > 0:
-        return total_turnover / (2 * total_equity * len(positions_history))
+        return total_turnover / (2 * total_equity * (len(positions_history) - 1))
     return total_turnover
 
 

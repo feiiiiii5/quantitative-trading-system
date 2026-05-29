@@ -4,7 +4,6 @@ import logging
 import traceback
 import uuid
 
-import orjson
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -27,7 +26,7 @@ class GlobalErrorHandler:
         except ValueError as exc:
             logger.warning("ValueError: %s", exc)
             from api.errors import validation_error
-            err = validation_error(message=str(exc))
+            err = validation_error(message="Invalid request parameters")
             return JSONResponse(
                 content=err.to_response(),
                 status_code=400,
@@ -43,7 +42,7 @@ class GlobalErrorHandler:
         except FileNotFoundError as exc:
             logger.warning("FileNotFoundError: %s", exc)
             from api.errors import not_found_error
-            err = not_found_error(message=str(exc))
+            err = not_found_error(message="Resource not found")
             return JSONResponse(
                 content=err.to_response(),
                 status_code=404,

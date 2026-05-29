@@ -1,4 +1,4 @@
-import { useState, useCallback, memo } from 'react';
+import { useState, useCallback, useEffect, memo } from 'react';
 import { apiGet } from '@/api/client';
 import { apiPost } from '@/api/client';
 
@@ -46,6 +46,10 @@ export const AlertNotificationPanel = memo(function AlertNotificationPanel({ ope
       setAlerts(prev => prev.map(a => a.id === alertId ? { ...a, acknowledged: true } : a));
     } catch { /* silent */ }
   }, []);
+
+  useEffect(() => {
+    if (open) fetchAlerts();
+  }, [open, fetchAlerts]);
 
   if (!open) return null;
 

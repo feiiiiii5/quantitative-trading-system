@@ -12,6 +12,8 @@ import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Path, Query, Request, WebSocket, WebSocketDisconnect
 
+from api.dependencies import FetcherDep
+from api.utils import clamp as _clamp
 from api.utils import json_response as _json_response
 from api.utils import rate_limiter, safe_error
 
@@ -34,10 +36,6 @@ class FeatureConfig:
 
 
 _cfg = FeatureConfig()
-
-
-def _clamp(value: int, lo: int, hi: int) -> int:
-    return max(lo, min(hi, value))
 
 
 def _has_nan_inf(series: pd.Series) -> bool:
@@ -71,7 +69,7 @@ async def get_stock_news(request: Request, symbol: str = Path(..., min_length=1,
 
 
 @feature_router.get("/news/sentiment")
-async def get_market_sentiment(request: Request):
+async def get_market_sentiment(fetcher: FetcherDep):
     try:
         from core.market_data import fetch_all_a_stocks_async
         from core.news_engine import get_news_engine
@@ -84,7 +82,6 @@ async def get_market_sentiment(request: Request):
             stocks = None
         indices_data = None
         try:
-            fetcher = request.app.state.fetcher
             overview = await fetcher.get_market_overview()
             indices_data = {**overview.get("cn_indices", {}), **overview.get("hk_indices", {}), **overview.get("us_indices", {})}
         except Exception as e:
@@ -574,15 +571,15 @@ async def get_correlation_matrix(request: Request):
         from core.data_fetcher import get_fetcher
         fetcher = get_fetcher()
 
+        history_map = await fetcher.get_history_batch(symbols, period, "daily", "qfq")
         price_data = {}
-        for sym in symbols:
-            try:
-                df = await fetcher.get_history(sym, period, "daily", "qfq")
-                if df is not None and len(df) >= window:
-                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
-            except (ValueError, KeyError, TypeError) as e:
-                logger.debug("Correlation data fetch failed for %s: %s", sym, e)
-                continue
+        for sym, df in history_map.items():
+            if len(df) >= window:
+                try:
+                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").fillna(0).values.astype(float)
+                except (ValueError, KeyError, TypeError) as e:
+                    logger.debug("Correlation data fetch failed for %s: %s", sym, e)
+                    continue
 
         if len(price_data) < 2:
             return _json_response(False, error="Insufficient data for correlation")
@@ -644,19 +641,20 @@ async def portfolio_risk_attribution(request: Request):
         if total_weight <= 0:
             total_weight = 1.0
 
+        symbols = [h.get("symbol", "") for h in holdings if h.get("symbol")]
         for h in holdings:
             sym = h.get("symbol", "")
-            w = h.get("weight", 1.0 / len(holdings))
-            if not sym:
-                continue
-            try:
-                df = await fetcher.get_history(sym, period, "daily", "qfq")
-                if df is not None and len(df) >= 30:
-                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
-                    weights[sym] = w / total_weight
-            except (ValueError, KeyError, TypeError) as e:
-                logger.debug("Risk attribution data fetch failed for %s: %s", sym, e)
-                continue
+            if sym:
+                weights[sym] = h.get("weight", 1.0 / len(holdings)) / total_weight
+
+        history_map = await fetcher.get_history_batch(symbols, period, "daily", "qfq")
+        for sym, df in history_map.items():
+            if len(df) >= 30:
+                try:
+                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").fillna(0).values.astype(float)
+                except (ValueError, KeyError, TypeError) as e:
+                    logger.debug("Risk attribution data fetch failed for %s: %s", sym, e)
+                    continue
 
         if len(price_data) < 1:
             return _json_response(False, error="Insufficient data for risk attribution")
@@ -817,16 +815,15 @@ async def optimize_portfolio(request: Request):
         from core.portfolio_theory import ModernPortfolioTheory
 
         fetcher = get_fetcher()
+        history_map = await fetcher.get_history_batch(symbols, period, "daily", "qfq")
         price_data = {}
-
-        for sym in symbols:
-            try:
-                df = await fetcher.get_history(sym, period, "daily", "qfq")
-                if df is not None and len(df) >= 10:
-                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
-            except (ValueError, KeyError, TypeError) as e:
-                logger.debug("Portfolio data fetch failed for %s: %s", sym, e)
-                continue
+        for sym, df in history_map.items():
+            if len(df) >= 10:
+                try:
+                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").fillna(0).values.astype(float)
+                except (ValueError, KeyError, TypeError) as e:
+                    logger.debug("Portfolio data fetch failed for %s: %s", sym, e)
+                    continue
 
         if len(price_data) < 2:
             return _json_response(False, error="Insufficient data for portfolio optimization")
@@ -887,21 +884,19 @@ async def get_efficient_frontier(request: Request):
 
         n_points = _clamp(n_points, 10, 100)
 
-        import pandas as pd
         from core.data_fetcher import get_fetcher
         from core.portfolio_theory import ModernPortfolioTheory
 
         fetcher = get_fetcher()
+        history_map = await fetcher.get_history_batch(symbols, period, "daily", "qfq")
         price_data = {}
-
-        for sym in symbols:
-            try:
-                df = await fetcher.get_history(sym, period, "daily", "qfq")
-                if df is not None and len(df) >= 10:
-                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
-            except (ValueError, KeyError, TypeError) as e:
-                logger.debug("Frontier data fetch failed for %s: %s", sym, e)
-                continue
+        for sym, df in history_map.items():
+            if len(df) >= 10:
+                try:
+                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").fillna(0).values.astype(float)
+                except (ValueError, KeyError, TypeError) as e:
+                    logger.debug("Frontier data fetch failed for %s: %s", sym, e)
+                    continue
 
         if len(price_data) < 2:
             return _json_response(False, error="Insufficient data for efficient frontier")
@@ -909,7 +904,6 @@ async def get_efficient_frontier(request: Request):
         min_len = min(len(v) for v in price_data.values())
         aligned_data = {sym: v[-min_len:] for sym, v in price_data.items()}
 
-        import pandas as pd
         prices_df = pd.DataFrame(aligned_data)
 
         mpt = ModernPortfolioTheory(risk_free_rate=risk_free_rate)
@@ -981,16 +975,15 @@ async def black_litterman_optimize(request: Request):
         from core.data_fetcher import get_fetcher
 
         fetcher = get_fetcher()
+        history_map = await fetcher.get_history_batch(symbols, period, "daily", "qfq")
         price_data = {}
-
-        for sym in symbols:
-            try:
-                df = await fetcher.get_history(sym, period, "daily", "qfq")
-                if df is not None and len(df) >= 10:
-                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
-            except (ValueError, KeyError, TypeError) as e:
-                logger.debug("BL data fetch failed for %s: %s", sym, e)
-                continue
+        for sym, df in history_map.items():
+            if len(df) >= 10:
+                try:
+                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").fillna(0).values.astype(float)
+                except (ValueError, KeyError, TypeError) as e:
+                    logger.debug("BL data fetch failed for %s: %s", sym, e)
+                    continue
 
         if len(price_data) < 2:
             return _json_response(False, error="Insufficient data for Black-Litterman")
@@ -998,7 +991,6 @@ async def black_litterman_optimize(request: Request):
         min_len = min(len(v) for v in price_data.values())
         aligned_data = {sym: v[-min_len:] for sym, v in price_data.items()}
 
-        import pandas as pd
         prices_df = pd.DataFrame(aligned_data)
 
         bl = BlackLittermanModel(
@@ -1112,16 +1104,15 @@ async def monte_carlo_var(request: Request):
         from core.monte_carlo_var import MonteCarloVaR
 
         fetcher = get_fetcher()
+        history_map = await fetcher.get_history_batch(symbols, period, "daily", "qfq")
         price_data = {}
-
-        for sym in symbols:
-            try:
-                df = await fetcher.get_history(sym, period, "daily", "qfq")
-                if df is not None and len(df) >= 30:
-                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
-            except (ValueError, KeyError, TypeError) as e:
-                logger.debug("VaR data fetch failed for %s: %s", sym, e)
-                continue
+        for sym, df in history_map.items():
+            if len(df) >= 30:
+                try:
+                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").fillna(0).values.astype(float)
+                except (ValueError, KeyError, TypeError) as e:
+                    logger.debug("VaR data fetch failed for %s: %s", sym, e)
+                    continue
 
         if len(price_data) < 2:
             return _json_response(False, error="Insufficient data for VaR simulation")
@@ -1129,7 +1120,6 @@ async def monte_carlo_var(request: Request):
         min_len = min(len(v) for v in price_data.values())
         aligned_data = {sym: v[-min_len:] for sym, v in price_data.items()}
 
-        import pandas as pd
         prices_df = pd.DataFrame(aligned_data)
 
         mc = MonteCarloVaR(
@@ -1181,16 +1171,15 @@ async def correlation_analysis(request: Request):
         from core.data_fetcher import get_fetcher
 
         fetcher = get_fetcher()
+        history_map = await fetcher.get_history_batch(symbols, period, "daily", "qfq")
         price_data = {}
-
-        for sym in symbols:
-            try:
-                df = await fetcher.get_history(sym, period, "daily", "qfq")
-                if df is not None and len(df) >= 20:
-                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
-            except (ValueError, KeyError, TypeError) as e:
-                logger.debug("Correlation data fetch failed for %s: %s", sym, e)
-                continue
+        for sym, df in history_map.items():
+            if len(df) >= 20:
+                try:
+                    price_data[sym] = pd.to_numeric(df["close"], errors="coerce").fillna(0).values.astype(float)
+                except (ValueError, KeyError, TypeError) as e:
+                    logger.debug("Correlation data fetch failed for %s: %s", sym, e)
+                    continue
 
         if len(price_data) < 2:
             return _json_response(False, error="Insufficient data for correlation analysis")
@@ -1198,7 +1187,6 @@ async def correlation_analysis(request: Request):
         min_len = min(len(v) for v in price_data.values())
         aligned_data = {sym: v[-min_len:] for sym, v in price_data.items()}
 
-        import pandas as pd
         prices_df = pd.DataFrame(aligned_data)
 
         analyzer = CorrelationAnalyzer(
@@ -1540,7 +1528,7 @@ async def ml_generate_labels(request: Request):
 async def ml_train_model(request: Request):
     try:
         body = await request.json()
-        from core.ml_strategy_framework import MLStrategyPipeline, SKLEARN_AVAILABLE
+        from core.ml_strategy_framework import SKLEARN_AVAILABLE, MLStrategyPipeline
         if not SKLEARN_AVAILABLE:
             return _json_response(False, error="scikit-learn 未安装，无法使用 ML 功能")
         x = pd.DataFrame(body.get("features", {}))
@@ -1626,7 +1614,8 @@ async def ml_drift_check(request: Request):
 async def ml_meta_label(request: Request):
     try:
         body = await request.json()
-        from core.ml_strategy_framework import meta_labeling as _meta_labeling, SKLEARN_AVAILABLE
+        from core.ml_strategy_framework import SKLEARN_AVAILABLE
+        from core.ml_strategy_framework import meta_labeling as _meta_labeling
         if not SKLEARN_AVAILABLE:
             return _json_response(False, error="scikit-learn 未安装，无法使用 meta-labeling")
         primary_signals = pd.Series(body.get("primary_signals", []), dtype=float)

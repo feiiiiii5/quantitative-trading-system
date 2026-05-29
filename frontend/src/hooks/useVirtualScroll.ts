@@ -14,10 +14,12 @@ export function useVirtualScroll({ itemCount, itemHeight, overscan = 5 }: Virtua
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    setContainerHeight(el.clientHeight);
+    const h = el.clientHeight;
+    if (h > 0) setContainerHeight(h);
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        setContainerHeight(entry.contentRect.height);
+        const newH = Math.round(entry.contentRect.height);
+        setContainerHeight(prev => prev !== newH ? newH : prev);
       }
     });
     observer.observe(el);

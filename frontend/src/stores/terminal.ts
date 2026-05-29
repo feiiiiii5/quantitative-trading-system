@@ -17,29 +17,6 @@ interface TerminalState {
   fetchTrades: (symbol: string) => Promise<void>;
 }
 
-function generateSimulatedOrderBook(
-  _symbol: string,
-  basePrice?: number,
-  rng: () => number = Math.random,
-): { bids: OrderBookEntry[]; asks: OrderBookEntry[] } {
-  const price = basePrice ?? 10 + rng() * 90;
-  const bids: OrderBookEntry[] = [];
-  const asks: OrderBookEntry[] = [];
-  for (let i = 0; i < 10; i++) {
-    bids.push({
-      price: price - (i + 1) * 0.01,
-      quantity: Math.floor(rng() * 500 + 100),
-      orders: Math.floor(rng() * 10 + 1),
-    });
-    asks.push({
-      price: price + (i + 1) * 0.01,
-      quantity: Math.floor(rng() * 500 + 100),
-      orders: Math.floor(rng() * 10 + 1),
-    });
-  }
-  return { bids, asks };
-}
-
 export const useTerminalStore = create<TerminalState>()(devtools((set) => ({
   orderBook: { bids: [], asks: [] },
   trades: [],
@@ -51,7 +28,26 @@ export const useTerminalStore = create<TerminalState>()(devtools((set) => ({
   setExecutionStats: (stats) => set({ executionStats: stats }),
   setSelectedSymbol: (symbol) => set({ selectedSymbol: symbol }),
   fetchOrderBook: async (symbol) => {
-    set({ orderBook: generateSimulatedOrderBook(symbol) });
+    try {
+      const raw = await dedup(`terminal:orderbook:${symbol}`, () => apiGet<{ bids: Array<{ price: number; volume: number }>; asks: Array<{ price: number; volume: number }>; symbol: string; timestamp: number }>(`/stock/orderbook/${symbol}`));
+      if (raw?.bids && raw?.asks && Array.isArray(raw.bids) && Array.isArray(raw.asks)) {
+        const bids: OrderBookEntry[] = raw.bids.map((b) => ({
+          price: Number(b.price ?? 0),
+          quantity: Math.floor(Number(b.volume ?? 0)),
+          orders: Math.max(1, Math.floor(Number(b.volume ?? 0) / 100)),
+        }));
+        const asks: OrderBookEntry[] = raw.asks.map((a) => ({
+          price: Number(a.price ?? 0),
+          quantity: Math.floor(Number(a.volume ?? 0)),
+          orders: Math.max(1, Math.floor(Number(a.volume ?? 0) / 100)),
+        }));
+        set({ orderBook: { bids, asks } });
+        return;
+      }
+    } catch (e) {
+      // 静默降级：保持空委托簿
+    }
+    set({ orderBook: { bids: [], asks: [] } });
   },
   fetchTrades: async (symbol) => {
     try {
@@ -67,6 +63,8 @@ export const useTerminalStore = create<TerminalState>()(devtools((set) => ({
         }));
         set({ trades: trades.slice(0, 50) });
       }
-    } catch { /* fallback handled by page */ }
+    } catch {
+      set({ trades: [] });
+    }
   },
 }), { name: 'TerminalStore', enabled: import.meta.env.DEV }));

@@ -109,8 +109,8 @@ class TestAsyncWriteQueueWorker:
         queue = AsyncWriteQueue(db)
         for i in range(3):
             await queue.put("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (f"fb_key_{i}", f"fb_val_{i}"))
-        with patch.object(db, "_batch_execute", side_effect=Exception("forced failure")):
-            with patch.object(db, "buffered_write", wraps=db.buffered_write) as mock_bw:
+        with patch.object(db, "_batch_execute", side_effect=Exception("forced failure")), \
+             patch.object(db, "buffered_write", wraps=db.buffered_write) as mock_bw:
                 await queue.start()
                 for _ in range(50):
                     if queue.pending == 0:

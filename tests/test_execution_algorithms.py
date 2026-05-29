@@ -195,7 +195,7 @@ class TestPOVAlgorithm:
         for _ in range(100):
             if algo.is_complete():
                 break
-            sl = algo.next_slice(t, ms)
+            algo.next_slice(t, ms)
             t += timedelta(seconds=1)
             ms = _make_market_state(current_volume=100000.0 + _ * 100)
         assert algo.is_complete()
@@ -267,7 +267,7 @@ class TestDarkPoolRouter:
             DarkPoolRouter(max_match_pct=1.5)
 
     def test_dark_pool_try_match_returns_fillresult_or_none(self) -> None:
-        dp = DarkPoolRouter(internal_match_rate=0.5, max_match_pct=0.8)
+        DarkPoolRouter(internal_match_rate=0.5, max_match_pct=0.8)
         order = OrderSlice(quantity=100)
         ms = _make_market_state()
         results: list[FillResult | None] = []

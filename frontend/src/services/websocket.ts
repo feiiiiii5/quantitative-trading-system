@@ -5,6 +5,8 @@ class WSManager {
   private url = '';
   private reconnectDelay = 1000;
   private maxDelay = 30000;
+  private maxRetries = 20;
+  private retryCount = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private subscribers = new Map<string, Set<MessageHandler>>();
   private connected = false;
@@ -23,6 +25,7 @@ class WSManager {
   connect(url: string): void {
     if (this.ws && this.url === url && this.ws.readyState === WebSocket.OPEN) return;
     this.url = url;
+    this.retryCount = 0;  // 手动重连时重置重试计数
     this.cleanup();
     this.doConnect();
   }
@@ -33,6 +36,7 @@ class WSManager {
       this.ws.onopen = () => {
         this.connected = true;
         this.reconnectDelay = 1000;
+        this.retryCount = 0;
         this.notifyConnection(true);
         this.flushPendingSubscriptions();
       };
@@ -72,6 +76,8 @@ class WSManager {
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.retryCount >= this.maxRetries) return;  // 防止无限重连
+    this.retryCount++;
     this.reconnectTimer = setTimeout(() => {
       this.doConnect();
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxDelay);

@@ -34,6 +34,7 @@ interface MarketState {
   breadth: BreadthData | null;
   northFlow: number | null;
   wsConnected: boolean;
+  lastDataUpdate: number | null;
   loading: boolean;
   error: string | null;
   fetchIndices: () => Promise<void>;
@@ -54,6 +55,7 @@ export const useMarketStore = create<MarketState>()(devtools((set, get) => ({
   breadth: null,
   northFlow: null,
   wsConnected: false,
+  lastDataUpdate: null,
   loading: false,
   error: null,
 
@@ -148,13 +150,13 @@ export const useMarketStore = create<MarketState>()(devtools((set, get) => ({
     }
   },
 
-  updateIndices: (data) => set({ indices: data }),
+  updateIndices: (data) => set({ indices: data, lastDataUpdate: Date.now() }),
 
   updateStock: (symbol, patch) => {
     const existing = stockMap.get(symbol);
     if (existing) {
       stockMap.set(symbol, { ...existing, ...patch } as StockQuote);
-      set({ stocks: syncStocksFromMap() });
+      set({ stocks: syncStocksFromMap(), lastDataUpdate: Date.now() });
     }
   },
 
@@ -167,7 +169,7 @@ export const useMarketStore = create<MarketState>()(devtools((set, get) => ({
         changed = true;
       }
     }
-    if (changed) set({ stocks: syncStocksFromMap() });
+    if (changed) set({ stocks: syncStocksFromMap(), lastDataUpdate: Date.now() });
   },
 
   setWsConnected: (v) => set({ wsConnected: v }),

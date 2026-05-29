@@ -67,7 +67,10 @@ class UserMemory:
             if symbol not in symbols:
                 symbols.append(symbol)
             if len(symbols) > _MAX_VIEW_HISTORY:
+                removed = symbols[:-_MAX_VIEW_HISTORY]
                 symbols = symbols[-_MAX_VIEW_HISTORY:]
+                for s in removed:
+                    counts.pop(s, None)
             data = {"symbols": symbols, "counts": counts}
             self._save("frequently_viewed", data)
 

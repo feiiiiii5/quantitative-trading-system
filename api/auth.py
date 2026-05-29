@@ -132,8 +132,7 @@ def init_default_user():
         default_password = secrets.token_urlsafe(16)
         logger.warning(
             "No QUANTCORE_ADMIN_PASSWORD env var set — generated random password for initial admin user. "
-            "Save this password and set QUANTCORE_ADMIN_PASSWORD env var for subsequent runs. "
-            "Admin password for this session: %s", default_password
+            "Save this password and set QUANTCORE_ADMIN_PASSWORD env var for subsequent runs."
         )
     else:
         logger.info("Admin user created with password from QUANTCORE_ADMIN_PASSWORD env var.")
@@ -266,7 +265,9 @@ class APIAuthMiddleware(BaseHTTPMiddleware):
                 return Response(status_code=429, content='{"success":false,"error":"Rate limit exceeded"}')
             self._rate_limits[client_ip].append(now)
 
-        if self._enabled and self._api_key:
+        if self._enabled:
+            if not self._api_key:
+                return Response(status_code=503, content='{"success":false,"error":"API key not configured"}')
             api_key = request.headers.get("X-API-Key", "")
             if not hmac.compare_digest(api_key, self._api_key):
                 return Response(status_code=401, content='{"success":false,"error":"Invalid API key"}')

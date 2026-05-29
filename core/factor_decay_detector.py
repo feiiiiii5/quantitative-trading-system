@@ -6,7 +6,7 @@ __all__ = [
 
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 import numpy as np
@@ -14,7 +14,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-class DecayVerdict(str, Enum):
+class DecayVerdict(StrEnum):
     STABLE = "stable"
     SLOW_DECAY = "slow_decay"
     MODERATE_DECAY = "moderate_decay"

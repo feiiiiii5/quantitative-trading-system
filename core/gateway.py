@@ -183,6 +183,7 @@ class _EastMoneyGateway(BaseGateway):
             symbol, market,
             ktype_map.get(kline_type, "101"),
             fqt_map.get(adjust, 1),
+            count=count,
         )
 
 
@@ -352,7 +353,7 @@ class _AKShareGateway(BaseGateway):
         source = self._get_source()
         if source is None:
             return None
-        return await source.fetch_history(symbol, market, kline_type, adjust)
+        return await source.fetch_history(symbol, market, kline_type, adjust, count)
 
 
 class _BaoStockGateway(BaseGateway):
@@ -386,7 +387,7 @@ class _BaoStockGateway(BaseGateway):
         source = self._get_source()
         if source is None:
             return None
-        return await source.fetch_history(symbol, market, kline_type, adjust)
+        return await source.fetch_history(symbol, market, kline_type, adjust, count)
 
 
 class GatewayManager:

@@ -12,7 +12,7 @@ function getMarketStatus(): MarketStatus {
   if (t >= 570 && t < 585) return 'pre';
   if (t >= 585 && t < 690) return 'open';
   if (t >= 780 && t < 900) return 'open';
-  if (t >= 690 && t < 780) return 'after';
+  if (t >= 690 && t < 780) return 'closed';  // 午休 11:30-13:00 应为 closed 非 after
   return 'closed';
 }
 

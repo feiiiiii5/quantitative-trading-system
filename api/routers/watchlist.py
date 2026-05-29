@@ -6,7 +6,8 @@ from datetime import datetime
 
 from fastapi import APIRouter, Form, Path, Query, Request
 
-from api.connection_manager import set_symbol_priority, clear_symbol_priority, _PRIORITY_WATCHLIST
+from api.connection_manager import _PRIORITY_WATCHLIST, clear_symbol_priority, set_symbol_priority
+from api.dependencies import FetcherDep
 from api.routers.models import (
     AlertAddRequest,
     AlertRemoveRequest,
@@ -15,7 +16,6 @@ from api.routers.models import (
 )
 from api.utils import json_response as _json_response
 from api.utils import safe_error, validate_symbol
-from core.data_fetcher import SmartDataFetcher
 from core.database import get_db
 from core.market_detector import MarketDetector
 from core.smart_alerts import get_smart_alert_engine
@@ -25,14 +25,12 @@ router = APIRouter()
 
 
 @router.get("/watchlist")
-async def get_watchlist(request: Request):
+async def get_watchlist(fetcher: FetcherDep):
     try:
         db = get_db()
         watchlist = db.get_config("watchlist", [])
         if not isinstance(watchlist, list):
             watchlist = []
-
-        fetcher: SmartDataFetcher = request.app.state.fetcher
 
         a_symbols = []
         other_symbols = []

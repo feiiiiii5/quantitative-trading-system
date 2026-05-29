@@ -8,10 +8,6 @@ from core.backtest.validation import walk_forward_ic_validation, WalkForwardICRe
 
 class TestDashboardIntegration:
     def test_all_new_modules_importable(self):
-        from core.regime_weight_tracker import RegimeWeightTracker
-        from core.risk_parity_portfolio import RiskParityPortfolio
-        from core.data_bundle_cache import DataBundleCache
-        from core.backtest.validation import walk_forward_ic_validation
         assert RegimeWeightTracker is not None
         assert RiskParityPortfolio is not None
         assert DataBundleCache is not None

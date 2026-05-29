@@ -107,7 +107,14 @@ def detect_regime_hmm(returns: np.ndarray, n_states: int = 3) -> dict[str, Any]:
     current_state = int(np.argmax(state_probs))
 
     sorted_idx = np.argsort(means)
-    state_labels_sorted = ["BEAR" if i == 0 else ("BULL" if i == n_states - 1 else "NEUTRAL") for i in range(n_states)]
+    label_map = {}
+    for rank, orig_idx in enumerate(sorted_idx):
+        if rank == 0:
+            label_map[orig_idx] = "BEAR"
+        elif rank == n_states - 1:
+            label_map[orig_idx] = "BULL"
+        else:
+            label_map[orig_idx] = "NEUTRAL"
 
     transition_probs = np.zeros((n_states, n_states))
     for t in range(1, len(r)):
@@ -126,17 +133,17 @@ def detect_regime_hmm(returns: np.ndarray, n_states: int = 3) -> dict[str, Any]:
         regime_history.append({
             "index": i,
             "state": state,
-            "label": state_labels_sorted[sorted_idx.tolist().index(state)] if state in sorted_idx else "NEUTRAL",
+            "label": label_map.get(state, "NEUTRAL"),
             "probability": round(float(resp[i, state]), 4),
         })
 
     return {
         "current_state": current_state,
-        "current_label": state_labels_sorted[sorted_idx.tolist().index(current_state)] if current_state in sorted_idx else "NEUTRAL",
-        "state_probabilities": {state_labels_sorted[sorted_idx.tolist().index(k)]: round(float(state_probs[k]), 4) for k in range(n_states)},
+        "current_label": label_map.get(current_state, "NEUTRAL"),
+        "state_probabilities": {label_map.get(k, "NEUTRAL"): round(float(state_probs[k]), 4) for k in range(n_states)},
         "states": [
             {
-                "label": state_labels_sorted[sorted_idx.tolist().index(k)],
+                "label": label_map.get(k, "NEUTRAL"),
                 "mean_daily_return": round(float(means[k]) * 100, 4),
                 "annualized_volatility": round(float(vols[k]) * np.sqrt(252) * 100, 2),
                 "weight": round(float(weights[k]), 4),

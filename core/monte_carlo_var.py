@@ -89,7 +89,7 @@ class MonteCarloVaR:
             portfolio_returns = simulated_returns @ w_arr
 
             daily_mean = np.mean(portfolio_returns) / 252
-            daily_std = np.std(portfolio_returns) / np.sqrt(252)
+            daily_std = max(np.std(portfolio_returns) / np.sqrt(252), 1e-10)
             horizon_returns = daily_mean * self.time_horizon + daily_std * np.sqrt(self.time_horizon) * rng.standard_normal(self.n_simulations)
 
             var_95 = float(np.percentile(horizon_returns, 5))
@@ -155,6 +155,14 @@ class MonteCarloVaR:
                 w_arr = w_arr / w_sum
 
             portfolio_returns = returns.values @ w_arr
+
+            if len(portfolio_returns) == 0:
+                return MonteCarloVaRResult(
+                    var_95=0.0, var_99=0.0,
+                    cvar_95=0.0, cvar_99=0.0,
+                    expected_shortfall_95=0.0, expected_shortfall_99=0.0,
+                    simulated_count=0,
+                )
 
             rng = np.random.default_rng(self.random_seed)
             indices = rng.integers(0, len(portfolio_returns), self.n_simulations)

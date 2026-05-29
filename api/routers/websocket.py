@@ -9,15 +9,31 @@ from fastapi import APIRouter, Query, Request, WebSocket, WebSocketDisconnect
 from starlette.responses import StreamingResponse
 
 from api.connection_manager import (
-    _MAX_SUBSCRIBE_SYMBOLS, _PNL_MAX_CONNECTIONS, _PORTFOLIO_MAX_CONNECTIONS, _REGIME_MAX_CONNECTIONS, _SIGNAL_MAX_CONNECTIONS,
-    _SSE_KEEPALIVE_INTERVAL, _SSE_MAX_SYMBOLS,
-    _manager, _pnl_connections, _pnl_last_active, _pnl_lock,
-    _portfolio_cache_timestamps, _portfolio_connections, _portfolio_lock,
-    _portfolio_metrics_cache, _regime_connections, _regime_last_active,
-    _regime_lock, _signal_connections, _signal_last_active, _signal_lock,
+    _MAX_SUBSCRIBE_SYMBOLS,
+    _PNL_MAX_CONNECTIONS,
+    _PORTFOLIO_MAX_CONNECTIONS,
+    _REGIME_MAX_CONNECTIONS,
+    _SIGNAL_MAX_CONNECTIONS,
+    _SSE_KEEPALIVE_INTERVAL,
+    _SSE_MAX_SYMBOLS,
+    _manager,
+    _pnl_connections,
+    _pnl_last_active,
+    _pnl_lock,
+    _portfolio_cache_timestamps,
+    _portfolio_connections,
+    _portfolio_lock,
+    _portfolio_metrics_cache,
+    _regime_connections,
+    _regime_last_active,
+    _regime_lock,
+    _signal_connections,
+    _signal_last_active,
+    _signal_lock,
     _ws_authenticate,
 )
-from api.utils import json_response as _json_response, safe_error
+from api.utils import json_response as _json_response
+from api.utils import safe_error
 from core.data_fetcher import SmartDataFetcher
 
 logger = logging.getLogger(__name__)
@@ -75,7 +91,8 @@ async def websocket_pnl(ws: WebSocket):
     try:
         while True:
             data = await ws.receive_text()
-            _pnl_last_active[ws] = time.monotonic()
+            async with _pnl_lock:
+                _pnl_last_active[ws] = time.monotonic()
             try:
                 msg = json.loads(data)
                 if msg.get("type") == "ping":
@@ -158,7 +175,8 @@ async def websocket_signals(ws: WebSocket):
     try:
         while True:
             data = await ws.receive_text()
-            _signal_last_active[ws] = time.monotonic()
+            async with _signal_lock:
+                _signal_last_active[ws] = time.monotonic()
             try:
                 msg = json.loads(data)
                 if msg.get("type") == "ping":
@@ -252,7 +270,8 @@ async def websocket_regime(ws: WebSocket):
         })
         while True:
             data = await ws.receive_text()
-            _regime_last_active[ws] = time.monotonic()
+            async with _regime_lock:
+                _regime_last_active[ws] = time.monotonic()
             try:
                 msg = json.loads(data)
                 if msg.get("type") == "ping":

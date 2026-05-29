@@ -61,7 +61,7 @@ class ConcentrationInterceptor(RiskInterceptor):
         if ctx.portfolio_value <= 0:
             return InterceptorResult(action=InterceptorAction.APPROVE, interceptor_name="concentration")
         order_value = ctx.quantity * ctx.price
-        position_pct = order_value / ctx.portfolio_value
+        order_value / ctx.portfolio_value
         existing_value = ctx.current_positions.get(ctx.symbol, 0.0)
         total_pct = (existing_value + order_value) / ctx.portfolio_value
         if total_pct > ctx.max_position_pct:

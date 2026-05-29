@@ -236,7 +236,7 @@ class TestGracefulShutdownMiddleware:
             bump_lifespan_gen, _lifespan_gen,
         )
         mw = GracefulShutdownMiddleware(app=None)
-        mw_gen = mw._gen
+        mw._gen
         set_draining(True)
         bump_lifespan_gen()
         assert mw._gen != _lifespan_gen
@@ -546,7 +546,6 @@ class TestCircuitBreakerObservability:
         assert cb.last_failure_time == 0.0
 
     def test_breaker_state_transitions_observable(self):
-        import asyncio
         from core.data_fetcher import CircuitBreaker, CircuitBreakerError
 
         async def _run():
@@ -592,7 +591,6 @@ class TestCircuitBreakerObservability:
 
 class TestSymbolStateLock:
     def test_set_and_clear_priority(self):
-        import asyncio
         from api.connection_manager import set_symbol_priority, clear_symbol_priority, _symbol_priority
 
         async def _run():

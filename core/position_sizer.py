@@ -53,7 +53,7 @@ class PositionSizer:
         suggested = min(suggested, 0.25)  # 单标的最多25%仓位
 
         # 计算破产概率（简化模型）
-        ruin_prob = (q / (win_rate * b)) ** (suggested / avg_loss) if (win_rate * b) > q else 1.0
+        ruin_prob = (q / (win_rate * b)) ** min(suggested / avg_loss, 100) if (win_rate * b) > q else 1.0
         ruin_prob = min(ruin_prob, 1.0)
 
         return {

@@ -109,8 +109,9 @@ class PerformanceAttribution:
         strategy_returns: pd.Series,
         benchmark_returns: pd.Series,
     ) -> AttributionResult:
-        sr = strategy_returns.dropna().values.astype(float)
-        br = benchmark_returns.dropna().values.astype(float)
+        combined = pd.DataFrame({"sr": strategy_returns, "br": benchmark_returns}).dropna()
+        sr = combined["sr"].values.astype(float)
+        br = combined["br"].values.astype(float)
         return self.analyze(sr, br)
 
     def rolling_attribution(

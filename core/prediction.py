@@ -45,8 +45,8 @@ class PricePredictor:
             return PricePredictor._empty_prediction()
 
         # 提取价格和成交量数据，优化内存使用
-        c = optimize_numpy_memory(pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float))
-        v = pd.to_numeric(df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in df.columns else np.ones(len(df))
+        c = optimize_numpy_memory(pd.to_numeric(df["close"], errors="coerce").fillna(0).values.astype(float))
+        v = pd.to_numeric(df["volume"], errors="coerce").fillna(0).values.astype(float) if "volume" in df.columns else np.ones(len(c))
         v = optimize_numpy_memory(v)
 
         # 计算各个维度的得分

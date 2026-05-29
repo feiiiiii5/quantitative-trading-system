@@ -3,7 +3,13 @@ import multiprocessing as mp
 
 import pandas as pd
 
-from core.memory_guard import MemoryGuard, check_and_reclaim_if_needed, get_memory_usage, is_memory_critical, is_memory_pressure
+from core.memory_guard import (
+    MemoryGuard,
+    check_and_reclaim_if_needed,
+    get_memory_usage,
+    is_memory_critical,
+    is_memory_pressure,
+)
 from core.strategies import STRATEGY_REGISTRY
 
 from .engine import BacktestEngine
@@ -24,6 +30,13 @@ def _run_single_backtest(args: tuple) -> dict:
         sell_trades = [t for t in result.trades if t.get("action") == "sell"]
         total_trades = len(sell_trades)
         win_trades = sum(1 for t in sell_trades if t.get("pnl", 0) > 0)
+        daily_returns = []
+        if result.equity_curve and len(result.equity_curve) > 1:
+            for i in range(1, len(result.equity_curve)):
+                prev = result.equity_curve[i - 1]
+                curr = result.equity_curve[i]
+                if prev > 0:
+                    daily_returns.append((curr - prev) / prev)
         return {
             "strategy": strategy_name,
             "total_return": round(result.total_return, 4),
@@ -31,6 +44,7 @@ def _run_single_backtest(args: tuple) -> dict:
             "max_drawdown": round(result.max_drawdown, 4),
             "win_rate": round(win_trades / total_trades, 4) if total_trades > 0 else 0.0,
             "total_trades": total_trades,
+            "daily_returns": daily_returns,
         }
     except Exception as e:
         return {"strategy": strategy_name, "error": str(e)}

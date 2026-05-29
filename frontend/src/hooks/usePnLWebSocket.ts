@@ -74,7 +74,9 @@ export function usePnLWebSocket(positions: Array<{ symbol: string; entry_price: 
         if (msg.type === 'pnl' && msg.data) {
           setPnlData({ positions: msg.data, summary: msg.summary });
         }
-      } catch { /* ignore */ }
+      } catch {
+        // ignore malformed messages, keep existing data
+      }
     };
 
     ws.onclose = () => {
@@ -90,16 +92,18 @@ export function usePnLWebSocket(positions: Array<{ symbol: string; entry_price: 
     wsRef.current = ws;
   }, [cleanup]);
 
+  const hasPositions = positions.length > 0;
+
   useEffect(() => {
     mountedRef.current = true;
-    if (positions.length > 0) {
+    if (hasPositions) {
       connect();
     }
     return () => {
       mountedRef.current = false;
       cleanup();
     };
-  }, [positions.length > 0, connect, cleanup]);
+  }, [hasPositions, connect, cleanup]);
 
   const refresh = useCallback(() => {
     const pos = positionsRef.current;

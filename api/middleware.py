@@ -10,9 +10,6 @@ from collections import deque
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 
-from starlette.requests import Request
-from starlette.responses import Response
-
 correlation_id: ContextVar[str] = ContextVar("correlation_id", default="")
 trace_id_var: ContextVar[str] = ContextVar("trace_id", default="")
 
@@ -209,7 +206,7 @@ class RequestDedupMiddleware:
                     await send(result["status"])
                     await send(result["body"])
                     return
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("Request dedup timeout for %s, proceeding normally", fp[:8])
             except Exception:
                 pass
@@ -372,7 +369,7 @@ class RequestValidationMiddleware:
             )
             if not response_started:
                 import orjson
-                body = orjson.dumps({"success": False, "error": str(e), "code": 500})
+                body = orjson.dumps({"success": False, "error": "Internal server error", "code": 500})
                 await send({
                     "type": "http.response.start",
                     "status": 500,
@@ -413,6 +410,7 @@ class GracefulShutdownMiddleware:
             path = scope.get("path", "")
             if path not in ("/api/health", "/api/system/metrics", "/api/system/drain-status", "/"):
                 import orjson
+
                 from api.errors import AppError, ErrorCode
                 err = AppError(
                     error_code=ErrorCode.SYSTEM_SHUTTING_DOWN,
@@ -529,6 +527,7 @@ class RequestBodyLimitMiddleware:
 
     async def _send_413(self, send) -> None:
         import orjson
+
         from api.errors import AppError, ErrorCode
         err = AppError(
             error_code=ErrorCode.VALIDATION_BODY_TOO_LARGE,
@@ -620,6 +619,7 @@ class AdaptiveThrottleMiddleware:
 
             if self._window_count >= self._current_rps:
                 import orjson
+
                 from api.errors import AppError, ErrorCode
                 err = AppError(
                     error_code=ErrorCode.RATE_LIMIT_SERVER_LOAD,
@@ -653,4 +653,197 @@ class AdaptiveThrottleMiddleware:
                 "current_rps": self._current_rps,
                 "window_count": self._window_count,
                 "effective_limit": self._current_rps,
+            }
+
+
+class ETagCacheMiddleware:
+    _CACHEABLE_PREFIXES = ("/api/market/", "/api/stock/", "/api/perf/", "/api/portfolio/summary", "/api/strategy/list")
+    _DEFAULT_TTL = 5.0
+    _MAX_ENTRIES = 256
+    _instance: ETagCacheMiddleware | None = None
+
+    def __init__(self, app, ttl: float | None = None):
+        self._app = app
+        self._ttl = ttl or self._DEFAULT_TTL
+        self._cache: dict[str, tuple[str, bytes, dict[bytes, bytes], float]] = {}
+        self._lock = threading.Lock()
+        ETagCacheMiddleware._instance = self
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method", "") != "GET":
+            await self._app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        if not any(path.startswith(p) for p in self._CACHEABLE_PREFIXES):
+            await self._app(scope, receive, send)
+            return
+
+        cache_key = path + "?" + scope.get("query_string", b"").decode("utf-8", errors="replace")
+
+        headers_list = scope.get("headers", [])
+        if_none_match = ""
+        for k, v in headers_list:
+            if k == b"if-none-match":
+                if_none_match = v.decode("utf-8", errors="replace")
+                break
+
+        with self._lock:
+            entry = self._cache.get(cache_key)
+            if entry is not None:
+                etag, body, resp_headers, ts = entry
+                if time.monotonic() - ts < self._ttl:
+                    if if_none_match and if_none_match == etag:
+                        await _send_304(send, etag)
+                        return
+                    await _send_cached(send, body, resp_headers, etag)
+                    return
+                del self._cache[cache_key]
+
+        captured_body = bytearray()
+        captured_status = 200
+        captured_headers: list[tuple[bytes, bytes]] = []
+
+        async def capturing_send(msg):
+            nonlocal captured_status, captured_headers
+            if msg["type"] == "http.response.start":
+                captured_status = msg.get("status", 200)
+                captured_headers = list(msg.get("headers", []))
+            elif msg["type"] == "http.response.body":
+                captured_body.extend(msg.get("body", b""))
+            await send(msg)
+
+        await self._app(scope, receive, capturing_send)
+
+        if captured_status == 200 and len(captured_body) > 0:
+            etag = '"' + hashlib.md5(captured_body).hexdigest()[:16] + '"'
+            with self._lock:
+                if len(self._cache) >= self._MAX_ENTRIES:
+                    oldest = min(self._cache, key=lambda k: self._cache[k][3])
+                    del self._cache[oldest]
+                self._cache[cache_key] = (etag, bytes(captured_body), dict(captured_headers), time.monotonic())
+
+    def status(self) -> dict:
+        with self._lock:
+            entries = len(self._cache)
+            total_bytes = sum(len(v[1]) for v in self._cache.values())
+            ages = [time.monotonic() - v[3] for v in self._cache.values()] if entries else [0]
+            return {
+                "entries": entries,
+                "max_entries": self._MAX_ENTRIES,
+                "total_bytes": total_bytes,
+                "ttl_seconds": self._ttl,
+                "avg_age_seconds": round(sum(ages) / len(ages), 2),
+                "oldest_age_seconds": round(max(ages), 2),
+            }
+
+
+async def _send_304(send, etag: str):
+    await send({
+        "type": "http.response.start",
+        "status": 304,
+        "headers": [
+            [b"etag", etag.encode()],
+            [b"cache-control", b"max-age=5"],
+        ],
+    })
+    await send({"type": "http.response.body", "body": b""})
+
+
+async def _send_cached(send, body: bytes, headers: dict[bytes, bytes], etag: str):
+    hdrs = [[k, v] for k, v in headers.items()]
+    hdrs.append([b"etag", etag.encode()])
+    hdrs.append([b"cache-control", b"max-age=5"])
+    await send({
+        "type": "http.response.start",
+        "status": 200,
+        "headers": hdrs,
+    })
+    await send({"type": "http.response.body", "body": body})
+
+
+class PerIPRateLimitMiddleware:
+    _SKIP_PREFIXES = ("/api/health", "/api/system/metrics", "/api/system/drain-status",
+                      "/docs", "/openapi.json", "/favicon.ico", "/")
+    _DEFAULT_RPM = 120
+    _MAX_CLIENTS = 1024
+    _CLEANUP_INTERVAL = 60.0
+    _instance: PerIPRateLimitMiddleware | None = None
+    _testing: bool = False
+
+    def __init__(self, app, rpm: int | None = None):
+        self._app = app
+        self._rpm = rpm or self._DEFAULT_RPM
+        self._clients: dict[str, deque[float]] = {}
+        self._lock = threading.Lock()
+        self._last_cleanup = time.monotonic()
+        PerIPRateLimitMiddleware._instance = self
+
+    def _client_ip(self, scope: dict) -> str:
+        for k, v in scope.get("headers", []):
+            if k == b"x-forwarded-for":
+                return v.decode("utf-8", errors="replace").split(",")[0].strip()
+        client = scope.get("client")
+        if client:
+            return client[0]
+        return "unknown"
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        if self._testing:
+            await self._app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        if any(path == p or path.startswith(p + "/") for p in self._SKIP_PREFIXES):
+            await self._app(scope, receive, send)
+            return
+
+        ip = self._client_ip(scope)
+        now = time.monotonic()
+
+        with self._lock:
+            if now - self._last_cleanup > self._CLEANUP_INTERVAL:
+                stale = [c for c, ts in self._clients.items() if not ts or now - ts[-1] > 120]
+                for c in stale:
+                    del self._clients[c]
+                self._last_cleanup = now
+
+            if ip not in self._clients:
+                if len(self._clients) >= self._MAX_CLIENTS:
+                    oldest = min(self._clients, key=lambda c: self._clients[c][-1] if self._clients[c] else 0)
+                    del self._clients[oldest]
+                self._clients[ip] = deque()
+
+            timestamps = self._clients[ip]
+            while timestamps and now - timestamps[0] > 60.0:
+                timestamps.popleft()
+
+            if len(timestamps) >= self._rpm:
+                import orjson
+                body = orjson.dumps({"success": False, "error": "请求过于频繁，请稍后重试"})
+                await send({
+                    "type": "http.response.start",
+                    "status": 429,
+                    "headers": [
+                        [b"content-type", b"application/json"],
+                        [b"retry-after", b"5"],
+                    ],
+                })
+                await send({"type": "http.response.body", "body": body})
+                return
+
+            timestamps.append(now)
+
+        await self._app(scope, receive, send)
+
+    def status(self) -> dict:
+        with self._lock:
+            return {
+                "rpm_limit": self._rpm,
+                "tracked_clients": len(self._clients),
+                "max_clients": self._MAX_CLIENTS,
             }

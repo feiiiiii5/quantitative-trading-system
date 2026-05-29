@@ -264,9 +264,11 @@ const PortfolioDashboardPanel = memo(function PortfolioDashboardPanel() {
   if (loading) return <div style={{ height: 180 }}><SkeletonCard rows={4} /></div>;
   if (!data) return <EmptyState title="加载失败" description="无法获取组合数据" size="sm" action={{ label: '重试', onClick: () => window.location.reload() }} />;
 
-  if (!('risk_metrics' in data)) {
-    const positions = data as Array<{ symbol: string; name: string; price: number; change_pct: number; market: string }>;
-    if (positions.length === 0) {
+  const hasRiskMetrics = 'risk_metrics' in data && data.risk_metrics && Object.keys(data.risk_metrics).length > 0;
+
+  if (!hasRiskMetrics) {
+    const positions = (data as Record<string, unknown>).positions as Array<{ symbol: string; name: string; price: number; change_pct: number; market: string }> | undefined;
+    if (!positions || positions.length === 0) {
       return <EmptyState title="暂无持仓" description="当前没有任何持仓数据" size="sm" />;
     }
     return (
@@ -274,8 +276,8 @@ const PortfolioDashboardPanel = memo(function PortfolioDashboardPanel() {
         {positions.slice(0, 8).map(p => (
           <div key={p.symbol} style={POS_CARD_COMPACT}>
             <div style={POS_SYMBOL_BADGE}>{p.symbol}</div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, color: p.change_pct >= 0 ? '#FF1744' : '#00C853', fontVariantNumeric: 'tabular-nums' }}>
-              {p.change_pct >= 0 ? '+' : ''}{p.change_pct.toFixed(2)}%
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, color: (p.change_pct ?? 0) >= 0 ? '#FF1744' : '#00C853', fontVariantNumeric: 'tabular-nums' }}>
+              {(p.change_pct ?? 0) >= 0 ? '+' : ''}{(p.change_pct ?? 0).toFixed(2)}%
             </div>
           </div>
         ))}
@@ -283,18 +285,23 @@ const PortfolioDashboardPanel = memo(function PortfolioDashboardPanel() {
     );
   }
 
-  const { risk_metrics, concentration, drawdown, positions } = data;
-  const isConcentrated = concentration._is_concentrated ?? false;
-  const topSymbol = Object.entries(concentration).find(([k]) => !k.startsWith('_'))?.[0] ?? '';
+  const { risk_metrics, concentration, drawdown, positions } = data as PortfolioDashboardData;
+  const rm = risk_metrics;
+  const dd = drawdown;
+  const conc = concentration;
+  const isConcentrated = conc._is_concentrated ?? false;
+  const topSymbol = Object.entries(conc).find(([k]) => !k.startsWith('_'))?.[0] ?? '';
+
+  const safeNum = (v: number | undefined, fallback = 0): number => v ?? fallback;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
         {[
-          { label: '年化收益', value: `${(risk_metrics.annual_return * 100).toFixed(1)}%`, color: risk_metrics.annual_return >= 0 ? '#FF1744' : '#00C853' },
-          { label: '夏普比率', value: risk_metrics.portfolio_sharpe.toFixed(2), color: risk_metrics.portfolio_sharpe >= 1 ? '#00C853' : risk_metrics.portfolio_sharpe >= 0.5 ? '#FF9100' : '#FF1744' },
-          { label: 'Sortino', value: risk_metrics.portfolio_sortino.toFixed(2), color: '#0A84FF' },
-          { label: '波动率', value: `${(risk_metrics.portfolio_volatility * 100).toFixed(1)}%`, color: '#FF9100' },
+          { label: '年化收益', value: `${(safeNum(rm.annual_return) * 100).toFixed(1)}%`, color: safeNum(rm.annual_return) >= 0 ? '#FF1744' : '#00C853' },
+          { label: '夏普比率', value: safeNum(rm.portfolio_sharpe).toFixed(2), color: safeNum(rm.portfolio_sharpe) >= 1 ? '#00C853' : safeNum(rm.portfolio_sharpe) >= 0.5 ? '#FF9100' : '#FF1744' },
+          { label: 'Sortino', value: safeNum(rm.portfolio_sortino).toFixed(2), color: '#0A84FF' },
+          { label: '波动率', value: `${(safeNum(rm.portfolio_volatility) * 100).toFixed(1)}%`, color: '#FF9100' },
         ].map(m => (
           <div key={m.label} style={METRIC_STAT_CARD}>
             <div style={METRIC_STAT_LABEL}>{m.label}</div>
@@ -307,15 +314,15 @@ const PortfolioDashboardPanel = memo(function PortfolioDashboardPanel() {
         <div style={{ background: 'var(--bg-elevated)', borderRadius: 'var(--r-sm)', padding: '10px 12px' }}>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--label-tertiary)', textTransform: 'uppercase', marginBottom: 6 }}>VaR / CVaR (95%)</div>
           <div style={{ display: 'flex', gap: 16 }}>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 700, color: '#FF1744', fontVariantNumeric: 'tabular-nums' }}>{(risk_metrics.var_95 * 100).toFixed(1)}%</span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 700, color: '#FF9100', fontVariantNumeric: 'tabular-nums' }}>{(risk_metrics.cvar_95 * 100).toFixed(1)}%</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 700, color: '#FF1744', fontVariantNumeric: 'tabular-nums' }}>{(safeNum(rm.var_95) * 100).toFixed(1)}%</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 700, color: '#FF9100', fontVariantNumeric: 'tabular-nums' }}>{(safeNum(rm.cvar_95) * 100).toFixed(1)}%</span>
           </div>
         </div>
         <div style={{ background: 'var(--bg-elevated)', borderRadius: 'var(--r-sm)', padding: '10px 12px' }}>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--label-tertiary)', textTransform: 'uppercase', marginBottom: 6 }}>最大回撤 / 当前回撤</div>
           <div style={{ display: 'flex', gap: 16 }}>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 700, color: '#00C853', fontVariantNumeric: 'tabular-nums' }}>{(drawdown.max_drawdown * 100).toFixed(1)}%</span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 700, color: '#0A84FF', fontVariantNumeric: 'tabular-nums' }}>{(drawdown.current_drawdown * 100).toFixed(1)}%</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 700, color: '#00C853', fontVariantNumeric: 'tabular-nums' }}>{(safeNum(dd.max_drawdown) * 100).toFixed(1)}%</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 700, color: '#0A84FF', fontVariantNumeric: 'tabular-nums' }}>{(safeNum(dd.current_drawdown) * 100).toFixed(1)}%</span>
           </div>
         </div>
       </div>
@@ -324,7 +331,7 @@ const PortfolioDashboardPanel = memo(function PortfolioDashboardPanel() {
         <div style={{ background: 'rgba(255,23,68,0.08)', border: '1px solid rgba(255,23,68,0.25)', borderRadius: 'var(--r-sm)', padding: '10px 12px' }}>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: '#FF1744', textTransform: 'uppercase', marginBottom: 4 }}>⚠ 集中度警告</div>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'rgba(255,255,255,0.7)' }}>
-            {topSymbol} 占比 <strong style={{ color: '#FF1744' }}>{((concentration[topSymbol] ?? 0) * 100).toFixed(1)}%</strong>，建议分散持仓
+            {topSymbol} 占比 <strong style={{ color: '#FF1744' }}>{((conc[topSymbol] ?? 0) * 100).toFixed(1)}%</strong>，建议分散持仓
           </div>
         </div>
       )}
@@ -333,11 +340,51 @@ const PortfolioDashboardPanel = memo(function PortfolioDashboardPanel() {
         {positions.slice(0, 4).map(p => (
           <div key={p.symbol} style={POS_CARD_INLINE}>
             <div style={POS_SYMBOL_INLINE}>{p.symbol}</div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, color: p.change_pct >= 0 ? '#FF1744' : '#00C853', fontVariantNumeric: 'tabular-nums' }}>
-              {p.change_pct >= 0 ? '+' : ''}{p.change_pct.toFixed(2)}%
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, color: (p.change_pct ?? 0) >= 0 ? '#FF1744' : '#00C853', fontVariantNumeric: 'tabular-nums' }}>
+              {(p.change_pct ?? 0) >= 0 ? '+' : ''}{(p.change_pct ?? 0).toFixed(2)}%
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+});
+
+const QuickPnLBar = memo(function QuickPnLBar() {
+  const [pnl, setPnl] = useState<{ total_pnl: number; total_pnl_pct: number; position_count: number } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiGet<{ total_pnl: number; total_pnl_pct: number; position_count: number }>('/portfolio/risk/dashboard')
+      .then(d => {
+        if (!cancelled && d) setPnl(d);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  if (!pnl || pnl.position_count === 0) return null;
+
+  const isPositive = pnl.total_pnl >= 0;
+  const color = isPositive ? '#FF1744' : '#00C853';
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      padding: '6px 12px', borderRadius: 6,
+      background: isPositive ? 'rgba(255,23,68,0.06)' : 'rgba(0,200,83,0.06)',
+      border: `1px solid ${isPositive ? 'rgba(255,23,68,0.15)' : 'rgba(0,200,83,0.15)'}`,
+    }}>
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--label-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+        持仓盈亏 ({pnl.position_count})
+      </span>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'baseline' }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 16, fontWeight: 700, color, fontVariantNumeric: 'tabular-nums' }}>
+          {isPositive ? '+' : ''}{pnl.total_pnl.toFixed(0)}
+        </span>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 600, color, fontVariantNumeric: 'tabular-nums' }}>
+          {isPositive ? '+' : ''}{(pnl.total_pnl_pct * 100).toFixed(2)}%
+        </span>
       </div>
     </div>
   );
@@ -837,6 +884,7 @@ export function DashboardPage() {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', minHeight: 0, overflow: 'hidden' }}>
+          <QuickPnLBar />
           <div style={{ ...GLASS_PANEL }}>
             <div style={SECTION_LABEL}>实时信号</div>
             <SignalList signals={signals} />

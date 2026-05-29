@@ -9,6 +9,7 @@ from fastapi import APIRouter, Query, Request, WebSocket
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from api.dependencies import FetcherDep
 from api.utils import json_response as _json_response
 from api.utils import safe_error
 
@@ -22,9 +23,8 @@ class KillSwitchConfirm(BaseModel):
 
 
 @perf_router.get("/market/heatmap")
-async def get_sector_heatmap(request: Request):
+async def get_sector_heatmap(fetcher: FetcherDep):
     try:
-        fetcher = request.app.state.fetcher
         data = await fetcher.get_sector_heatmap()
         return _json_response(True, data=data)
     except Exception as e:
@@ -33,9 +33,8 @@ async def get_sector_heatmap(request: Request):
 
 
 @perf_router.get("/market/breadth")
-async def get_market_breadth(request: Request):
+async def get_market_breadth(fetcher: FetcherDep):
     try:
-        fetcher = request.app.state.fetcher
         data = await fetcher.get_market_breadth()
         return _json_response(True, data=data)
     except Exception as e:
@@ -45,12 +44,11 @@ async def get_market_breadth(request: Request):
 
 @perf_router.get("/market/stocks")
 async def get_market_stocks(
-    request: Request,
+    fetcher: FetcherDep,
     symbols: str = Query("", max_length=500, description="Comma-separated symbols"),
     limit: int = Query(50, ge=1, le=200),
 ):
     try:
-        fetcher = request.app.state.fetcher
         if symbols:
             symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
             data = await fetcher.get_batch_realtime_optimized(symbol_list[:limit])
@@ -68,10 +66,9 @@ async def get_market_stocks(
 
 
 @perf_router.get("/risk/portfolio")
-async def get_portfolio_risk(request: Request):
+async def get_portfolio_risk(request: Request, fetcher: FetcherDep):
     try:
         import numpy as np
-        fetcher = request.app.state.fetcher
         trading = getattr(request.app.state, "trading", None)
         if trading is None:
             return _json_response(False, error="Trading engine not available")
@@ -79,20 +76,20 @@ async def get_portfolio_risk(request: Request):
         if not positions:
             return _json_response(True, data={"message": "No positions", "var": 0, "cvar": 0, "beta": 0})
         symbols = list(positions.keys())[:20]
+        history_map = await fetcher.get_history_batch(symbols, "1y", "daily", "qfq")
         returns_list = []
         valid_symbols = []
-        for sym in symbols:
-            try:
-                df = await fetcher.get_history(sym, period="1y", kline_type="daily", adjust="qfq")
-                if df is not None and len(df) > 20 and "close" in df.columns:
-                    closes = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
+        for sym, df in history_map.items():
+            if len(df) > 20 and "close" in df.columns:
+                try:
+                    closes = pd.to_numeric(df["close"], errors="coerce").fillna(0).values.astype(float)
                     rets = np.diff(closes) / np.where(closes[:-1] > 0, closes[:-1], 1)
                     rets = np.where(np.isfinite(rets), rets, 0)
                     returns_list.append(rets[-60:])
                     valid_symbols.append(sym)
-            except Exception as e:
-                logger.debug("Failed to fetch history for VaR calc: %s", e)
-                continue
+                except Exception as e:
+                    logger.debug("Failed to fetch history for VaR calc: %s", e)
+                    continue
         if len(returns_list) < 1:
             return _json_response(True, data={"var": 0, "cvar": 0, "beta": 0, "symbols": []})
         min_len = min(len(r) for r in returns_list)
@@ -119,9 +116,8 @@ async def get_portfolio_risk(request: Request):
 
 
 @perf_router.get("/risk/exposure")
-async def get_risk_exposure(request: Request):
+async def get_risk_exposure(request: Request, fetcher: FetcherDep):
     try:
-        fetcher = request.app.state.fetcher
         trading = getattr(request.app.state, "trading", None)
         if trading is None:
             return _json_response(False, error="Trading engine not available")
@@ -129,10 +125,15 @@ async def get_risk_exposure(request: Request):
         if not positions:
             return _json_response(True, data={"sectors": {}, "concentration": 0})
         symbols = list(positions.keys())[:20]
+        fund_tasks = [fetcher.get_fundamentals(sym) for sym in symbols]
+        fund_results = await asyncio.gather(*fund_tasks, return_exceptions=True)
         sector_map = {}
-        for sym in symbols:
+        for idx, _sym in enumerate(symbols):
             try:
-                fundamentals = await fetcher.get_fundamentals(sym)
+                fundamentals = fund_results[idx]
+                if isinstance(fundamentals, Exception):
+                    sector_map["Unknown"] = sector_map.get("Unknown", 0) + 1
+                    continue
                 industry = ""
                 if fundamentals and isinstance(fundamentals, dict):
                     industry = fundamentals.get("行业", fundamentals.get("industry", "Unknown"))
@@ -156,10 +157,9 @@ async def get_risk_exposure(request: Request):
 
 
 @perf_router.get("/risk/metrics")
-async def get_risk_metrics(request: Request):
+async def get_risk_metrics(request: Request, fetcher: FetcherDep):
     try:
         import numpy as np
-        fetcher = getattr(request.app.state, "fetcher", None)
         trading = getattr(request.app.state, "trading", None)
         if fetcher is None or trading is None or not hasattr(trading, "get_positions"):
             return _json_response(True, data={
@@ -181,20 +181,20 @@ async def get_risk_metrics(request: Request):
                 "historicalVol": [], "impliedVol": [], "volDates": [],
             })
         symbols = list(positions.keys())[:20]
+        history_map = await fetcher.get_history_batch(symbols, "1y", "daily", "qfq")
         returns_list = []
         valid_symbols = []
-        for sym in symbols:
-            try:
-                df = await fetcher.get_history(sym, period="1y", kline_type="daily", adjust="qfq")
-                if df is not None and len(df) > 60 and "close" in df.columns:
-                    closes = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
+        for sym, df in history_map.items():
+            if len(df) > 60 and "close" in df.columns:
+                try:
+                    closes = pd.to_numeric(df["close"], errors="coerce").fillna(0).values.astype(float)
                     rets = np.diff(closes) / np.where(closes[:-1] > 0, closes[:-1], 1)
                     rets = np.where(np.isfinite(rets), rets, 0)
                     returns_list.append(rets)
                     valid_symbols.append(sym)
-            except Exception as e:
-                logger.debug("Failed to fetch history for risk assessment: %s", e)
-                continue
+                except Exception as e:
+                    logger.debug("Failed to fetch history for risk assessment: %s", e)
+                    continue
         if len(returns_list) < 1:
             return _json_response(True, data={
                 "riskLevel": "LOW",
@@ -294,9 +294,8 @@ async def kill_switch(request: Request, body: KillSwitchConfirm):
 
 
 @perf_router.post("/ai/summary")
-async def ai_market_summary(request: Request):
+async def ai_market_summary(fetcher: FetcherDep):
     try:
-        fetcher = request.app.state.fetcher
         overview = await fetcher.get_market_overview()
         cn_indices = overview.get("cn_indices", {})
         temperature = overview.get("temperature", 50.0)
@@ -348,9 +347,17 @@ async def ai_market_summary(request: Request):
 async def get_cache_stats(request: Request):
     try:
         from core.async_utils import (
-            rt_cache, kline_cache, sector_cache, overview_cache,
-            breadth_cache, backtest_result_cache, fundamental_cache,
-            index_cache, northbound_cache, alert_cache, search_cache,
+            alert_cache,
+            backtest_result_cache,
+            breadth_cache,
+            fundamental_cache,
+            index_cache,
+            kline_cache,
+            northbound_cache,
+            overview_cache,
+            rt_cache,
+            search_cache,
+            sector_cache,
         )
         all_caches = {
             "rt": rt_cache, "kline": kline_cache, "sector": sector_cache,
@@ -390,9 +397,17 @@ class CacheClearRequest(BaseModel):
 async def clear_cache(request: Request, body: CacheClearRequest):
     try:
         from core.async_utils import (
-            rt_cache, kline_cache, sector_cache, overview_cache,
-            breadth_cache, backtest_result_cache, fundamental_cache,
-            index_cache, northbound_cache, alert_cache, search_cache,
+            alert_cache,
+            backtest_result_cache,
+            breadth_cache,
+            fundamental_cache,
+            index_cache,
+            kline_cache,
+            northbound_cache,
+            overview_cache,
+            rt_cache,
+            search_cache,
+            sector_cache,
         )
         all_caches = {
             "rt": rt_cache, "kline": kline_cache, "sector": sector_cache,
@@ -418,9 +433,8 @@ async def clear_cache(request: Request, body: CacheClearRequest):
 
 
 @perf_router.post("/cache/warmup")
-async def warmup_cache(request: Request):
+async def warmup_cache(fetcher: FetcherDep):
     try:
-        fetcher = request.app.state.fetcher
         results = {}
         try:
             await fetcher.get_market_overview()
@@ -449,9 +463,8 @@ async def warmup_cache(request: Request):
 
 
 @perf_router.get("/datasource/health")
-async def get_datasource_health(request: Request):
+async def get_datasource_health(fetcher: FetcherDep):
     try:
-        fetcher = request.app.state.fetcher
         health_monitor = getattr(fetcher, "_health", None)
         if health_monitor is None:
             return _json_response(False, error="Health monitor not available")
@@ -488,7 +501,7 @@ async def get_databus_stats(request: Request):
 
 
 @perf_router.get("/events/stream")
-async def event_stream(request: Request):
+async def event_stream(request: Request, fetcher: FetcherDep):
     bus = getattr(request.app.state, "data_bus", None)
 
     async def _bus_stream():
@@ -524,9 +537,8 @@ async def event_stream(request: Request):
                         overview = await bus.get_cached(DataChannel.MARKET_OVERVIEW)
                         breadth = await bus.get_cached(DataChannel.MARKET_BREADTH)
                     else:
-                        fetcher = request.app.state.fetcher
                         try:
-                            from core.async_utils import overview_cache, breadth_cache
+                            from core.async_utils import breadth_cache, overview_cache
                             overview = await overview_cache.get("market_overview")
                             breadth = await breadth_cache.get("market_breadth")
                             if overview is None:
@@ -560,14 +572,13 @@ async def event_stream(request: Request):
 
 
 @perf_router.get("/market/quote")
-async def get_market_quote(request: Request, symbol: str = Query(..., min_length=1)):
+async def get_market_quote(fetcher: FetcherDep, symbol: str = Query(..., min_length=1)):
     try:
-        from core.async_utils import rt_cache, CACHE_TTL
+        from core.async_utils import CACHE_TTL, rt_cache
         cache_key = f"quote:{symbol}"
         cached = await rt_cache.get(cache_key)
         if cached is not None:
             return _json_response(True, data=cached, cached=True)
-        fetcher = getattr(request.app.state, "fetcher", None)
         if fetcher is None:
             return _json_response(False, error="Service not initialized")
         market = "CN"
@@ -603,19 +614,18 @@ async def get_market_quote(request: Request, symbol: str = Query(..., min_length
 
 @perf_router.get("/market/kline")
 async def get_market_kline(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query(..., min_length=1),
     period: str = Query("1y", max_length=5),
     kline_type: str = Query("daily", max_length=10),
     adjust: str = Query("qfq", max_length=5),
 ):
     try:
-        from core.async_utils import kline_cache, CACHE_TTL
+        from core.async_utils import CACHE_TTL, kline_cache
         cache_key = f"kline:{symbol}:{period}:{kline_type}:{adjust}"
         cached = await kline_cache.get(cache_key)
         if cached is not None:
             return _json_response(True, data=cached, cached=True)
-        fetcher = getattr(request.app.state, "fetcher", None)
         if fetcher is None:
             return _json_response(False, error="Service not initialized")
         df = await fetcher.get_history(symbol, period, kline_type, adjust)
@@ -652,9 +662,8 @@ async def get_market_kline(
 
 
 @perf_router.get("/terminal/orderbook")
-async def get_terminal_orderbook(request: Request, symbol: str = Query(..., min_length=1)):
+async def get_terminal_orderbook(fetcher: FetcherDep, symbol: str = Query(..., min_length=1)):
     try:
-        fetcher = getattr(request.app.state, "fetcher", None)
         if fetcher is None:
             return _json_response(True, data={"bids": [], "asks": []})
         market = "CN"
@@ -668,23 +677,24 @@ async def get_terminal_orderbook(request: Request, symbol: str = Query(..., min_
         current_price = float(quote.get("price", quote.get("current", 0)) or 0)
         if current_price <= 0:
             return _json_response(True, data={"bids": [], "asks": []})
-        import random
-        rng = random.Random(hash(symbol) + int(time.time() / 5))
+        bid_prices = quote.get("bid_prices", [])
+        bid_volumes = quote.get("bid_volumes", [])
+        ask_prices = quote.get("ask_prices", [])
+        ask_volumes = quote.get("ask_volumes", [])
+        has_depth = quote.get("has_depth", False)
+        if has_depth and bid_prices and ask_prices:
+            bids = [{"price": float(bid_prices[i]), "quantity": int(bid_volumes[i]), "orders": 0} for i in range(min(5, len(bid_prices))) if bid_prices[i] > 0]
+            asks = [{"price": float(ask_prices[i]), "quantity": int(ask_volumes[i]), "orders": 0} for i in range(min(5, len(ask_prices))) if ask_prices[i] > 0]
+            return _json_response(True, data={"bids": bids, "asks": asks})
+        tick = max(current_price * 0.001, 0.01)
+        volume = max(float(quote.get("volume", 0)), 1000)
+        base_qty = max(volume * 0.05, 100)
         bids = []
         asks = []
-        for i in range(10):
-            bid_price = round(current_price * (1 - (i + 1) * 0.001), 2)
-            ask_price = round(current_price * (1 + (i + 1) * 0.001), 2)
-            bids.append({
-                "price": bid_price,
-                "quantity": rng.randint(100, 5000) * 100,
-                "orders": rng.randint(1, 20),
-            })
-            asks.append({
-                "price": ask_price,
-                "quantity": rng.randint(100, 5000) * 100,
-                "orders": rng.randint(1, 20),
-            })
+        for i in range(5):
+            depth_decay = 1.0 / (i + 1)
+            bids.append({"price": round(current_price - tick * (i + 1), 2), "quantity": int(base_qty * depth_decay), "orders": 0})
+            asks.append({"price": round(current_price + tick * (i + 1), 2), "quantity": int(base_qty * depth_decay), "orders": 0})
         return _json_response(True, data={"bids": bids, "asks": asks})
     except Exception as e:
         logger.error("Terminal orderbook error: %s", e)
@@ -692,7 +702,7 @@ async def get_terminal_orderbook(request: Request, symbol: str = Query(..., min_
 
 
 @perf_router.get("/terminal/trades")
-async def get_terminal_trades(request: Request, symbol: str = Query(..., min_length=1)):
+async def get_terminal_trades(request: Request, fetcher: FetcherDep, symbol: str = Query(..., min_length=1)):
     try:
         trading = getattr(request.app.state, "trading", None)
         trades = []
@@ -710,34 +720,32 @@ async def get_terminal_trades(request: Request, symbol: str = Query(..., min_len
                             "direction": direction,
                             "time": str(t.get("time", t.get("timestamp", ""))),
                         })
-        if not trades:
-            fetcher = getattr(request.app.state, "fetcher", None)
-            if fetcher is not None:
-                market = "CN"
-                if symbol.startswith(("6", "9")):
-                    market = "SH"
-                elif symbol.startswith(("0", "3")):
-                    market = "SZ"
-                quote = await fetcher.get_realtime(symbol, market)
-                current_price = float(quote.get("price", quote.get("current", 0)) or 0) if quote else 0
-                if current_price > 0:
-                    import random
-                    rng = random.Random(hash(symbol) + int(time.time() / 10))
-                    now = time.time()
-                    for i in range(20):
-                        offset = rng.uniform(-0.002, 0.002)
-                        trade_price = round(current_price * (1 + offset), 2)
-                        qty = rng.randint(1, 50) * 100
-                        direction = "BUY" if rng.random() > 0.5 else "SELL"
-                        ts = now - i * rng.uniform(1, 30)
+        if not trades and fetcher is not None:
+            if symbol.startswith(("6", "9")) or symbol.startswith(("0", "3")):
+                pass
+            try:
+                df = await fetcher.get_history(symbol, period="1d", kline_type="1min", adjust="qfq")
+                if df is not None and not df.empty and len(df) > 0:
+                    recent = df.tail(30)
+                    for idx, row in recent.iterrows():
+                        close_p = float(row.get("close", row.get("Close", 0)))
+                        vol = int(row.get("volume", row.get("Volume", 0)))
+                        if close_p <= 0:
+                            continue
+                        open_p = float(row.get("open", row.get("Open", close_p)))
+                        direction = "BUY" if close_p >= open_p else "SELL"
+                        ts_val = row.get("date", row.get("time", row.name, None))
+                        ts_str = str(ts_val) if ts_val is not None else ""
                         trades.append({
-                            "id": f"T{int(ts*1000)}{i}",
-                            "price": trade_price,
-                            "quantity": qty,
-                            "amount": round(trade_price * qty, 2),
+                            "id": f"M{idx}",
+                            "price": close_p,
+                            "quantity": vol,
+                            "amount": round(close_p * vol, 2),
                             "direction": direction,
-                            "time": time.strftime("%H:%M:%S", time.localtime(ts)),
+                            "time": ts_str,
                         })
+            except Exception as e:
+                logger.debug("Trade history fallback failed for %s: %s", symbol, e)
         return _json_response(True, data=trades[:50])
     except Exception as e:
         logger.error("Terminal trades error: %s", e)

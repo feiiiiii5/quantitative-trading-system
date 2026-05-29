@@ -36,7 +36,21 @@ from api.auth import APIAuthMiddleware
 from api.backtest_routes import backtest_router
 from api.duckdb_routes import duckdb_router
 from api.feature_routes import feature_router
-from api.middleware import RequestBodyLimitMiddleware, RequestDedupMiddleware, RequestValidationMiddleware, StructuredTraceMiddleware, GracefulShutdownMiddleware, AdaptiveThrottleMiddleware, correlation_id, span_buffer, trace_id_var, set_draining, is_draining, inflight_count, get_drain_event, bump_lifespan_gen
+from api.middleware import (
+    AdaptiveThrottleMiddleware,
+    ETagCacheMiddleware,
+    GracefulShutdownMiddleware,
+    PerIPRateLimitMiddleware,
+    RequestBodyLimitMiddleware,
+    RequestDedupMiddleware,
+    RequestValidationMiddleware,
+    StructuredTraceMiddleware,
+    bump_lifespan_gen,
+    correlation_id,
+    get_drain_event,
+    inflight_count,
+    set_draining,
+)
 from api.perf_routes import perf_router
 from api.routes import _manager, push_portfolio_metrics, push_realtime_data, router
 from core.async_utils import FastJSONResponse
@@ -137,8 +151,11 @@ def _kill_existing_process():
             )
             if proc.stdout.strip():
                 for pid_str in proc.stdout.strip().split("\n"):
-                    pid = int(pid_str.strip())
-                    if pid != os.getpid():
+                    pid_str = pid_str.strip()
+                    if not pid_str.isdigit():
+                        continue
+                    pid = int(pid_str)
+                    if pid <= 0 or pid == os.getpid():
                         try:
                             os.kill(pid, signal.SIGTERM)
                             logger.info(f"已终止占用端口 {PORT} 的进程 PID={pid}")
@@ -339,7 +356,7 @@ async def lifespan(app: FastAPI):
             try:
                 await asyncio.wait_for(drain_evt.wait(), timeout=30.0)
                 logger.info("All in-flight requests completed")
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("Drain timeout — %d requests still in-flight", inflight_count())
         else:
             logger.info("No in-flight requests — proceeding with shutdown")
@@ -448,7 +465,7 @@ async def _scheduler_loop(app):
             if now - last_ws_rt >= ws_rt_interval:
                 try:
                     if _is_trading_hours() and _manager.connections:
-                        subscribed = _manager.get_all_subscribed_symbols()
+                        subscribed = await _manager.get_all_subscribed_symbols()
                         for symbol in list(subscribed)[:30]:
                             with contextlib.suppress(TimeoutError, Exception):
                                 await asyncio.wait_for(fetcher.get_realtime(symbol), timeout=3)
@@ -690,6 +707,8 @@ app.add_middleware(RequestDedupMiddleware)
 app.add_middleware(StructuredTraceMiddleware)
 app.add_middleware(GracefulShutdownMiddleware)
 app.add_middleware(AdaptiveThrottleMiddleware, base_rps=100)
+app.add_middleware(ETagCacheMiddleware, ttl=5.0)
+app.add_middleware(PerIPRateLimitMiddleware, rpm=120)
 app.add_middleware(_SecurityHeadersMiddleware)
 app.add_middleware(_RequestTimingMiddleware)
 app.add_middleware(RequestValidationMiddleware)
@@ -733,7 +752,7 @@ except ImportError as e:
 
 
 @app.get("/api/health")
-async def health_check():
+async def api_health_check():
     checks: dict[str, str] = {}
     db_ok = False
     try:
@@ -775,16 +794,16 @@ async def health_check():
     cache_info: dict[str, object] = {}
     try:
         from core.async_utils import (
-            rt_cache,
-            kline_cache,
-            sector_cache,
-            overview_cache,
-            breadth_cache,
+            alert_cache,
             backtest_result_cache,
+            breadth_cache,
             fundamental_cache,
             index_cache,
+            kline_cache,
             northbound_cache,
-            alert_cache,
+            overview_cache,
+            rt_cache,
+            sector_cache,
         )
         cache_info["rt_cache"] = rt_cache.stats()
         cache_info["kline_cache"] = kline_cache.stats()
@@ -828,6 +847,18 @@ async def unified_metrics_middleware(request: Request, call_next):
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["X-Request-ID"] = request_id
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https:; "
+        "font-src 'self' data:; "
+        "connect-src 'self' ws: wss: http://localhost:* http://127.0.0.1:*; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
     if path.startswith("/api"):
         response.headers["X-API-Version"] = "3.0.0"
     elapsed = time.monotonic() - start
@@ -1091,9 +1122,9 @@ if __name__ == "__main__":
 
     def open_browser():
         _preload_done.wait(timeout=60)
-        import urllib.request
         import urllib.error
-        for attempt in range(30):
+        import urllib.request
+        for _attempt in range(30):
             try:
                 req = urllib.request.Request(f"http://localhost:{PORT}/api/health")
                 with urllib.request.urlopen(req, timeout=3) as resp:

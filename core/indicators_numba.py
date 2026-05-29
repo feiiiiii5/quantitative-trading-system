@@ -163,9 +163,9 @@ def rsi_numba(data: np.ndarray, period: int = 14) -> np.ndarray:
 
 def atr_numba(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> np.ndarray:
     h = np.asarray(high, dtype=np.float64)
-    l = np.asarray(low, dtype=np.float64)
+    low_arr = np.asarray(low, dtype=np.float64)
     c = np.asarray(close, dtype=np.float64)
-    return _atr_core(h, l, c, period)
+    return _atr_core(h, low_arr, c, period)
 
 
 def bbands_numba(

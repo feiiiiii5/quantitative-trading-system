@@ -2,15 +2,16 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
-from enum import Enum
-from typing import Any, Callable
+from collections.abc import Callable
+from enum import StrEnum
+from typing import Any
 
 from core.async_utils import TTLCache
 
 logger = logging.getLogger(__name__)
 
 
-class DataChannel(str, Enum):
+class DataChannel(StrEnum):
     MARKET_OVERVIEW = "market.overview"
     MARKET_BREADTH = "market.breadth"
     SECTOR_HEATMAP = "sector.heatmap"

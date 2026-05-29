@@ -2,18 +2,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
+from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
-from api.utils import json_response as _json_response
-from api.utils import safe_error
+from api.dependencies import FetcherDep
 from api.routers.models import (
-    AnalyzeBacktestRequest, AutoOptimizeRequest, CompareStrategiesRequest,
-    DiagnoseRequest, SensitivityHeatmapRequest, SignalReplayRequest, WalkForwardRequest,
+    AnalyzeBacktestRequest,
+    AutoOptimizeRequest,
+    CompareStrategiesRequest,
+    DiagnoseRequest,
+    GarchVolatilityRequest,
+    PairMiningRequest,
+    PortfolioAnalyticsRequest,
+    RegimeDetectRequest,
+    SensitivityHeatmapRequest,
+    SignalReplayRequest,
+    WalkForwardRequest,
 )
+from api.utils import json_response as _json_response
+from api.utils import period_to_history as _period_to_history
+from api.utils import safe_error
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -37,15 +48,15 @@ async def parse_strategy(request: Request, body: StrategyParseRequest):
     try:
         from core.strategy_schema import (
             AssetClass,
-            Timeframe,
+            ExecutionModel,
+            IndicatorSpec,
             MarketType,
+            ParameterSpec,
+            RiskManagement,
+            SignalLogic,
             StrategyDefinition,
             StrategyMeta,
-            ParameterSpec,
-            IndicatorSpec,
-            SignalLogic,
-            RiskManagement,
-            ExecutionModel,
+            Timeframe,
         )
         meta = StrategyMeta(
             name=body.strategy_name,
@@ -79,32 +90,23 @@ async def parse_strategy(request: Request, body: StrategyParseRequest):
 
 
 @router.post("/quantlab/diagnose")
-async def diagnose_strategy(request: Request, body: DiagnoseRequest):
+async def diagnose_strategy(fetcher: FetcherDep, body: DiagnoseRequest):
     try:
         from core.backtest import BacktestEngine
         from core.backtest.enhanced_metrics import compute_comprehensive_metrics
+        from core.strategies import STRATEGY_REGISTRY
+        from core.strategy_analyzer import analyze_backtest_result
         from core.strategy_schema import (
-            AssetClass,
-            Timeframe,
             MarketType,
             StrategyDefinition,
             StrategyMeta,
-            ParameterSpec,
-            IndicatorSpec,
-            SignalLogic,
-            RiskManagement,
-            ExecutionModel,
         )
-        from core.strategy_analyzer import analyze_backtest_result
-        from core.strategies import STRATEGY_REGISTRY
-        from core.data_fetcher import get_fetcher
 
         strategy_name = body.strategy
         symbol = body.symbol
         if strategy_name not in STRATEGY_REGISTRY:
             return _json_response(False, error=f"策略{strategy_name}不存在")
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or len(df) < 60:
             return _json_response(False, error="数据不足")
@@ -136,17 +138,17 @@ async def diagnose_strategy(request: Request, body: DiagnoseRequest):
             "total_return_pct": round(result.total_return, 2),
             "cagr_pct": round(result.annual_return, 2),
             "sharpe": round(result.sharpe_ratio, 2),
-            "max_dd_pct": round(result.max_drawdown * 100, 2),
+            "max_dd_pct": round(result.max_drawdown, 2),
             "win_rate_pct": round(result.win_rate, 1),
         }
 
         return _json_response(True, data={
             "quick_stats": quick_stats,
             "comprehensive_metrics": {
-                "returns": {k: v for k, v in metrics.returns.__dict__.items()},
-                "risk": {k: v for k, v in metrics.risk.__dict__.items()},
-                "risk_adjusted": {k: v for k, v in metrics.risk_adjusted.__dict__.items()},
-                "trades": {k: v for k, v in metrics.trades.__dict__.items()},
+                "returns": dict(metrics.returns.__dict__.items()),
+                "risk": dict(metrics.risk.__dict__.items()),
+                "risk_adjusted": dict(metrics.risk_adjusted.__dict__.items()),
+                "trades": dict(metrics.trades.__dict__.items()),
                 "distribution": {
                     "skewness": metrics.distribution.skewness,
                     "kurtosis": metrics.distribution.kurtosis,
@@ -165,19 +167,19 @@ async def diagnose_strategy(request: Request, body: DiagnoseRequest):
 @router.post("/quantlab/analyze-strategy")
 async def analyze_strategy_endpoint(request: Request, body: StrategyParseRequest):
     try:
+        from core.strategy_analyzer import analyze_strategy
         from core.strategy_schema import (
             AssetClass,
-            Timeframe,
+            ExecutionModel,
+            IndicatorSpec,
             MarketType,
+            ParameterSpec,
+            RiskManagement,
+            SignalLogic,
             StrategyDefinition,
             StrategyMeta,
-            ParameterSpec,
-            IndicatorSpec,
-            SignalLogic,
-            RiskManagement,
-            ExecutionModel,
+            Timeframe,
         )
-        from core.strategy_analyzer import analyze_strategy
         meta = StrategyMeta(
             name=body.strategy_name,
             version=body.strategy_version,
@@ -234,19 +236,19 @@ async def analyze_strategy_endpoint(request: Request, body: StrategyParseRequest
 @router.post("/quantlab/analyze-backtest")
 async def analyze_backtest_endpoint(request: Request, body: AnalyzeBacktestRequest):
     try:
+        from core.strategy_analyzer import analyze_backtest_result
         from core.strategy_schema import (
             AssetClass,
-            Timeframe,
+            ExecutionModel,
+            IndicatorSpec,
             MarketType,
+            ParameterSpec,
+            RiskManagement,
+            SignalLogic,
             StrategyDefinition,
             StrategyMeta,
-            ParameterSpec,
-            IndicatorSpec,
-            SignalLogic,
-            RiskManagement,
-            ExecutionModel,
+            Timeframe,
         )
-        from core.strategy_analyzer import analyze_backtest_result
 
         strategy_data = body.strategy
         result_data = body.result
@@ -275,7 +277,7 @@ async def analyze_backtest_endpoint(request: Request, body: AnalyzeBacktestReque
 
 @router.get("/quantlab/comprehensive-metrics")
 async def get_comprehensive_metrics(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query(..., max_length=20),
     strategy: str = Query(..., max_length=50),
 ):
@@ -283,12 +285,10 @@ async def get_comprehensive_metrics(
         from core.backtest import BacktestEngine
         from core.backtest.enhanced_metrics import compute_comprehensive_metrics
         from core.strategies import STRATEGY_REGISTRY
-        from core.data_fetcher import get_fetcher
 
         if strategy not in STRATEGY_REGISTRY:
             return _json_response(False, error=f"策略{strategy}不存在")
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or len(df) < 60:
             return _json_response(False, error="数据不足")
@@ -351,12 +351,11 @@ async def get_comprehensive_metrics(
 
 
 @router.post("/quantlab/walk-forward")
-async def walk_forward_analysis_endpoint(request: Request, body: WalkForwardRequest):
+async def walk_forward_analysis_endpoint(fetcher: FetcherDep, body: WalkForwardRequest):
     try:
         from core.backtest import BacktestEngine
         from core.backtest.optimization import walk_forward_analysis
         from core.strategies import STRATEGY_REGISTRY
-        from core.data_fetcher import get_fetcher
 
         strategy_name = body.strategy
         symbol = body.symbol
@@ -370,7 +369,6 @@ async def walk_forward_analysis_endpoint(request: Request, body: WalkForwardRequ
         if strategy_name not in STRATEGY_REGISTRY:
             return _json_response(False, error=f"策略{strategy_name}不存在")
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or len(df) < is_window + oos_window:
             return _json_response(False, error="数据不足")
@@ -390,12 +388,11 @@ async def walk_forward_analysis_endpoint(request: Request, body: WalkForwardRequ
 
 
 @router.post("/quantlab/auto-optimize")
-async def auto_optimize_strategy(request: Request, body: AutoOptimizeRequest):
+async def auto_optimize_strategy(fetcher: FetcherDep, body: AutoOptimizeRequest):
     try:
         from core.backtest import BacktestEngine
-        from core.backtest.optimization import walk_forward_analysis, parameter_grid_scan
+        from core.backtest.optimization import walk_forward_analysis
         from core.strategies import STRATEGY_REGISTRY
-        from core.data_fetcher import get_fetcher
 
         strategy_name = body.strategy
         symbol = body.symbol
@@ -407,7 +404,6 @@ async def auto_optimize_strategy(request: Request, body: AutoOptimizeRequest):
         if strategy_name not in STRATEGY_REGISTRY:
             return _json_response(False, error=f"策略{strategy_name}不存在")
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or len(df) < is_window + oos_window:
             return _json_response(False, error="数据不足")
@@ -455,13 +451,11 @@ async def auto_optimize_strategy(request: Request, body: AutoOptimizeRequest):
 
 
 @router.get("/quantlab/strategy-health")
-async def strategy_health_monitor(request: Request, symbol: str = Query("000001", max_length=20)):
+async def strategy_health_monitor(fetcher: FetcherDep, symbol: str = Query("000001", max_length=20)):
     try:
         from core.backtest import BacktestEngine
         from core.strategies import STRATEGY_REGISTRY
-        from core.data_fetcher import get_fetcher
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="1y", kline_type="daily", adjust="qfq")
         if df is None or len(df) < 60:
             return _json_response(False, error="数据不足，至少需要60根K线")
@@ -524,18 +518,16 @@ async def strategy_health_monitor(request: Request, symbol: str = Query("000001"
 
 
 @router.post("/quantlab/compare-strategies")
-async def compare_strategies(request: Request, body: CompareStrategiesRequest):
+async def compare_strategies(fetcher: FetcherDep, body: CompareStrategiesRequest):
     try:
         from core.backtest import BacktestEngine
         from core.strategies import STRATEGY_REGISTRY
-        from core.data_fetcher import get_fetcher
 
         symbol = body.symbol
         strategy_names = body.strategies
         if not strategy_names:
             return _json_response(False, error="请提供策略列表")
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or len(df) < 60:
             return _json_response(False, error="数据不足")
@@ -566,11 +558,10 @@ async def compare_strategies(request: Request, body: CompareStrategiesRequest):
 
 
 @router.post("/quantlab/sensitivity-heatmap")
-async def sensitivity_heatmap(request: Request, body: SensitivityHeatmapRequest):
+async def sensitivity_heatmap(fetcher: FetcherDep, body: SensitivityHeatmapRequest):
     try:
         from core.backtest import BacktestEngine
         from core.strategies import STRATEGY_REGISTRY
-        from core.data_fetcher import get_fetcher
 
         strategy_name = body.strategy
         symbol = body.symbol
@@ -583,7 +574,6 @@ async def sensitivity_heatmap(request: Request, body: SensitivityHeatmapRequest)
         if strategy_name not in STRATEGY_REGISTRY:
             return _json_response(False, error=f"策略{strategy_name}不存在")
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or len(df) < 60:
             return _json_response(False, error="数据不足")
@@ -602,10 +592,7 @@ async def sensitivity_heatmap(request: Request, body: SensitivityHeatmapRequest)
                     strat = strategy_cls(**{param_x: xv_typed, param_y: yv_typed})
                     bt_result = await asyncio.to_thread(engine.run, strat, df, symbol)
                     val = getattr(bt_result, metric, None)
-                    if val is not None and hasattr(val, "__float__"):
-                        val = round(float(val), 4)
-                    else:
-                        val = None
+                    val = round(float(val), 4) if val is not None and hasattr(val, "__float__") else None
                     row.append(val)
                     if val is not None:
                         valid_metrics.append(val)
@@ -658,10 +645,9 @@ async def sensitivity_heatmap(request: Request, body: SensitivityHeatmapRequest)
 
 
 @router.post("/quantlab/signal-replay")
-async def signal_replay(request: Request, body: SignalReplayRequest):
+async def signal_replay(fetcher: FetcherDep, body: SignalReplayRequest):
     try:
         from core.strategies import STRATEGY_REGISTRY
-        from core.data_fetcher import get_fetcher
 
         strategy_name = body.strategy
         symbol = body.symbol
@@ -672,7 +658,6 @@ async def signal_replay(request: Request, body: SignalReplayRequest):
         if strategy_name not in STRATEGY_REGISTRY:
             return _json_response(False, error=f"策略{strategy_name}不存在")
 
-        fetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or len(df) < 2:
             return _json_response(False, error="数据不足")
@@ -744,4 +729,343 @@ async def signal_replay(request: Request, body: SignalReplayRequest):
         })
     except Exception as e:
         logger.error("Signal replay error: %s", e)
+        return _json_response(False, error=safe_error(e))
+
+
+class CrossSectionalRankRequest(BaseModel):
+    symbols: str = Field(..., min_length=1, max_length=500, description="逗号分隔的股票代码")
+    period: str = Field("6m", max_length=5, description="训练数据时间范围")
+    forward_period: int = Field(5, ge=1, le=60, description="前向收益天数")
+    n_top: int = Field(10, ge=1, le=50, description="推荐股票数量")
+
+
+@router.post("/quantlab/cross-sectional-rank")
+async def cross_sectional_rank(fetcher: FetcherDep, body: CrossSectionalRankRequest):
+    """横截面因子排名：使用LightGBM对股票进行多因子综合评分和排名"""
+    try:
+        from core.cross_sectional_ranker import LGBM_AVAILABLE, CrossSectionalRanker
+
+        if not LGBM_AVAILABLE:
+            return _json_response(False, error="LightGBM未安装，请执行: pip install lightgbm")
+
+        symbol_list = [s.strip() for s in body.symbols.split(",") if s.strip()]
+        if len(symbol_list) < 10:
+            return _json_response(False, error="至少需要10只股票进行横截面排名")
+
+        symbol_list = symbol_list[:50]
+
+        history_map = await fetcher.get_history_batch(
+            symbol_list, "1y", "daily", "qfq"
+        )
+
+        price_data = {}
+        for sym, df in history_map.items():
+            if df is not None and len(df) >= 60:
+                price_data[sym] = df
+
+        if len(price_data) < 10:
+            return _json_response(False, error="有效数据不足，至少需要10只股票有60日以上数据")
+
+        from core.indicators import compute_macd, compute_rsi
+
+        factor_rows = []
+        for sym, df in price_data.items():
+            close = df["close"].astype(float).values
+            if len(close) < 30:
+                continue
+
+            returns = pd.Series(close).pct_change().dropna()
+            if len(returns) < 20:
+                continue
+
+            momentum_5 = returns.rolling(5).mean().iloc[-1] if len(returns) >= 5 else 0.0
+            momentum_10 = returns.rolling(10).mean().iloc[-1] if len(returns) >= 10 else 0.0
+            momentum_20 = returns.rolling(20).mean().iloc[-1] if len(returns) >= 20 else 0.0
+
+            vol_5 = returns.rolling(5).std().iloc[-1] if len(returns) >= 5 else 0.0
+            vol_10 = returns.rolling(10).std().iloc[-1] if len(returns) >= 10 else 0.0
+            vol_20 = returns.rolling(20).std().iloc[-1] if len(returns) >= 20 else 0.0
+
+            rsi_val = compute_rsi(close, period=14)
+            rsi = float(rsi_val[-1]) if len(rsi_val) > 0 else 50.0
+
+            macd_result = compute_macd(close)
+            macd_val = float(macd_result["macd"][-1]) if len(macd_result["macd"]) > 0 else 0.0
+            macd_signal = float(macd_result["signal"][-1]) if len(macd_result["signal"]) > 0 else 0.0
+
+            avg_volume = float(df["volume"].astype(float).tail(20).mean()) if "volume" in df.columns else 0.0
+
+            factor_rows.append({
+                "symbol": sym,
+                "momentum_5": momentum_5,
+                "momentum_10": momentum_10,
+                "momentum_20": momentum_20,
+                "vol_5": vol_5,
+                "vol_10": vol_10,
+                "vol_20": vol_20,
+                "rsi": rsi,
+                "macd": macd_val,
+                "macd_signal": macd_signal,
+                "avg_volume": avg_volume,
+            })
+
+        if len(factor_rows) < 10:
+            return _json_response(False, error="有效因子数据不足")
+
+        factor_df = pd.DataFrame(factor_rows).set_index("symbol")
+
+        forward_returns = {}
+        for sym in factor_df.index:
+            if sym in price_data:
+                close = price_data[sym]["close"].astype(float).values
+                if len(close) > body.forward_period:
+                    forward_returns[sym] = (close[-1] - close[-body.forward_period - 1]) / close[-body.forward_period - 1]
+                else:
+                    forward_returns[sym] = 0.0
+
+        forward_ret_series = pd.Series(forward_returns, name="forward_return")
+
+        ranker = CrossSectionalRanker()
+        train_info = ranker.fit(factor_df, forward_ret_series)
+
+        ranked = ranker.predict(factor_df)
+        top_stocks = ranker.select_top_stocks(factor_df, n_stocks=body.n_top)
+
+        importance = ranker.feature_importance()
+
+        return _json_response(True, data={
+            "top_stocks": [
+                {"symbol": sym, "rank_score": round(float(ranked.get(sym, 0)), 4)}
+                for sym in top_stocks
+            ],
+            "all_rankings": [
+                {"symbol": sym, "rank_score": round(float(score), 4)}
+                for sym, score in sorted(ranked.items(), key=lambda x: x[1], reverse=True)
+            ],
+            "feature_importance": {
+                name: round(float(imp), 4)
+                for name, imp in importance.head(10).items()
+            },
+            "train_info": {
+                "n_samples": train_info["n_samples"],
+                "n_train": train_info["n_train"],
+                "n_val": train_info["n_val"],
+                "best_iteration": train_info["best_iteration"],
+            },
+            "factors_used": list(factor_df.columns),
+        })
+    except Exception as e:
+        logger.error("Cross-sectional rank error: %s", e)
+        return _json_response(False, error=safe_error(e))
+
+
+@router.post("/quantlab/regime-detect")
+async def regime_detect(fetcher: FetcherDep, body: RegimeDetectRequest):
+    """HMM市场状态检测：识别当前市场处于牛市/熊市/中性状态"""
+    try:
+        symbol = body.symbol.strip()
+        df = await fetcher.get_history(symbol, period=body.period, kline_type="daily", adjust="qfq")
+        if df is None or df.empty or "close" not in df.columns:
+            return _json_response(False, error="无法获取行情数据")
+
+        close = pd.to_numeric(df["close"], errors="coerce").dropna()
+        if len(close) < 60:
+            return _json_response(False, error="数据不足，至少需要60个交易日")
+
+        returns = close.pct_change().dropna().values
+        from core.volatility import detect_regime_hmm
+        result = detect_regime_hmm(returns, n_states=body.n_states)
+
+        if "error" in result:
+            return _json_response(False, error=result["error"])
+
+        return _json_response(True, data={
+            "symbol": symbol,
+            "period": body.period,
+            "n_data_points": len(returns),
+            "current_state": result["current_label"],
+            "state_probabilities": result["state_probabilities"],
+            "states": result["states"],
+            "transition_matrix": result["transition_matrix"],
+            "regime_history": result["regime_history"],
+        })
+    except Exception as e:
+        logger.error("Regime detect error: %s", e)
+        return _json_response(False, error=safe_error(e))
+
+
+@router.post("/quantlab/volatility-garch")
+async def volatility_garch(fetcher: FetcherDep, body: GarchVolatilityRequest):
+    """GARCH波动率建模：估计当前和长期波动率，预测未来波动率"""
+    try:
+        symbol = body.symbol.strip()
+        df = await fetcher.get_history(symbol, period=body.period, kline_type="daily", adjust="qfq")
+        if df is None or df.empty or "close" not in df.columns:
+            return _json_response(False, error="无法获取行情数据")
+
+        close = pd.to_numeric(df["close"], errors="coerce").dropna()
+        if len(close) < 30:
+            return _json_response(False, error="数据不足，至少需要30个交易日")
+
+        returns = close.pct_change().dropna().values
+        from core.volatility import fit_garch
+        result = fit_garch(returns, iterations=body.iterations)
+
+        if "error" in result:
+            return _json_response(False, error=result["error"])
+
+        return _json_response(True, data={
+            "symbol": symbol,
+            "period": body.period,
+            "n_data_points": len(returns),
+            "current_volatility": result["current_volatility"],
+            "long_run_volatility": result["long_run_volatility"],
+            "persistence": result["persistence"],
+            "garch_params": {
+                "omega": result["omega"],
+                "alpha": result["alpha"],
+                "beta": result["beta"],
+            },
+            "forecasts": {
+                "5d": result["forecast_5d"],
+                "10d": result["forecast_10d"],
+                "22d": result["forecast_22d"],
+            },
+            "forecast_series": result["forecast_series"],
+            "volatility_history": result["volatility_history"],
+            "regime": result["regime"],
+        })
+    except Exception as e:
+        logger.error("GARCH volatility error: %s", e)
+        return _json_response(False, error=safe_error(e))
+
+
+@router.post("/quantlab/pair-mining")
+async def pair_mining(fetcher: FetcherDep, body: PairMiningRequest):
+    """统计套利配对挖掘：寻找协整股票对"""
+    try:
+        symbol_list = [s.strip() for s in body.symbols if s.strip()]
+        if len(symbol_list) < 2:
+            return _json_response(False, error="至少需要2只股票进行配对分析")
+        symbol_list = symbol_list[:20]
+
+        history_map = await fetcher.get_history_batch(
+            symbol_list, _period_to_history(body.period), "daily", "qfq"
+        )
+
+        price_data = {}
+        for sym, df in history_map.items():
+            if df is not None and len(df) >= 30 and "close" in df.columns:
+                price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna()
+
+        if len(price_data) < 2:
+            return _json_response(False, error="有效数据不足，至少需要2只股票有足够历史数据")
+
+        prices_df = pd.DataFrame(price_data)
+        from core.statistical_arbitrage import PairMiningEngine
+        engine = PairMiningEngine(pvalue_threshold=body.pvalue_threshold, method=body.method)
+        results = engine.find_cointegrated_pairs(prices_df, list(price_data.keys()))
+
+        return _json_response(True, data={
+            "method": body.method,
+            "n_symbols_tested": len(price_data),
+            "n_pairs_found": len(results),
+            "pairs": [r.to_dict() for r in results],
+        })
+    except Exception as e:
+        logger.error("Pair mining error: %s", e)
+        return _json_response(False, error=safe_error(e))
+
+
+@router.post("/quantlab/portfolio-analytics")
+async def portfolio_analytics(fetcher: FetcherDep, body: PortfolioAnalyticsRequest):
+    """统一组合分析管道：一次性完成市场状态检测、风险平价优化、蒙特卡洛VaR、因子归因"""
+    try:
+        symbol_list = [s.strip() for s in body.symbols.split(",") if s.strip()]
+        if len(symbol_list) < 2:
+            return _json_response(False, error="至少需要2只股票")
+        symbol_list = symbol_list[:20]
+
+        history_map = await fetcher.get_history_batch(
+            symbol_list, _period_to_history(body.period), "daily", "qfq"
+        )
+
+        price_data = {}
+        for sym, df in history_map.items():
+            if df is not None and len(df) >= 30 and "close" in df.columns:
+                price_data[sym] = pd.to_numeric(df["close"], errors="coerce").dropna()
+
+        if len(price_data) < 2:
+            return _json_response(False, error="有效数据不足，至少需要2只股票有足够历史数据")
+
+        min_len = min(len(v) for v in price_data.values())
+        prices_df = pd.DataFrame({sym: v.values[-min_len:] for sym, v in price_data.items()})
+        returns_df = prices_df.pct_change().dropna()
+
+        result: dict[str, Any] = {
+            "symbols": list(price_data.keys()),
+            "period": body.period,
+            "n_observations": len(returns_df),
+        }
+
+        if body.include_regime and len(returns_df) >= 60:
+            from core.volatility import detect_regime_hmm
+            portfolio_returns = returns_df.mean(axis=1).values
+            regime = detect_regime_hmm(portfolio_returns, n_states=body.n_regime_states)
+            if "error" not in regime:
+                result["regime"] = {
+                    "current_state": regime["current_label"],
+                    "state_probabilities": regime["state_probabilities"],
+                    "states": regime["states"],
+                }
+
+        if body.include_risk_parity:
+            from core.risk_parity_portfolio import RiskParityPortfolio
+            rp = RiskParityPortfolio(symbols=list(price_data.keys()))
+            for _, row in returns_df.iterrows():
+                rp.update_returns(row.values)
+            state = rp.compute_target_weights()
+            result["risk_parity"] = {
+                "weights": state.weights,
+                "risk_contributions": state.risk_contributions,
+                "portfolio_volatility": state.portfolio_volatility,
+                "rebalance_needed": state.rebalance_needed,
+                "max_drift": state.max_drift,
+            }
+
+        if body.include_var:
+            from core.monte_carlo_var import MonteCarloVaR
+            mc = MonteCarloVaR(n_simulations=body.n_simulations, time_horizon=body.time_horizon)
+            mc_result = mc.simulate(prices_df)
+            if mc_result.is_valid:
+                result["var"] = {
+                    "var_95": round(mc_result.var_95, 6),
+                    "var_99": round(mc_result.var_99, 6),
+                    "cvar_95": round(mc_result.cvar_95, 6),
+                    "cvar_99": round(mc_result.cvar_99, 6),
+                    "mean_return": round(mc_result.mean_portfolio_return, 6),
+                    "std_return": round(mc_result.std_portfolio_return, 6),
+                    "n_simulations": mc_result.n_simulations,
+                }
+
+        if body.include_factor_attribution and len(price_data) >= 3:
+            try:
+                from core.factor_model import FactorModel
+                fm = FactorModel()
+                factor_returns = fm.construct_factor_returns(returns_df)
+                if factor_returns is not None and len(factor_returns) > 0:
+                    exposures = fm.estimate_exposures(returns_df, factor_returns)
+                    attribution = fm.attribute_returns(returns_df, factor_returns, exposures)
+                    if attribution.is_valid:
+                        result["factor_attribution"] = {
+                            "total_return": round(attribution.total_return, 6),
+                            "factor_contributions": {k: round(v, 6) for k, v in attribution.factor_contributions.items()},
+                            "specific_return": round(attribution.specific_return, 6),
+                        }
+            except Exception as e:
+                logger.debug("Factor attribution skipped: %s", e)
+
+        return _json_response(True, data=result)
+    except Exception as e:
+        logger.error("Portfolio analytics error: %s", e)
         return _json_response(False, error=safe_error(e))

@@ -98,11 +98,11 @@ class TickLevelBacktester:
         positions_history: list[dict[str, Any]] = []
         state: dict[str, Any] = {"cash": cash, "position_qty": 0, "position_avg_price": 0.0}
 
-        prices = np.array([t.get("price", 0.0) for t in ticks], dtype=np.float64)
+        np.array([t.get("price", 0.0) for t in ticks], dtype=np.float64)
         volumes = np.array([t.get("size", 0) for t in ticks], dtype=np.float64)
         avg_volume = float(np.mean(volumes)) if len(volumes) > 0 else 1.0
 
-        for idx, tick in enumerate(ticks):
+        for _idx, tick in enumerate(ticks):
             signal = strategy_fn(tick, state)
 
             if signal and signal.get("action") in ("buy", "sell"):
@@ -127,10 +127,7 @@ class TickLevelBacktester:
                     })
 
             mid_price = tick.get("price", 0.0)
-            if position_qty > 0 and mid_price > 0:
-                equity = cash + position_qty * mid_price
-            else:
-                equity = cash
+            equity = cash + position_qty * mid_price if position_qty != 0 and mid_price > 0 else cash
             equity_curve.append(equity)
 
             positions_history.append({
@@ -273,10 +270,10 @@ class TickLevelBacktester:
         position_avg_price: float,
         avg_volume: float,
     ) -> dict[str, Any]:
-        if position_qty <= 0:
+        if position_qty < 0:
             return {"filled": False}
 
-        sell_qty = min(signal.get("qty", position_qty), position_qty)
+        sell_qty = signal.get("qty", 0) if position_qty == 0 else min(signal.get("qty", position_qty), position_qty)
         if sell_qty <= 0:
             return {"filled": False}
 
@@ -334,10 +331,7 @@ class TickLevelBacktester:
             impact_coeff=self._slippage_impact_coeff,
         )
 
-        if action == "buy":
-            fill_price = price + slippage
-        else:
-            fill_price = price - slippage
+        fill_price = price + slippage if action == "buy" else price - slippage
 
         fill_price = max(fill_price, 1e-9)
         fill_value = qty * fill_price

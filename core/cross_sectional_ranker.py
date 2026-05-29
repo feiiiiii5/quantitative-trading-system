@@ -55,7 +55,7 @@ class CrossSectionalRanker:
             raise ImportError("lightgbm is required for CrossSectionalRanker. Install with: pip install lightgbm")
 
         valid_mask = factor_matrix.notna().all(axis=1) & forward_returns.notna()
-        X = factor_matrix[valid_mask].copy()
+        X = factor_matrix[valid_mask].copy()  # noqa: N806
         y = forward_returns[valid_mask].copy()
 
         if len(X) < self._config.min_data_in_leaf * 2:
@@ -65,7 +65,7 @@ class CrossSectionalRanker:
         labels = y.rank(pct=True).values
 
         n_val = max(1, int(len(X) * val_ratio))
-        X_train, X_val = X.iloc[:-n_val], X.iloc[-n_val:]
+        X_train, X_val = X.iloc[:-n_val], X.iloc[-n_val:]  # noqa: N806
         y_train, y_val = labels[:-n_val], labels[-n_val:]
 
         train_data = lgb.Dataset(
@@ -118,8 +118,8 @@ class CrossSectionalRanker:
         if not self._is_fitted:
             raise RuntimeError("Model not fitted yet. Call fit() first.")
 
-        X = factor_matrix.reindex(columns=self._feature_names, fill_value=0)
-        X = X.fillna(0)
+        X = factor_matrix.reindex(columns=self._feature_names, fill_value=0)  # noqa: N806
+        X = X.fillna(0)  # noqa: N806
         raw_scores = self._model.predict(X.values)
         ranked = pd.Series(raw_scores, index=factor_matrix.index).rank(pct=True)
         return ranked
@@ -128,8 +128,8 @@ class CrossSectionalRanker:
         if not self._is_fitted:
             raise RuntimeError("Model not fitted yet. Call fit() first.")
 
-        X = factor_matrix.reindex(columns=self._feature_names, fill_value=0)
-        X = X.fillna(0)
+        X = factor_matrix.reindex(columns=self._feature_names, fill_value=0)  # noqa: N806
+        X = X.fillna(0)  # noqa: N806
         return pd.Series(self._model.predict(X.values), index=factor_matrix.index)
 
     def feature_importance(self, importance_type: str = "gain") -> pd.Series:

@@ -264,6 +264,8 @@ class SimulatedTrading:
 
     @staticmethod
     def _get_board_limit(symbol: str) -> float:
+        if symbol.startswith("688"):
+            return 0.20
         if symbol.startswith("8"):
             return 0.30
         if symbol.startswith(("3", "68")):
@@ -669,8 +671,7 @@ class SimulatedTrading:
                             order.filled_price = current_price
                             executed.append({"order": self._order_to_dict(order), "result": result})
 
-                elif order.action == "sell":
-                    if (order.order_type == "limit" and current_price >= order.price) or order.order_type == "market":
+                elif order.action == "sell" and ((order.order_type == "limit" and current_price >= order.price) or order.order_type == "market"):
                         result = self.execute_sell(
                             symbol=order.symbol,
                             price=order.price,

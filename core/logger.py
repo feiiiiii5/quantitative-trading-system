@@ -118,7 +118,12 @@ def get_recent_logs(limit: int = 100, level: str | None = None) -> list[dict]:
 
     rows: deque[dict] = deque(maxlen=limit)
     try:
+        file_size = APP_LOG_PATH.stat().st_size
+        max_read_size = 10 * 1024 * 1024
         with open(APP_LOG_PATH, encoding="utf-8", errors="ignore") as f:
+            if file_size > max_read_size:
+                f.seek(file_size - max_read_size)
+                f.readline()
             for line in f:
                 line = line.strip()
                 if not line:
@@ -132,7 +137,6 @@ def get_recent_logs(limit: int = 100, level: str | None = None) -> list[dict]:
                     pass
     except Exception as e:
         logger.debug("Failed to read recent logs: {}", e)
-        pass
     return list(rows)[-limit:]
 
 

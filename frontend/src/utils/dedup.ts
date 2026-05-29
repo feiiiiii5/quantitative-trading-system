@@ -1,20 +1,25 @@
-const map = new Map<string, { p: Promise<unknown>; t: number; refCount: number }>();
+const map = new Map<string, { p: Promise<unknown>; t: number; v?: unknown; ok?: boolean }>();
 
 export function dedup<T>(key: string, fn: () => Promise<T>, ttl = 150): Promise<T> {
   const e = map.get(key);
   if (e && Date.now() - e.t < ttl) {
-    e.refCount++;
-    return (e.p as Promise<T>).finally(() => {
-      e.refCount--;
-      if (e.refCount <= 0) map.delete(key);
-    });
+    if (e.ok) return e.v as T;
+    return e.p as Promise<T>;
   }
-  const entry: { p: Promise<unknown>; t: number; refCount: number } = { p: Promise.resolve(), t: Date.now(), refCount: 1 };
-  const p = fn().finally(() => {
-    entry.refCount--;
-    if (entry.refCount <= 0) map.delete(key);
+  const p = fn().then((v) => {
+    const current = map.get(key);
+    if (current && current.p === p) {
+      current.v = v;
+      current.ok = true;
+    }
+    return v;
+  }).catch((err) => {
+    const current = map.get(key);
+    if (current && current.p === p) {
+      map.delete(key);  // 失败时删除，允许重试
+    }
+    throw err;
   });
-  entry.p = p;
-  map.set(key, entry);
+  map.set(key, { p, t: Date.now() });
   return p;
 }

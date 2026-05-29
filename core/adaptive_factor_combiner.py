@@ -6,7 +6,7 @@ __all__ = [
 
 import logging
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 import numpy as np
@@ -14,7 +14,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-class CombinationMethod(str, Enum):
+class CombinationMethod(StrEnum):
     IC_WEIGHTED = "ic_weighted"
     EQUAL = "equal"
     IC_IR_WEIGHTED = "ic_ir_weighted"
@@ -145,7 +145,7 @@ class AdaptiveFactorCombiner:
     def _reweight(self) -> None:
         if self._method == CombinationMethod.EQUAL:
             n = len(self._factor_names)
-            self._current_weights = {f: 1.0 / n for f in self._factor_names}
+            self._current_weights = dict.fromkeys(self._factor_names, 1.0 / n)
             return
 
         ics = {}
@@ -174,7 +174,7 @@ class AdaptiveFactorCombiner:
                 raw_weights[name] = self._shrinkage_target * equal_w + (1 - self._shrinkage_target) * ic_w
         else:
             n = len(self._factor_names)
-            raw_weights = {f: 1.0 / n for f in self._factor_names}
+            raw_weights = dict.fromkeys(self._factor_names, 1.0 / n)
 
         total = sum(raw_weights.values())
         if total > 1e-12:

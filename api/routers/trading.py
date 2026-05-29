@@ -4,13 +4,20 @@ import time
 
 from fastapi import APIRouter, Query, Request
 
-from api.connection_manager import push_signal_event, set_symbol_priority, _PRIORITY_POSITION, _PRIORITY_WATCHLIST
+from api.connection_manager import _PRIORITY_POSITION, _PRIORITY_WATCHLIST, push_signal_event, set_symbol_priority
+from api.dependencies import FetcherDep
 from api.routers.models import (
-    PortfolioImportRequest, TCAAnalyzeRequest, TCABatchRequest,
-    TCAExecutionRecommendRequest, TradingBuyRequest, TradingSellRequest,
+    JournalEntryRequest,
+    JournalUpdateRequest,
+    PortfolioImportRequest,
+    TCAAnalyzeRequest,
+    TCABatchRequest,
+    TCAExecutionRecommendRequest,
+    TradingBuyRequest,
+    TradingSellRequest,
 )
-from api.utils import json_response as _json_response
 from api.utils import get_trading, rate_limiter, safe_error
+from api.utils import json_response as _json_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -35,10 +42,10 @@ async def get_trading_account(request: Request):
 async def trading_buy(
     request: Request,
     body: TradingBuyRequest,
+    fetcher: FetcherDep,
 ):
     try:
         from api.routers.models import BuyOrderRequest
-        from core.data_fetcher import SmartDataFetcher
         from core.market_detector import MarketDetector
 
         validated = BuyOrderRequest(symbol=body.symbol, price=body.price, shares=body.shares, name=body.name, market=body.market)
@@ -57,7 +64,6 @@ async def trading_buy(
         if trading is None:
 
             return _json_response(False, error="交易引擎未初始化")
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         rt = await fetcher.get_realtime(symbol, market)
         market_price = rt.get("price", 0) if rt else 0
 
@@ -162,9 +168,9 @@ async def trading_reset(request: Request):
 async def trading_sell(
     request: Request,
     body: TradingSellRequest,
+    fetcher: FetcherDep,
 ):
     try:
-        from core.data_fetcher import SmartDataFetcher
         from core.market_detector import MarketDetector
 
         trading = get_trading(request)
@@ -181,7 +187,6 @@ async def trading_sell(
             sell_shares = pos.shares if pos else 0
         if sell_shares <= 0:
             return _json_response(False, error="无持仓或卖出数量无效")
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         market = MarketDetector.detect(symbol)
         rt = await fetcher.get_realtime(symbol, market)
         market_price = rt.get("price", 0) if rt else 0
@@ -199,7 +204,7 @@ async def trading_sell(
                 mv = getattr(pos, "market_value", 0) if not isinstance(pos, dict) else pos.get("market_value", 0)
                 pos_dict[sym] = {"market_value": mv}
 
-        sell_order_value = sell_shares * (market_price if market_price > 0 else price)
+        order_value = sell_shares * (market_price if market_price > 0 else price)
 
         if total_assets <= 0:
             return _json_response(False, error="账户资产信息异常，无法执行交易")
@@ -592,23 +597,20 @@ async def tca_execution_recommendation(request: Request, body: TCAExecutionRecom
 
 
 @router.post("/journal")
-async def add_journal_entry(request: Request):
+async def add_journal_entry(body: JournalEntryRequest):
     try:
         from core.trade_journal import JournalEntry, TradeJournal
-        body = await request.json()
         entry = JournalEntry(
-            symbol=body.get("symbol", ""),
-            name=body.get("name", ""),
-            trade_type=body.get("trade_type", "buy"),
-            price=float(body.get("price", 0)),
-            quantity=int(body.get("quantity", 0)),
-            notes=body.get("notes", ""),
-            tags=body.get("tags", []),
-            emotion=body.get("emotion", ""),
-            rating=int(body.get("rating", 0)),
+            symbol=body.symbol,
+            name=body.name,
+            trade_type=body.trade_type,
+            price=body.price,
+            quantity=body.quantity,
+            notes=body.notes,
+            tags=body.tags,
+            emotion=body.emotion,
+            rating=body.rating,
         )
-        if not entry.symbol:
-            return _json_response(False, error="股票代码不能为空")
         journal = TradeJournal()
         entry_id = journal.add_entry(entry)
         return _json_response(True, data={"id": entry_id})
@@ -653,12 +655,11 @@ async def get_journal_entries(
 
 
 @router.put("/journal/{entry_id}")
-async def update_journal_entry(entry_id: int, request: Request):
+async def update_journal_entry(entry_id: int, body: JournalUpdateRequest):
     try:
         from core.trade_journal import TradeJournal
-        body = await request.json()
         journal = TradeJournal()
-        ok = journal.update_entry(entry_id, body)
+        ok = journal.update_entry(entry_id, body.model_dump(exclude_none=True))
         return _json_response(ok, data={"id": entry_id} if ok else None, error="更新失败" if not ok else None)
     except Exception as e:
         logger.error("Journal update error: %s", e)

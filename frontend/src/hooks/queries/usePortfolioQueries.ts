@@ -34,6 +34,11 @@ export function usePortfolioRiskDashboard() {
       concentration: Record<string, number>;
       drawdown: { current_drawdown: number; max_drawdown: number; drawdown_status: string };
       stress_summary: Array<{ scenario: string; impact: number }>;
+      riskDecomposition?: Array<{ source: string; contribution: number }>;
+      correlationMatrix?: { labels: string[]; values: number[][] };
+      historicalVol?: number[];
+      impliedVol?: number[];
+      volDates?: string[];
     }>('/portfolio/risk/dashboard'),
     staleTime: 30_000,
   });

@@ -250,9 +250,8 @@ class FeatureEngineer:
         result = pd.DataFrame(index=df.index)
 
         for period in [10, 20, 60]:
-            r = returns.tail(period)
-            result[f"skewness_{period}d"] = r.skew()
-            result[f"kurtosis_{period}d"] = r.kurt()
+            result[f"skewness_{period}d"] = returns.rolling(period, min_periods=period // 2).skew()
+            result[f"kurtosis_{period}d"] = returns.rolling(period, min_periods=period // 2).kurt()
 
         for period in [5, 10, 20]:
             result[f"returns_mean_{period}d"] = returns.rolling(period).mean()
@@ -370,7 +369,10 @@ class FeatureEngineer:
 
         tr = np.maximum(
             high.values[1:] - low.values[1:],
-            np.abs(high.values[1:] - close.values[:-1])
+            np.maximum(
+                np.abs(high.values[1:] - close.values[:-1]),
+                np.abs(low.values[1:] - close.values[:-1]),
+            ),
         )
         tr = np.insert(tr, 0, high.iloc[0] - low.iloc[0])
         plus_dm = np.maximum(np.diff(high, prepend=high.iloc[0]), 0)

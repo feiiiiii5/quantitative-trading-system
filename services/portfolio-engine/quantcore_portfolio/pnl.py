@@ -41,7 +41,7 @@ class PnLCalculator:
             )
 
         twr = 1.0
-        for i, (start_value, flow) in enumerate(zip(period_values[:-1], cash_flows)):
+        for i, (start_value, flow) in enumerate(zip(period_values[:-1], cash_flows, strict=False)):
             end_value = period_values[i + 1]
             denominator = start_value + flow
             if denominator == 0:
@@ -87,7 +87,7 @@ class PnLCalculator:
 
         if pnl_series and benchmark_series and len(pnl_series) == len(benchmark_series):
             beta = self._calculate_beta(pnl_series, benchmark_series)
-            diffs = [p - b for p, b in zip(pnl_series, benchmark_series)]
+            diffs = [p - b for p, b in zip(pnl_series, benchmark_series, strict=False)]
             tracking_error = (
                 math.sqrt(sum(d ** 2 for d in diffs) / len(diffs))
                 if diffs
@@ -120,7 +120,7 @@ class PnLCalculator:
         mean_b = sum(benchmark_returns) / n
         covariance = sum(
             (p - mean_p) * (b - mean_b)
-            for p, b in zip(portfolio_returns, benchmark_returns)
+            for p, b in zip(portfolio_returns, benchmark_returns, strict=False)
         ) / (n - 1)
         variance = sum((b - mean_b) ** 2 for b in benchmark_returns) / (n - 1)
         return covariance / variance if variance != 0 else 0.0

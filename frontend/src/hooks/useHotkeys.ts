@@ -10,6 +10,7 @@ export function useHotkeys(map: Record<string, HotkeyHandler>): void {
     const target = e.target as HTMLElement;
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') {
       if (e.key !== 'Escape') return;
+      (target as HTMLElement).blur();  // 在 input 中按 Escape 先失焦再执行 handler
     }
 
     const parts: string[] = [];

@@ -4,6 +4,18 @@ import { apiGet } from '@/api/client';
 import { dedup } from '@/utils/dedup';
 import type { RiskLevel, RiskAlert, RiskMetrics } from '@/types';
 
+interface RawDecompItem {
+  source?: unknown;
+  symbol?: unknown;
+  contribution?: unknown;
+  weight?: unknown;
+}
+
+interface RawCorrelationMatrix {
+  labels?: unknown[];
+  values?: unknown[][];
+}
+
 interface RiskState {
   riskLevel: RiskLevel;
   var95: number;
@@ -60,6 +72,28 @@ export const useRiskStore = create<RiskState>()(devtools((set) => ({
         const var95 = rm.var_95 ?? 0;
         const maxDrawdown = rm.max_drawdown ?? 0;
         const riskLevel: RiskLevel = var95 > 0.05 || maxDrawdown > 0.15 ? 'HIGH' : var95 > 0.03 || maxDrawdown > 0.08 ? 'MEDIUM' : 'LOW';
+
+        const rawDecomp = raw.riskDecomposition ?? raw.risk_decomposition ?? [];
+        const riskDecomposition = Array.isArray(rawDecomp)
+          ? (rawDecomp as RawDecompItem[]).map((d) => ({ source: String(d.source ?? d.symbol ?? 'Unknown'), contribution: Number(d.contribution ?? d.weight ?? 0) }))
+          : [];
+
+        const rawCorr = raw.correlationMatrix ?? raw.correlation_matrix ?? { labels: [], values: [[]] };
+        const corrData = rawCorr as RawCorrelationMatrix;
+        const correlationMatrix = {
+          labels: Array.isArray(corrData.labels) ? corrData.labels.map(String) : [],
+          values: Array.isArray(corrData.values) ? corrData.values as number[][] : [[]],
+        };
+
+        const rawHistVol = raw.historicalVol ?? raw.historical_vol ?? [];
+        const historicalVol = Array.isArray(rawHistVol) ? rawHistVol.map(Number) : [];
+
+        const rawImplVol = raw.impliedVol ?? raw.implied_vol ?? [];
+        const impliedVol = Array.isArray(rawImplVol) ? rawImplVol.map(Number) : [];
+
+        const rawVolDates = raw.volDates ?? raw.vol_dates ?? [];
+        const volDates = Array.isArray(rawVolDates) ? rawVolDates.map(String) : [];
+
         const data: RiskMetrics = {
           riskLevel,
           var95,
@@ -67,11 +101,11 @@ export const useRiskStore = create<RiskState>()(devtools((set) => ({
           maxDrawdown,
           sharpe: rm.portfolio_sharpe ?? 0,
           beta: 1,
-          riskDecomposition: [],
-          correlationMatrix: { labels: [], values: [[]] },
-          historicalVol: [],
-          impliedVol: [],
-          volDates: [],
+          riskDecomposition,
+          correlationMatrix,
+          historicalVol,
+          impliedVol,
+          volDates,
         };
         set({
           metrics: data,

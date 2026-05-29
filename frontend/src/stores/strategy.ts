@@ -122,6 +122,7 @@ export const useStrategyStore = create<StrategyState>()(devtools((set, get) => (
     set({ backtestRunning: true, backtestResult: null, backtestLogs: [] });
     const logs: string[] = [];
     const addLog = (msg: string) => {
+      if (ac.signal.aborted) return;  // 已中止则不再追加日志
       logs.push(msg);
       set({ backtestLogs: [...logs] });
     };
@@ -249,7 +250,9 @@ export const useStrategyStore = create<StrategyState>()(devtools((set, get) => (
     try {
       const data = await apiGet<BacktestResult[]>('/backtest/history');
       set({ backtestHistory: Array.isArray(data) ? data : [] });
-    } catch {}
+    } catch {
+      set({ backtestHistory: [] });
+    }
   },
 
   clearResult: () => set({ backtestResult: null, backtestLogs: [] }),

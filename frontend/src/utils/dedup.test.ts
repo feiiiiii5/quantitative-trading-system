@@ -29,9 +29,10 @@ describe('dedup', () => {
 
   it('should clean up map entry after promise settles', async () => {
     const fn = vi.fn().mockResolvedValue('done');
-    await dedup('key4', fn);
+    await dedup('key4', fn, 0);
+    await new Promise(r => setTimeout(r, 10));
     const fn2 = vi.fn().mockResolvedValue('done2');
-    await dedup('key4', fn2);
+    await dedup('key4', fn2, 0);
     expect(fn).toHaveBeenCalledTimes(1);
     expect(fn2).toHaveBeenCalledTimes(1);
   });

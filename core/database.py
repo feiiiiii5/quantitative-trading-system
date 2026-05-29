@@ -7,7 +7,6 @@ QuantCore 数据库模块
 import asyncio
 import contextlib
 import hashlib
-import heapq
 import json
 import logging
 import sqlite3
@@ -199,11 +198,11 @@ def get_cache_manager() -> CacheManager:
 
 
 class _Transaction:
-    def __init__(self, store: 'SQLiteStore'):
+    def __init__(self, store: SQLiteStore):
         self._store = store
         self._conn: sqlite3.Connection | None = None
 
-    def __enter__(self) -> '_Transaction':
+    def __enter__(self) -> _Transaction:
         conn = self._store._get_conn()
         conn.execute("BEGIN")
         self._conn = conn
@@ -226,6 +225,8 @@ class _Transaction:
             self._conn.rollback()
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self._conn is None:
+            return
         if exc_type is not None:
             self.rollback()
         else:
@@ -717,7 +718,7 @@ class SQLiteStore:
         return pd.DataFrame(data, columns=columns)
 
     def fetchall_cached(self, sql: str, params: tuple = (), ttl: float = 60.0) -> list[dict]:
-        cache_key = hashlib.md5(f"{sql}:{params}".encode()).hexdigest()
+        cache_key = hashlib.sha256(f"{sql}:{params}".encode()).hexdigest()
         cached = _db_query_cache.get(cache_key)
         if cached is not None:
             logger.debug("Cache hit for query key=%s", cache_key)
@@ -860,12 +861,14 @@ class SQLiteStore:
         return self.fetchall(sql, tuple(params))
 
     _hot_config_cache: dict[str, tuple[Any, float]] = {}
+    _hot_config_lock = threading.Lock()
     _HOT_CONFIG_KEYS = frozenset({"watchlist", "portfolio_snapshot", "price_alerts", "strategy_settings", "user_preferences"})
     _HOT_CONFIG_TTL = 30.0
 
     def get_config(self, key: str, default: Any = None) -> Any:
         if key in self._HOT_CONFIG_KEYS:
-            cached = self._hot_config_cache.get(key)
+            with self._hot_config_lock:
+                cached = self._hot_config_cache.get(key)
             if cached is not None:
                 value, ts = cached
                 if time.monotonic() - ts < self._HOT_CONFIG_TTL:
@@ -877,7 +880,8 @@ class SQLiteStore:
             except (json.JSONDecodeError, TypeError):
                 result = row["value"]
             if key in self._HOT_CONFIG_KEYS:
-                self._hot_config_cache[key] = (result, time.monotonic())
+                with self._hot_config_lock:
+                    self._hot_config_cache[key] = (result, time.monotonic())
             return result
         return default
 
@@ -885,7 +889,8 @@ class SQLiteStore:
         value_str = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
         self.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, value_str))
         if key in self._HOT_CONFIG_KEYS:
-            self._hot_config_cache[key] = (value, time.monotonic())
+            with self._hot_config_lock:
+                self._hot_config_cache[key] = (value, time.monotonic())
 
     def get_realtime_cache(self, symbol: str) -> dict | None:
         row = self.fetchone("SELECT data, update_time FROM realtime_cache WHERE symbol=?", (symbol,))
@@ -1195,7 +1200,7 @@ class AsyncWriteQueue:
                     await asyncio.to_thread(self._db._batch_execute, batch)
                     self._pending -= len(batch)
                     batch.clear()
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if batch:
                     await asyncio.to_thread(self._db._batch_execute, batch)
                     self._pending -= len(batch)
@@ -1238,7 +1243,7 @@ class AsyncDatabaseSession:
         self._db = db or get_db()
         self._conn = None
 
-    async def __aenter__(self) -> 'AsyncDatabaseSession':
+    async def __aenter__(self) -> AsyncDatabaseSession:
         def _get() -> sqlite3.Connection:
             return self._db._get_conn()
         loop = asyncio.get_running_loop()

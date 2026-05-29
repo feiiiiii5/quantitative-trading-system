@@ -21,6 +21,8 @@ export function useApiGet<T>(
   const [state, setState] = useState<ApiState<T>>({ data: null, loading: immediate, error: null });
   const acRef = useRef<AbortController | null>(null);
 
+  const paramsKey = JSON.stringify(params);
+
   const execute = useCallback(async () => {
     acRef.current?.abort();
     const ac = new AbortController();
@@ -38,7 +40,7 @@ export function useApiGet<T>(
         setState({ data: null, loading: false, error: (e as Error).message });
       }
     }
-  }, [url, JSON.stringify(params), timeout]);
+  }, [url, paramsKey, timeout]);
 
   useEffect(() => {
     if (immediate) {

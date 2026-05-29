@@ -9,7 +9,7 @@ from core.models import validate_signal_dict
 from core.orders import Order, OrderSide, OrderType
 from core.strategies import BaseStrategy
 
-from .result import BacktestResult, InsufficientDataError, MIN_BARS_REQUIRED
+from .result import MIN_BARS_REQUIRED, BacktestResult, InsufficientDataError
 from .stats import compute_backtest_statistics
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ def run_event_driven(
 ) -> BacktestResult:
     if df is None or len(df) < MIN_BARS_REQUIRED:
         raise InsufficientDataError(
-            "%s requires at least %d bars; got %s" % (strategy.name, MIN_BARS_REQUIRED, len(df) if df is not None else 0)
+            f"{strategy.name} requires at least {MIN_BARS_REQUIRED} bars; got {len(df) if df is not None else 0}"
         )
 
     df = df.copy()
@@ -46,7 +46,7 @@ def run_event_driven(
 
     if len(df) < MIN_BARS_REQUIRED:
         raise InsufficientDataError(
-            "%s requires at least %d bars after date parsing/cleaning; got %s" % (strategy.name, MIN_BARS_REQUIRED, len(df))
+            f"{strategy.name} requires at least {MIN_BARS_REQUIRED} bars after date parsing/cleaning; got {len(df)}"
         )
 
     if engine._data_quality is not None:
@@ -55,13 +55,15 @@ def run_event_driven(
     strategy.reset()
     engine._event_bus.publish(Event(EventType.INIT, {"strategy": strategy.name}))
 
-    closes = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float) if "close" in df.columns else np.array([])
-    opens = pd.to_numeric(df["open"], errors="coerce").dropna().values.astype(float) if "open" in df.columns else closes
-    highs = pd.to_numeric(df["high"], errors="coerce").dropna().values.astype(float) if "high" in df.columns else closes
-    lows = pd.to_numeric(df["low"], errors="coerce").dropna().values.astype(float) if "low" in df.columns else closes
-    dates_col = df["date"].values if "date" in df.columns else np.arange(len(closes))
-    volumes = pd.to_numeric(df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in df.columns else None
-    amounts_col = pd.to_numeric(df["amount"], errors="coerce").dropna().values.astype(float) if "amount" in df.columns else None
+    price_cols = [c for c in ["close", "open", "high", "low"] if c in df.columns]
+    work_df = df.dropna(subset=price_cols).reset_index(drop=True) if price_cols else df
+    closes = pd.to_numeric(work_df["close"], errors="coerce").fillna(0).values.astype(float) if "close" in work_df.columns else np.array([])
+    opens = pd.to_numeric(work_df["open"], errors="coerce").fillna(0).values.astype(float) if "open" in work_df.columns else closes
+    highs = pd.to_numeric(work_df["high"], errors="coerce").fillna(0).values.astype(float) if "high" in work_df.columns else closes
+    lows = pd.to_numeric(work_df["low"], errors="coerce").fillna(0).values.astype(float) if "low" in work_df.columns else closes
+    dates_col = work_df["date"].values if "date" in work_df.columns else np.arange(len(closes))
+    volumes = pd.to_numeric(work_df["volume"], errors="coerce").fillna(0).values.astype(float) if "volume" in work_df.columns else None
+    amounts_col = pd.to_numeric(work_df["amount"], errors="coerce").fillna(0).values.astype(float) if "amount" in work_df.columns else None
 
     n = len(closes)
     if n < 2:
@@ -107,7 +109,7 @@ def run_event_driven(
                     "price": round(fill_price, 2), "shares": sell_shares,
                     "amount": round(amount, 2), "fee": round(cost_detail["total"], 2),
                     "cost_detail": cost_detail, "date": date_str, "bar_index": i,
-                    "reason": "止损@%.2f" % stop_loss, "pnl": round(pnl, 2),
+                    "reason": f"止损@{stop_loss:.2f}", "pnl": round(pnl, 2),
                     "mae": round(min(0, (float(lows[i]) - entry_price) / entry_price), 4) if entry_price > 1e-9 else 0,
                     "mfe": round(max(0, (float(highs[i]) - entry_price) / entry_price), 4) if entry_price > 1e-9 else 0,
                     "hold_days": _calc_hold_days(position.get("entry_date", ""), date_str),
@@ -131,7 +133,7 @@ def run_event_driven(
                     "price": round(fill_price, 2), "shares": sell_shares,
                     "amount": round(amount, 2), "fee": round(cost_detail["total"], 2),
                     "cost_detail": cost_detail, "date": date_str, "bar_index": i,
-                    "reason": "止盈@%.2f" % take_profit, "pnl": round(pnl, 2),
+                    "reason": f"止盈@{take_profit:.2f}", "pnl": round(pnl, 2),
                     "mae": round(min(0, (float(lows[i]) - entry_price) / entry_price), 4) if entry_price > 1e-9 else 0,
                     "mfe": round(max(0, (float(highs[i]) - entry_price) / entry_price), 4) if entry_price > 1e-9 else 0,
                     "hold_days": _calc_hold_days(position.get("entry_date", ""), date_str),
@@ -223,7 +225,7 @@ def run_event_driven(
 
                 if enable_risk_check:
                     order = Order(
-                        order_id="bt_buy_%d" % i,
+                        order_id=f"bt_buy_{i}",
                         symbol=symbol,
                         side=OrderSide.BUY,
                         order_type=OrderType.MARKET,

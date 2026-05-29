@@ -2,15 +2,18 @@ import { useEffect, useRef, useState, useCallback, useMemo, memo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { CandlestickSeries, LineSeries, HistogramSeries, type IChartApi, type CandlestickData, type HistogramData, type Time } from 'lightweight-charts';
 import { createQuantChart, CANDLE_STYLE } from '@/utils/chartFactory';
-import { useStockRealtime, useStockHistory, useStockIndicators } from '@/hooks/queries/useStockQueries';
+import { useStockRealtime, useStockHistory, useStockIndicators, type KlineBar, type IndicatorData } from '@/hooks/queries/useStockQueries';
 import { useApiGet } from '@/hooks/useApi';
-import { useChipDistribution, useStockNews, useNewsSentiment, useGarchVolatility, useHmmRegime, useRollingRisk, useSeasonality } from '@/hooks/queries/useStockDetailQueries';
+import { useChipDistribution, useStockNews, useNewsSentiment, useGarchVolatility, useHmmRegime, useRollingRisk, useSeasonality, type ChipData, type GarchData, type HmmData, type RollingRiskData, type RollingRiskPoint, type SeasonalityData } from '@/hooks/queries/useStockDetailQueries';
 import { useCanvas } from '@/hooks/useCanvas';
 import { useSSEQuote } from '@/hooks/useSSEQuote';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { SkeletonCard } from '@/components/ui/Skeleton';
 import { WaterfallChart } from '@/components/charts/WaterfallChart';
+import { ExportButton } from '@/components/ExportButton';
+import { useCrosshairSync } from '@/hooks/useCrosshairSync';
+import type { CrosshairSyncHandle } from '@/hooks/useCrosshairSync';
 import { formatPrice, formatPercent, formatVolume, formatAmount, safeMin, safeMax } from '@/utils/format';
 import type { StockQuote } from '@/types';
 
@@ -54,99 +57,19 @@ interface MoneyFlowData {
   };
 }
 
-interface ChipData {
-  symbol: string;
-  current_price: number;
-  avg_cost: number;
-  profit_ratio: number;
-  concentration: number;
-  support_price: number;
-  resistance_price: number;
-  peak_price: number;
-  prices: number[];
-  distribution: number[];
-  chip_bands: Array<{ range: string; price_low: number; price_high: number; weight: number }>;
-  fire: Record<string, unknown>;
-}
-
-interface GarchData {
-  current_volatility: number;
-  long_run_volatility: number;
-  persistence: number;
-  omega: number;
-  alpha: number;
-  beta: number;
-  forecast_5d: number;
-  forecast_10d: number;
-  forecast_22d: number;
-  forecast_series: Array<{ day: number; volatility_annualized: number }>;
-}
-
-interface HmmData {
-  current_state: number;
-  current_label: string;
-  state_probabilities: Record<string, number>;
-  states: Array<{
-    label: string;
-    mean_daily_return: number;
-    annualized_volatility: number;
-    weight: number;
-  }>;
-}
-
-interface RollingRiskPoint {
-  date: string;
-  sharpe: number;
-  sortino: number;
-  calmar: number;
-  volatility: number;
-  max_drawdown: number;
-  var_95: number;
-  cvar_95: number;
-  win_rate: number;
-}
-
-interface RollingRiskData {
-  symbol: string;
-  window: number;
-  latest: RollingRiskPoint;
-  history: RollingRiskPoint[];
-}
-
-interface SeasonalityData {
-  symbol: string;
-  period: string;
-  monthly_returns: Record<string, number>;
-  day_of_week_returns: Record<string, number>;
-  best_month: string;
-  worst_month: string;
-  best_day: string;
-  worst_day: string;
-  monthly_sharpe: Record<string, number>;
-  turn_of_month_effect: {
-    tom_avg_return: number;
-    non_tom_avg_return: number;
-    tom_win_rate: number;
-    non_tom_win_rate: number;
-  };
-  seasonality_strength: number;
-}
-
-interface KlineRaw {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
-
-function msToTime(ts: number): Time {
-  const d = new Date(ts);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}` as Time;
+function klineTime(d: KlineBar): Time {
+  if (d.date) {
+    return d.date.split(' ')[0].split('T')[0] as Time;
+  }
+  if (d.time != null) {
+    const ts = d.time;
+    const dt = ts > 1e12 ? new Date(ts) : new Date(ts * 1000);
+    const yyyy = dt.getFullYear();
+    const mm = String(dt.getMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}` as Time;
+  }
+  return '1970-01-01' as Time;
 }
 
 const MoneyFlowTab = memo(function MoneyFlowTab({ symbol }: { symbol: string }) {
@@ -312,7 +235,7 @@ const MoneyFlowTab = memo(function MoneyFlowTab({ symbol }: { symbol: string }) 
 
 const ChipDistributionTab = memo(function ChipDistributionTab({ symbol }: { symbol: string }) {
   const { data, isLoading, isError } = useChipDistribution(symbol);
-  const chipData = data as unknown as ChipData | undefined;
+  const chipData = data;
 
   const { ref: chartRef, redraw: redrawChart } = useCanvas(
     useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
@@ -576,8 +499,8 @@ const NewsTab = memo(function NewsTab({ symbol }: { symbol: string }) {
 const VolatilityTab = memo(function VolatilityTab({ symbol }: { symbol: string }) {
   const { data: garchRaw, isLoading: garchLoading, isError: garchError } = useGarchVolatility(symbol);
   const { data: hmmRaw, isLoading: hmmLoading, isError: hmmError } = useHmmRegime(symbol);
-  const garch = garchRaw as unknown as GarchData | undefined;
-  const hmm = hmmRaw as unknown as HmmData | undefined;
+  const garch = garchRaw;
+  const hmm = hmmRaw;
   const isLoading = garchLoading || hmmLoading;
   const isError = garchError || hmmError;
 
@@ -771,7 +694,7 @@ const VolatilityTab = memo(function VolatilityTab({ symbol }: { symbol: string }
 
 const RollingRiskTab = memo(function RollingRiskTab({ symbol }: { symbol: string }) {
   const { data, isLoading, isError } = useRollingRisk(symbol);
-  const riskData = data as unknown as RollingRiskData | undefined;
+  const riskData = data;
 
   const { ref: chartRef, redraw: redrawChart } = useCanvas(
     useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
@@ -895,7 +818,7 @@ const DAY_LABELS: Record<string, string> = { Mon: '周一', Tue: '周二', Wed: 
 
 const SeasonalityTab = memo(function SeasonalityTab({ symbol }: { symbol: string }) {
   const { data, isLoading, isError } = useSeasonality(symbol);
-  const seasonData = data as unknown as SeasonalityData | undefined;
+  const seasonData = data;
 
   const { ref: chartRef, redraw: redrawChart } = useCanvas(
     useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
@@ -1152,7 +1075,7 @@ const TIME_PERIODS = [
 
 type TimePeriodKey = typeof TIME_PERIODS[number]['key'];
 
-const KlineChart = memo(function KlineChart({ symbol, period }: { symbol: string; period: TimePeriodKey }) {
+const KlineChart = memo(function KlineChart({ symbol, period, crosshairSync }: { symbol: string; period: TimePeriodKey; crosshairSync?: CrosshairSyncHandle }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ReturnType<IChartApi['addSeries']> | null>(null);
@@ -1161,16 +1084,16 @@ const KlineChart = memo(function KlineChart({ symbol, period }: { symbol: string
 
   const periodConfig = TIME_PERIODS.find(p => p.key === period) ?? TIME_PERIODS[2];
   const { data: klineRaw } = useStockHistory(symbol);
-  const klineData = klineRaw as unknown as KlineRaw[] | undefined;
+  const klineData = klineRaw;
 
   useEffect(() => {
     if (!containerRef.current) return;
     const chart = createQuantChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height: 480,
-      layout: { textColor: 'rgba(255,255,255,0.35)' } as any,
-      grid: { vertLines: { color: 'rgba(255,255,255,0.06)' }, horzLines: { color: 'rgba(255,255,255,0.06)' } } as any,
-      timeScale: { timeVisible: periodConfig.period === '1min' } as any,
+      layout: { textColor: 'rgba(255,255,255,0.35)' },
+      grid: { vertLines: { color: 'rgba(255,255,255,0.06)' }, horzLines: { color: 'rgba(255,255,255,0.06)' } },
+      timeScale: { timeVisible: periodConfig.period === '1min' },
     });
     chartRef.current = chart;
 
@@ -1188,6 +1111,9 @@ const KlineChart = memo(function KlineChart({ symbol, period }: { symbol: string
     });
 
     chart.subscribeCrosshairMove((param) => {
+      if (crosshairSync) {
+        crosshairSync.onCrosshairMove(param.time ?? null, chart);
+      }
       if (!param.time || !param.seriesData || param.seriesData.size === 0) {
         setTooltipBar(null);
         return;
@@ -1213,14 +1139,18 @@ const KlineChart = memo(function KlineChart({ symbol, period }: { symbol: string
       }
     };
     window.addEventListener('resize', onResize);
+
+    const unregister = crosshairSync?.registerChart(chart);
+
     return () => {
+      unregister?.();
       window.removeEventListener('resize', onResize);
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
     };
-  }, [symbol, periodConfig.period]);
+  }, [symbol, periodConfig.period, crosshairSync]);
 
   useEffect(() => {
     if (!klineData || !candleSeriesRef.current || !volumeSeriesRef.current || !chartRef.current) return;
@@ -1229,7 +1159,7 @@ const KlineChart = memo(function KlineChart({ symbol, period }: { symbol: string
       const volData: HistogramData<Time>[] = [];
 
       for (const d of klineData) {
-        const t = msToTime(d.time);
+        const t = klineTime(d);
         candleData.push({ time: t, open: d.open, high: d.high, low: d.low, close: d.close });
         const isUp = d.close >= d.open;
         volData.push({
@@ -1253,15 +1183,10 @@ const KlineChart = memo(function KlineChart({ symbol, period }: { symbol: string
   );
 });
 
-interface IndicatorData {
-  macd?: Array<{ time: string; macd: number; signal: number; histogram: number }>;
-  rsi?: Array<{ time: string; value: number }>;
-}
-
-const IndicatorPanel = memo(function IndicatorPanel({ symbol }: { symbol: string }) {
+const IndicatorPanel = memo(function IndicatorPanel({ symbol, crosshairSync }: { symbol: string; crosshairSync?: CrosshairSyncHandle }) {
   const [expanded, setExpanded] = useState(false);
   const { data: indicatorsRaw } = useStockIndicators(symbol);
-  const data = (indicatorsRaw ?? {}) as unknown as IndicatorData;
+  const data = indicatorsRaw ?? ({} as IndicatorData);
   const macdContainerRef = useRef<HTMLDivElement>(null);
   const rsiContainerRef = useRef<HTMLDivElement>(null);
   const macdChartRef = useRef<IChartApi | null>(null);
@@ -1276,7 +1201,7 @@ const IndicatorPanel = memo(function IndicatorPanel({ symbol }: { symbol: string
     const chart = createQuantChart(macdContainerRef.current, {
       width: macdContainerRef.current.clientWidth,
       height: 140,
-      timeScale: { timeVisible: false } as any,
+      timeScale: { timeVisible: false },
     });
     macdChartRef.current = chart;
 
@@ -1305,21 +1230,29 @@ const IndicatorPanel = memo(function IndicatorPanel({ symbol }: { symbol: string
       color: d.histogram >= 0 ? 'rgba(255,23,68,0.4)' : 'rgba(0,200,83,0.4)',
     }));
 
-    (macdLine as unknown as { setData: (d: unknown[]) => void }).setData(macdData);
-    (signalLine as unknown as { setData: (d: unknown[]) => void }).setData(signalData);
+    macdLine.setData(macdData);
+    signalLine.setData(signalData);
     histSeries.setData(histData);
     chart.timeScale().fitContent();
+
+    chart.subscribeCrosshairMove((param) => {
+      if (crosshairSync) {
+        crosshairSync.onCrosshairMove(param.time ?? null, chart);
+      }
+    });
 
     const onResize = () => {
       if (macdContainerRef.current) chart.applyOptions({ width: macdContainerRef.current.clientWidth });
     };
     window.addEventListener('resize', onResize);
+    const unregister = crosshairSync?.registerChart(chart);
     return () => {
+      unregister?.();
       window.removeEventListener('resize', onResize);
       chart.remove();
       macdChartRef.current = null;
     };
-  }, [expanded, data.macd]);
+  }, [expanded, data.macd, crosshairSync]);
 
   useEffect(() => {
     if (!expanded || !data.rsi?.length) return;
@@ -1330,7 +1263,7 @@ const IndicatorPanel = memo(function IndicatorPanel({ symbol }: { symbol: string
     const chart = createQuantChart(rsiContainerRef.current, {
       width: rsiContainerRef.current.clientWidth,
       height: 120,
-      timeScale: { timeVisible: false } as any,
+      timeScale: { timeVisible: false },
     });
     rsiChartRef.current = chart;
 
@@ -1342,19 +1275,27 @@ const IndicatorPanel = memo(function IndicatorPanel({ symbol }: { symbol: string
     });
 
     const rsiData = data.rsi.map(d => ({ time: d.time as Time, value: d.value }));
-    (rsiLine as unknown as { setData: (d: unknown[]) => void }).setData(rsiData);
+    rsiLine.setData(rsiData);
     chart.timeScale().fitContent();
+
+    chart.subscribeCrosshairMove((param) => {
+      if (crosshairSync) {
+        crosshairSync.onCrosshairMove(param.time ?? null, chart);
+      }
+    });
 
     const onResize = () => {
       if (rsiContainerRef.current) chart.applyOptions({ width: rsiContainerRef.current.clientWidth });
     };
     window.addEventListener('resize', onResize);
+    const unregister = crosshairSync?.registerChart(chart);
     return () => {
+      unregister?.();
       window.removeEventListener('resize', onResize);
       chart.remove();
       rsiChartRef.current = null;
     };
-  }, [expanded, data.rsi]);
+  }, [expanded, data.rsi, crosshairSync]);
 
   return (
     <div style={{ borderTop: '1px solid var(--separator)' }}>
@@ -1435,9 +1376,23 @@ export function StockDetailPage() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<ChartTab>('kline');
   const [chartPeriod, setChartPeriod] = useState<TimePeriodKey>('3M');
+  const crosshairSync = useCrosshairSync();
 
   const { data: quoteRaw, isLoading, isError: _isError } = useStockRealtime(symbol ?? '');
-  const quote = quoteRaw ? (quoteRaw as unknown as StockQuote) : null;
+  const quote = quoteRaw ?? null;
+  const { data: klineExportData } = useStockHistory(symbol ?? '');
+
+  const klineExportRows = useMemo(() => {
+    if (!klineExportData || !Array.isArray(klineExportData)) return [];
+    return klineExportData.map((d: KlineBar) => [
+      d.date ?? d.time ?? '',
+      d.open,
+      d.high,
+      d.low,
+      d.close,
+      d.volume,
+    ]);
+  }, [klineExportData]);
 
   const { quote: sseQuote } = useSSEQuote(symbol ?? '');
   const liveQuote = useMemo(() => {
@@ -1453,7 +1408,7 @@ export function StockDetailPage() {
 
   if (isLoading) {
     return (
-      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#000000' }}>
+      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-base)' }}>
         <SkeletonCard rows={5} />
       </div>
     );
@@ -1461,7 +1416,7 @@ export function StockDetailPage() {
 
   if (!quote) {
     return (
-      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 'var(--s4)', background: '#000000' }}>
+      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 'var(--s4)', background: 'var(--bg-base)' }}>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', color: 'rgba(255,255,255,0.20)', letterSpacing: '0.06em' }}>
           STOCK NOT FOUND
         </span>
@@ -1511,7 +1466,7 @@ export function StockDetailPage() {
   ];
 
   return (
-    <div style={{ height: '100%', overflow: 'auto', background: '#000000', padding: 'var(--s6)' }}>
+    <div style={{ height: '100%', overflow: 'auto', background: 'var(--bg-base)', padding: 'var(--s6)' }}>
       <div style={{ maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 'var(--s5)' }}>
 
         <button
@@ -1660,11 +1615,19 @@ export function StockDetailPage() {
                     {tp.label}
                   </button>
                 ))}
+                <div style={{ marginLeft: 'auto' }}>
+                  <ExportButton
+                    headers={['日期', '开盘', '最高', '最低', '收盘', '成交量']}
+                    rows={klineExportRows}
+                    filename={`${symbol ?? 'stock'}_K线_${new Date().toISOString().slice(0, 10)}`}
+                    label="导出K线"
+                  />
+                </div>
               </div>
               <ErrorBoundary fallback={<div style={{ color: 'var(--label-tertiary)', padding: 16 }}>Chart unavailable</div>}>
-                <KlineChart symbol={quote.symbol} period={chartPeriod} />
+                <KlineChart symbol={quote.symbol} period={chartPeriod} crosshairSync={crosshairSync} />
               </ErrorBoundary>
-              <IndicatorPanel symbol={quote.symbol} />
+              <IndicatorPanel symbol={quote.symbol} crosshairSync={crosshairSync} />
             </>
           )}
           {activeTab === 'moneyflow' && (

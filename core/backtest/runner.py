@@ -140,11 +140,12 @@ def run_backtest(
     if not result.dates or not result.equity_curve:
         return {"error": "回测未产生有效结果，请尝试更长的回测时间段"}
 
-    closes_raw = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
+    closes_raw = pd.to_numeric(df["close"], errors="coerce").fillna(0).values.astype(float)
     date_close_map = {}
     if "date" in df.columns:
-        ds_arr = df["date"].dt.strftime("%Y-%m-%d").values if hasattr(df["date"].dt, "strftime") else [str(d)[:10] for d in df["date"].values]
-        close_arr = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
+        work_df = df.dropna(subset=["close"]).reset_index(drop=True)
+        ds_arr = work_df["date"].dt.strftime("%Y-%m-%d").values if hasattr(work_df["date"].dt, "strftime") else [str(d)[:10] for d in work_df["date"].values]
+        close_arr = pd.to_numeric(work_df["close"], errors="coerce").fillna(0).values.astype(float)
         for j in range(len(ds_arr)):
             date_close_map[ds_arr[j]] = float(close_arr[j])
 

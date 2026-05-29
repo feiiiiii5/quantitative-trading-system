@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from core.strategies import BaseStrategy, SignalType, TradeSignal, STRATEGY_REGISTRY
+from core.strategies import STRATEGY_REGISTRY, BaseStrategy, SignalType, TradeSignal
 
 logger = logging.getLogger(__name__)
 
@@ -240,8 +240,8 @@ class EnhancedStatArbStrategy(BaseStrategy):
         lookback: int = 120,
         entry_z: float = 2.0,
         exit_z: float = 0.5,
-        kalman_Q: float = 1e-5,
-        kalman_R: float = 1e-3,
+        kalman_Q: float = 1e-5,  # noqa: N803
+        kalman_R: float = 1e-3,  # noqa: N803
     ):
         self.lookback = lookback
         self.entry_z = entry_z
@@ -338,10 +338,7 @@ class EnhancedStatArbStrategy(BaseStrategy):
         kelly = np.clip(kelly, -1.0, 1.0)
 
         cvar_limit = 0.02
-        if abs(cvar_val) > 1e-12:
-            cvar_sizing = cvar_limit / abs(cvar_val)
-        else:
-            cvar_sizing = 1.0
+        cvar_sizing = cvar_limit / abs(cvar_val) if abs(cvar_val) > 1e-12 else 1.0
         position_size = float(np.clip(abs(kelly) * hl_scalar * cvar_sizing, 0.05, 1.0))
 
         signal_action = "hold"
@@ -365,12 +362,11 @@ class EnhancedStatArbStrategy(BaseStrategy):
                 confidence = 0.6
                 reason = f"StatArb close short spread z={z_score:.2f}"
                 self._position = "flat"
-        elif self._position == "long_spread":
-            if z_score > -self.exit_z:
-                signal_action = "sell"
-                confidence = 0.6
-                reason = f"StatArb close long spread z={z_score:.2f}"
-                self._position = "flat"
+        elif self._position == "long_spread" and z_score > -self.exit_z:
+            signal_action = "sell"
+            confidence = 0.6
+            reason = f"StatArb close long spread z={z_score:.2f}"
+            self._position = "flat"
 
         if signal_action == "hold":
             return []
@@ -567,7 +563,7 @@ class _DecisionStump:
         self.left_value: float = 0.0
         self.right_value: float = 0.0
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
+    def predict(self, X: np.ndarray) -> np.ndarray:  # noqa: N803
         if X.ndim == 1:
             return self.right_value if X[self.feature_idx] > self.threshold else self.left_value
         return np.where(X[:, self.feature_idx] > self.threshold, self.right_value, self.left_value)
@@ -592,7 +588,7 @@ class _GradientBoostedTrees:
 
     def _build_stumps(
         self,
-        X: np.ndarray,
+        X: np.ndarray,  # noqa: N803
         residuals: np.ndarray,
         depth: int,
         indices: np.ndarray,
@@ -654,7 +650,7 @@ class _GradientBoostedTrees:
 
         return result
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> None:
+    def fit(self, X: np.ndarray, y: np.ndarray) -> None:  # noqa: N803
         n_samples = X.shape[0]
         self._base_prediction = float(np.mean(y))
         current_pred = np.full(n_samples, self._base_prediction)
@@ -677,9 +673,9 @@ class _GradientBoostedTrees:
             update /= max(len(tree_stumps), 1)
             current_pred += self.learning_rate * update
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
+    def predict(self, X: np.ndarray) -> np.ndarray:  # noqa: N803
         if X.ndim == 1:
-            X = X.reshape(1, -1)
+            X = X.reshape(1, -1)  # noqa: N806
         pred = np.full(X.shape[0], self._base_prediction)
         for tree_stumps in self._trees:
             update = np.zeros(X.shape[0])
@@ -786,7 +782,7 @@ class MLSignalStrategy(BaseStrategy):
         if need_retrain and len(close) >= 60:
             labels = self._create_labels(close, horizon=5)
             train_start = max(0, len(close) - self.train_window)
-            X_train = features[train_start:-5]
+            X_train = features[train_start:-5]  # noqa: N806
             y_train = labels[train_start:-5]
 
             valid_mask = y_train != 0.0
@@ -834,7 +830,7 @@ class MLSignalStrategy(BaseStrategy):
         features = self._compute_features(close, high, low, volume)
         labels = self._create_labels(close, horizon=5)
         train_start = max(0, len(close) - self.train_window)
-        X_train = features[train_start:-5]
+        X_train = features[train_start:-5]  # noqa: N806
         y_train = labels[train_start:-5]
         valid_mask = y_train != 0.0
         if np.sum(valid_mask) < 30:
@@ -936,11 +932,13 @@ class MarketMakingStrategy(BaseStrategy):
         if self._prev_close > 0:
             returns = close / self._prev_close - 1.0
             self._vol_estimate = 0.94 * self._vol_estimate + 0.06 * returns ** 2
+
+        prev_close_snapshot = self._prev_close
         self._prev_close = close
 
         sigma = np.sqrt(self._vol_estimate * 252) if self._vol_estimate > 0 else 0.01
 
-        buy_vol, sell_vol = self._classify_volume(close, self._prev_close, volume)
+        buy_vol, sell_vol = self._classify_volume(close, prev_close_snapshot, volume)
         self._volume_buckets.append({"buy_vol": buy_vol, "sell_vol": sell_vol, "volume": volume})
         if len(self._volume_buckets) > self.vpin_window + 10:
             self._volume_buckets = self._volume_buckets[-(self.vpin_window + 10):]

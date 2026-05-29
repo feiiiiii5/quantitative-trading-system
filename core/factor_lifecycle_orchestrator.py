@@ -6,7 +6,7 @@ __all__ = [
 
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 import numpy as np
@@ -20,7 +20,7 @@ from core.factor_validity import FactorValidityMonitor
 logger = logging.getLogger(__name__)
 
 
-class FactorLifecycleState(str, Enum):
+class FactorLifecycleState(StrEnum):
     INCUBATION = "incubation"
     ACTIVE = "active"
     WATCH = "watch"

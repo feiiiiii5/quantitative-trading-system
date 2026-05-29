@@ -25,10 +25,8 @@ class StrategyHotReloader:
         code_hash = self._compute_hash(code)
         module_name = f"quantcore_strategy_user.{strategy_id}"
 
-        if strategy_id in self._loaded_strategies:
-            old_module, _ = self._loaded_strategies[strategy_id]
-            if strategy_id in sys.modules:
-                del sys.modules[sys.modules.get(module_name, module_name)]
+        if strategy_id in self._loaded_strategies and module_name in sys.modules:
+            del sys.modules[module_name]
 
         spec = importlib.util.spec_from_loader(module_name, loader=None)
         if spec is None:

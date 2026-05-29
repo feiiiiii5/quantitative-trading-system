@@ -6,7 +6,7 @@ __all__ = [
 
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 import numpy as np
@@ -16,7 +16,7 @@ from core.regime_detector import MarketRegime, MarketRegimeDetector
 logger = logging.getLogger(__name__)
 
 
-class RebalanceVerdict(str, Enum):
+class RebalanceVerdict(StrEnum):
     REBALANCE_NOW = "rebalance_now"
     SKIP_LOW_DRIFT = "skip_low_drift"
     SKIP_RECENT_REBALANCE = "skip_recent_rebalance"

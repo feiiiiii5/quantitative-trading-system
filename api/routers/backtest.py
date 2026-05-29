@@ -13,6 +13,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
 from api.backtest_routes import BacktestAdvancedRequest
+from api.dependencies import FetcherDep
 from api.routers.models import BacktestOptimizeRequest, MultiSymbolBacktestRequest
 from api.utils import json_response as _json_response
 from api.utils import rate_limiter, safe_error
@@ -28,7 +29,7 @@ _bt_result_cache = OptimizedTTLCache(maxsize=200, ttl=600, cleanup_interval=120)
 
 @router.get("/backtest/attribution")
 async def get_performance_attribution(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query(..., description="股票代码"),
     strategy: str = Query("dual_ma", description="策略名称"),
     period: int = Query(250, ge=120, le=500, description="数据天数"),
@@ -39,7 +40,6 @@ async def get_performance_attribution(
         from core.performance_attribution import PerformanceAttribution
         from core.strategies import STRATEGY_REGISTRY
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or len(df) < 60:
             return _json_response(False, error="数据不足")
@@ -58,7 +58,7 @@ async def get_performance_attribution(
 
         strat_rets = np.diff(strategy_returns) / np.where(strategy_returns[:-1] > 1e-9, strategy_returns[:-1], 1.0)
         strat_rets = np.where(np.isfinite(strat_rets), strat_rets, 0)
-        bench_close = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
+        bench_close = pd.to_numeric(df["close"], errors="coerce").fillna(0).values.astype(float)
         if len(bench_close) < 2:
             return _json_response(False, error="基准数据不足")
         bench_rets = np.diff(bench_close) / np.where(bench_close[:-1] > 1e-9, bench_close[:-1], 1.0)
@@ -82,7 +82,7 @@ async def get_performance_attribution(
 
 @router.get("/backtest/rolling-attribution")
 async def get_rolling_attribution(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query(..., description="股票代码"),
     strategy: str = Query("dual_ma", description="策略名称"),
     period: int = Query(250, ge=120, le=500, description="数据天数"),
@@ -94,7 +94,6 @@ async def get_rolling_attribution(
         from core.performance_attribution import PerformanceAttribution
         from core.strategies import STRATEGY_REGISTRY
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or len(df) < 60:
             return _json_response(False, error="数据不足")
@@ -113,7 +112,7 @@ async def get_rolling_attribution(
 
         strat_rets = np.diff(strategy_returns) / np.where(strategy_returns[:-1] > 0, strategy_returns[:-1], 1)
         strat_rets = np.where(np.isfinite(strat_rets), strat_rets, 0)
-        bench_close = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
+        bench_close = pd.to_numeric(df["close"], errors="coerce").fillna(0).values.astype(float)
         if len(bench_close) < 2:
             return _json_response(False, error="基准数据不足")
         bench_rets = np.diff(bench_close) / np.where(bench_close[:-1] > 0, bench_close[:-1], 1)
@@ -136,7 +135,7 @@ async def get_rolling_attribution(
 
 @router.get("/backtest/rolling-metrics")
 async def get_rolling_risk_metrics(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query(..., description="股票代码"),
     strategy: str = Query("dual_ma", description="策略名称"),
     period: int = Query(250, ge=120, le=500, description="数据天数"),
@@ -149,7 +148,6 @@ async def get_rolling_risk_metrics(
         from core.performance_attribution import PerformanceAttribution
         from core.strategies import STRATEGY_REGISTRY
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or len(df) < 60:
             return _json_response(False, error="数据不足")
@@ -228,7 +226,7 @@ async def export_backtest_results(
 @router.post("/backtest/multi-symbol")
 @rate_limiter(max_calls=5, time_window=60.0)
 async def run_multi_symbol_backtest(
-    request: Request,
+    fetcher: FetcherDep,
     body: MultiSymbolBacktestRequest,
 ):
     try:
@@ -236,7 +234,6 @@ async def run_multi_symbol_backtest(
         if body.position_method not in valid_methods:
             return _json_response(False, error=f"position_method must be one of {valid_methods}")
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         data_by_symbol: dict[str, Any] = {}
         for sym in body.symbols:
             df = await fetcher.get_history(sym, "3mo", "daily", "qfq")
@@ -271,12 +268,12 @@ async def run_multi_symbol_backtest(
 async def run_advanced_backtest(
     request: Request,
     body: BacktestAdvancedRequest,
+    fetcher: FetcherDep,
 ):
     try:
         from core.backtest import BacktestEngine, BacktestResult
         from core.backtest import run_backtest as run_bt
         effective_strategy = body.strategy_name or body.strategy_type
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
         result = await asyncio.to_thread(
             run_bt,
@@ -356,14 +353,13 @@ async def run_advanced_backtest(
 @router.post("/backtest/optimize")
 @rate_limiter(max_calls=5, time_window=60.0)
 async def optimize_strategy(
-    request: Request,
+    fetcher: FetcherDep,
     body: BacktestOptimizeRequest,
 ):
     try:
         from core.backtest import grid_search_params
         if body.strategy_name not in STRATEGY_REGISTRY:
             return _json_response(False, error=f"未知策略: {body.strategy_name}")
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(body.symbol, "all", "daily", "qfq")
         if df.empty:
             return _json_response(False, error="无历史数据")
@@ -595,33 +591,30 @@ async def stream_backtest_result(job_id: str):
 
 @router.get("/backtest/walk-forward")
 async def get_walk_forward_analysis(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query(..., description="股票代码"),
     strategy: str = Query("dual_ma", description="策略名称"),
-    n_splits: int = Query(5, ge=3, le=10, description="分割数"),
-    period: int = Query(250, ge=120, le=500, description="数据天数"),
+    is_window: int = Query(120, ge=60, le=500, description="样本内窗口"),
+    oos_window: int = Query(30, ge=10, le=120, description="样本外窗口"),
+    anchored: bool = Query(False, description="是否锚定"),
 ):
-    """Walk-Forward滚动优化分析"""
     try:
         from core.backtest import BacktestEngine
         from core.strategies import STRATEGY_REGISTRY
-        from core.walk_forward import (
-            WalkForwardConfig,
-            calc_overfitting_score,
-            generate_walk_forward_splits,
-        )
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or len(df) < 120:
             return _json_response(False, error="数据不足，至少需要120个交易日")
 
-        df = df.tail(period)
+        df = df.tail(is_window + oos_window)
         strategy_cls = STRATEGY_REGISTRY.get(strategy)
         if strategy_cls is None:
             available = list(set(STRATEGY_REGISTRY.keys()))[:10]
             return _json_response(False, error=f"未知策略: {strategy}，可用: {available}")
 
+        from core.walk_forward import WalkForwardConfig, calc_overfitting_score, generate_walk_forward_splits
+
+        n_splits = max(1, len(df) // (is_window + oos_window))
         config = WalkForwardConfig(n_splits=n_splits)
         splits = generate_walk_forward_splits(len(df), config)
         engine = BacktestEngine(initial_capital=1000000)
@@ -696,7 +689,7 @@ async def get_walk_forward_analysis(
 
 @router.get("/backtest/sensitivity")
 async def get_strategy_sensitivity(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Query(..., description="股票代码"),
     strategy: str = Query("dual_ma", description="策略名称"),
     param: str = Query("short_window", description="参数名"),
@@ -708,7 +701,6 @@ async def get_strategy_sensitivity(
         from core.backtest import BacktestEngine
         from core.strategies import STRATEGY_REGISTRY
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or len(df) < 60:
             return _json_response(False, error="数据不足")

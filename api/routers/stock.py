@@ -3,21 +3,23 @@ import logging
 import time
 from datetime import datetime
 
+import numpy as np
+import pandas as pd
 from fastapi import APIRouter, Path, Query, Request
 from fastapi.responses import StreamingResponse
 
 from api.connection_manager import cache_response
+from api.dependencies import FetcherDep
 from api.utils import json_response as _json_response
+from api.utils import period_to_history as _period_to_history
 from api.utils import rate_limiter, safe_error
-from core.data_fetcher import SmartDataFetcher
-from core.indicators import calc_all_indicators
+from core.indicators import IndicatorAnalysis, KLinePatternRecognizer, TechnicalIndicators, calc_all_indicators
 from core.market_detector import MarketDetector
-
-import numpy as np
-import pandas as pd
-
-from core.indicators import IndicatorAnalysis, KLinePatternRecognizer, TechnicalIndicators
 from core.strategies import CompositeStrategy
+
+
+def _clean_symbol(symbol: str) -> str:
+    return symbol.split('.')[0] if '.' in symbol else symbol
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -52,15 +54,15 @@ _init_local_caches()
 
 
 @router.get("/stock/realtime/{symbol}")
-async def get_stock_realtime(request: Request, symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$")):
+async def get_stock_realtime(fetcher: FetcherDep, symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$")):
     try:
-        cached = _rt_cache.get(symbol)
+        clean_symbol = _clean_symbol(symbol)
+        cached = _rt_cache.get(clean_symbol)
         if cached is not None:
             return _json_response(True, data=cached, cached=True)
-        fetcher: SmartDataFetcher = request.app.state.fetcher
-        data = await fetcher.get_realtime(symbol)
+        data = await fetcher.get_realtime(clean_symbol)
         if data:
-            _rt_cache.set(symbol, data)
+            _rt_cache.set(clean_symbol, data)
             return _json_response(True, data=data)
         return _json_response(False, error="未获取到数据")
     except Exception as e:
@@ -69,19 +71,19 @@ async def get_stock_realtime(request: Request, symbol: str = Path(..., min_lengt
 
 @router.get("/stock/history/{symbol}")
 async def get_stock_history(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
-    period: str = Query("1y", max_length=5),
+    period: str = Query("1y", max_length=5, pattern=r"^\d+[dmy]$"),
     kline_type: str = Query("daily", max_length=10, pattern=r"^(daily|weekly|monthly)$"),
     adjust: str = Query("", max_length=5),
 ):
     try:
-        cache_key = "%s:%s:%s:%s" % (symbol, period, kline_type, adjust)
+        clean_symbol = _clean_symbol(symbol)
+        cache_key = f"{clean_symbol}:{period}:{kline_type}:{adjust}"
         cached = _kline_cache.get(cache_key)
         if cached is not None:
             return _json_response(True, data=cached, cached=True)
-        fetcher: SmartDataFetcher = request.app.state.fetcher
-        df = await fetcher.get_history(symbol, period, kline_type, adjust)
+        df = await fetcher.get_history(clean_symbol, period, kline_type, adjust)
         if df.empty:
             return _json_response(False, error="无历史数据")
         result = df.to_dict("records")
@@ -93,9 +95,9 @@ async def get_stock_history(
 
 @router.get("/stock/history/export/{symbol}")
 async def export_stock_history(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
-    period: str = Query("1y", max_length=5),
+    period: str = Query("1y", max_length=5, pattern=r"^\d+[dmy]$"),
     kline_type: str = Query("daily", max_length=10, pattern=r"^(daily|weekly|monthly)$"),
     adjust: str = Query("", max_length=5),
     format: str = Query("csv", pattern=r"^(csv|json)$"),
@@ -104,12 +106,12 @@ async def export_stock_history(
         import io
         import json as json_lib
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
-        df = await fetcher.get_history(symbol, period, kline_type, adjust)
+        clean_symbol = _clean_symbol(symbol)
+        df = await fetcher.get_history(clean_symbol, period, kline_type, adjust)
         if df.empty:
             return _json_response(False, error="无历史数据")
 
-        filename = f"{symbol}_{period}_{kline_type}_{adjust if adjust else 'none'}.{format}"
+        filename = f"{clean_symbol}_{period}_{kline_type}_{adjust if adjust else 'none'}.{format}"
 
         if format == "csv":
             output = io.StringIO()
@@ -134,11 +136,11 @@ async def export_stock_history(
 
 @router.get("/stock/fundamentals/{symbol}")
 @cache_response(3600)
-async def get_stock_fundamentals(request: Request, symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$")):
+async def get_stock_fundamentals(fetcher: FetcherDep, symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$")):
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
-        market = MarketDetector.detect(symbol)
-        data = await fetcher.get_fundamentals(symbol, market)
+        clean_symbol = _clean_symbol(symbol)
+        market = MarketDetector.detect(clean_symbol)
+        data = await fetcher.get_fundamentals(clean_symbol, market)
         if data:
             return _json_response(True, data=data)
         return _json_response(False, error="无基本面数据")
@@ -148,18 +150,18 @@ async def get_stock_fundamentals(request: Request, symbol: str = Path(..., min_l
 
 @router.get("/stock/indicators/{symbol}")
 async def get_stock_indicators(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
-    period: str = Query("1y", max_length=5),
+    period: str = Query("1y", max_length=5, pattern=r"^\d+[dmy]$"),
     kline_type: str = Query("daily"),
 ):
     try:
-        cache_key = "ind:%s:%s:%s" % (symbol, period, kline_type)
+        clean_symbol = _clean_symbol(symbol)
+        cache_key = f"ind:{clean_symbol}:{period}:{kline_type}"
         cached = _indicator_api_cache.get(cache_key)
         if cached is not None:
             return _json_response(True, data=cached, cached=True)
-        fetcher: SmartDataFetcher = request.app.state.fetcher
-        df = await fetcher.get_history(symbol, period, kline_type)
+        df = await fetcher.get_history(clean_symbol, period, kline_type)
         if df.empty or len(df) < 30:
             return _json_response(False, error="数据不足")
         kline_data = df.to_dict("records")
@@ -171,24 +173,15 @@ async def get_stock_indicators(
         return _json_response(False, error=safe_error(e))
 
 
-def _period_to_history(period: str) -> str:
-    period = (period or "1y").lower()
-    if period in {"3m", "6m"}:
-        return "1y"
-    if period in {"3y", "5y", "all"}:
-        return "all"
-    return "1y"
-
-
 @router.get("/stock/analysis/{symbol}")
-async def get_deep_analysis(request: Request, symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"), period: str = Query("1y", max_length=5)):
+async def get_deep_analysis(fetcher: FetcherDep, symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"), period: str = Query("1y", max_length=5, pattern=r"^\d+[dmy]$")):
     try:
-        cache_key = "analysis:%s:%s" % (symbol, period)
+        clean_symbol = _clean_symbol(symbol)
+        cache_key = f"analysis:{clean_symbol}:{period}"
         cached = _analysis_cache.get(cache_key)
         if cached is not None:
             return _json_response(True, data=cached, cached=True)
-        fetcher: SmartDataFetcher = request.app.state.fetcher
-        df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
+        df = await fetcher.get_history(clean_symbol, _period_to_history(period), "daily", "qfq")
         if df.empty or len(df) < 60:
             return _json_response(False, error="数据不足，至少需要60个交易日")
 
@@ -196,7 +189,7 @@ async def get_deep_analysis(request: Request, symbol: str = Path(..., min_length
         c = df["close"].astype(float)
         h = df["high"].astype(float)
         low = df["low"].astype(float)
-        vol = df["volume"].astype(float) if "volume" in df.columns else None
+        df["volume"].astype(float) if "volume" in df.columns else None
         indicators = TechnicalIndicators.compute_all(df, symbol=symbol, period=period)
         ma = indicators.get("ma", {})
         ma20 = ma.get(20, [])
@@ -266,14 +259,14 @@ async def get_deep_analysis(request: Request, symbol: str = Path(..., min_length
 
 @router.get("/stock/correlation/{symbol}")
 async def get_correlation_analysis(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
     benchmark: str = Query("sh000300", max_length=20),
-    period: str = Query("1y"),
+    period: str = Query("1y", max_length=5, pattern=r"^\d+[dmy]$"),
 ):
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
-        df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
+        clean_symbol = _clean_symbol(symbol)
+        df = await fetcher.get_history(clean_symbol, _period_to_history(period), "daily", "qfq")
         bench_df = await fetcher.get_history(benchmark, _period_to_history(period), "daily", "qfq")
         if bench_df is None or bench_df.empty:
             try:
@@ -331,11 +324,11 @@ async def get_correlation_analysis(
 
 @router.get("/stock/prediction/{symbol}")
 @cache_response(120)
-async def get_stock_prediction(request: Request, symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"), period: str = Query("1y", max_length=5)):
+async def get_stock_prediction(fetcher: FetcherDep, symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"), period: str = Query("1y", max_length=5, pattern=r"^\d+[dmy]$")):
     """AI预测接口 - 基于技术指标和统计模型"""
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
-        df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
+        clean_symbol = _clean_symbol(symbol)
+        df = await fetcher.get_history(clean_symbol, _period_to_history(period), "daily", "qfq")
         if df.empty or len(df) < 60:
             return _json_response(False, error="数据不足")
         df = df.tail(260).copy().reset_index(drop=True)
@@ -394,15 +387,15 @@ async def get_stock_prediction(request: Request, symbol: str = Path(..., min_len
 
 @router.get("/stock/signals/{symbol}")
 async def get_stock_signals(
-    request: Request,
+    fetcher: FetcherDep,
     symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
-    period: str = Query("1y", max_length=5),
+    period: str = Query("1y", max_length=5, pattern=r"^\d+[dmy]$"),
     strategy: str = Query("all", max_length=30),
 ):
     """获取股票策略信号历史 — 通过 on_bar() 统一入口"""
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
-        df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
+        clean_symbol = _clean_symbol(symbol)
+        df = await fetcher.get_history(clean_symbol, _period_to_history(period), "daily", "qfq")
         if df.empty or len(df) < 30:
             return _json_response(False, error="数据不足")
 
@@ -487,11 +480,11 @@ async def get_stock_signals(
 
 @router.get("/stock/ai_summary/{symbol}")
 @cache_response(300)
-async def get_stock_ai_summary(request: Request, symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"), period: str = Query("1y", max_length=5)):
+async def get_stock_ai_summary(fetcher: FetcherDep, symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"), period: str = Query("1y", max_length=5, pattern=r"^\d+[dmy]$")):
     """AI分析摘要 - 基于规则引擎生成综合分析"""
     try:
-        fetcher: SmartDataFetcher = request.app.state.fetcher
-        df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
+        clean_symbol = _clean_symbol(symbol)
+        df = await fetcher.get_history(clean_symbol, _period_to_history(period), "daily", "qfq")
         if df is None or df.empty:
             return _json_response(False, error="无数据")
 
@@ -576,8 +569,8 @@ async def get_stock_ai_summary(request: Request, symbol: str = Path(..., min_len
 @router.post("/stock/batch/analysis")
 @rate_limiter(max_calls=10, time_window=60.0)
 async def batch_stock_analysis(
-    request: Request,
-    symbols: str = Query(..., description="逗号分隔的股票代码，最多20个"),
+    fetcher: FetcherDep,
+    symbols: str = Query(..., max_length=500, description="逗号分隔的股票代码，最多20个"),
     period: str = Query("6m", max_length=5, description="分析周期"),
 ):
     """批量股票分析 — 一次调用返回多只股票的关键指标摘要"""
@@ -587,7 +580,6 @@ async def batch_stock_analysis(
             return _json_response(False, error="请提供股票代码")
         symbol_list = symbol_list[:20]
 
-        fetcher: SmartDataFetcher = request.app.state.fetcher
         history_map = await fetcher.get_history_batch(
             symbol_list, _period_to_history(period), "daily", "qfq"
         )
@@ -674,6 +666,21 @@ async def batch_stock_analysis(
         })
     except Exception as e:
         logger.error("Batch analysis error: %s", e)
+        return _json_response(False, error=safe_error(e))
+
+
+@router.get("/stock/orderbook/{symbol}")
+async def get_stock_orderbook(fetcher: FetcherDep, symbol: str = Path(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$")):
+    """获取股票委托簿（基于实时数据模拟盘口深度）"""
+    try:
+        clean_symbol = _clean_symbol(symbol)
+        realtime_data = await fetcher.get_realtime(clean_symbol)
+        if not realtime_data or realtime_data.get("price", 0) <= 0:
+            return _json_response(False, error="未获取到实时数据")
+        orderbook = fetcher.simulate_level2_from_daily(clean_symbol, realtime_data)
+        return _json_response(True, data=orderbook)
+    except Exception as e:
+        logger.error("Orderbook error for %s: %s", symbol, e, exc_info=True)
         return _json_response(False, error=safe_error(e))
 
 

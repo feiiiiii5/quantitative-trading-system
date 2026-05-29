@@ -311,6 +311,94 @@ const BT_TH_RIGHT: React.CSSProperties = {
   ...BT_TH, textAlign: 'right',
 };
 
+const BacktestSummaryCards = memo(function BacktestSummaryCards() {
+  const { data: historyData } = useBacktestHistory();
+  const history = Array.isArray(historyData) ? historyData : [];
+
+  const stats = useMemo(() => {
+    if (history.length === 0) return null;
+    const returns = history.map(h => h.total_return);
+    const sharpes = history.map(h => h.sharpe_ratio);
+    const drawdowns = history.map(h => h.max_drawdown);
+    const wins = returns.filter(r => r > 0).length;
+    return {
+      totalRuns: history.length,
+      avgReturn: returns.reduce((a, b) => a + b, 0) / returns.length,
+      bestReturn: Math.max(...returns),
+      worstReturn: Math.min(...returns),
+      avgSharpe: sharpes.reduce((a, b) => a + b, 0) / sharpes.length,
+      avgDrawdown: drawdowns.reduce((a, b) => a + b, 0) / drawdowns.length,
+      winRate: wins / returns.length,
+    };
+  }, [history]);
+
+  if (!stats) return null;
+
+  const cardStyle: React.CSSProperties = {
+    background: 'var(--bg-elevated, rgba(255,255,255,0.04))',
+    borderRadius: 8,
+    padding: '10px 14px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    flex: '1 1 0',
+    minWidth: 0,
+  };
+
+  const labelStyle: React.CSSProperties = {
+    fontSize: 10,
+    color: 'var(--label-tertiary, rgba(255,255,255,0.4))',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.06em',
+    fontFamily: 'var(--font-mono)',
+  };
+
+  const valueStyle: React.CSSProperties = {
+    fontSize: 18,
+    fontWeight: 600,
+    fontFamily: 'var(--font-mono)',
+  };
+
+  return (
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <div style={cardStyle}>
+        <span style={labelStyle}>总回测</span>
+        <span style={{ ...valueStyle, color: 'var(--accent, #6C5CE7)' }}>{stats.totalRuns}</span>
+      </div>
+      <div style={cardStyle}>
+        <span style={labelStyle}>平均收益</span>
+        <span style={{ ...valueStyle, color: stats.avgReturn >= 0 ? '#FF1744' : '#00C853' }}>
+          {stats.avgReturn >= 0 ? '+' : ''}{(stats.avgReturn * 100).toFixed(1)}%
+        </span>
+      </div>
+      <div style={cardStyle}>
+        <span style={labelStyle}>最佳收益</span>
+        <span style={{ ...valueStyle, color: stats.bestReturn >= 0 ? '#FF1744' : '#00C853' }}>
+          {stats.bestReturn >= 0 ? '+' : ''}{(stats.bestReturn * 100).toFixed(1)}%
+        </span>
+      </div>
+      <div style={cardStyle}>
+        <span style={labelStyle}>平均夏普</span>
+        <span style={{ ...valueStyle, color: stats.avgSharpe >= 1 ? '#00C853' : stats.avgSharpe >= 0.5 ? '#FF9100' : '#FF1744' }}>
+          {stats.avgSharpe.toFixed(2)}
+        </span>
+      </div>
+      <div style={cardStyle}>
+        <span style={labelStyle}>平均回撤</span>
+        <span style={{ ...valueStyle, color: '#00C853' }}>
+          {(stats.avgDrawdown * 100).toFixed(1)}%
+        </span>
+      </div>
+      <div style={cardStyle}>
+        <span style={labelStyle}>胜率</span>
+        <span style={{ ...valueStyle, color: stats.winRate >= 0.5 ? '#00C853' : '#FF1744' }}>
+          {(stats.winRate * 100).toFixed(0)}%
+        </span>
+      </div>
+    </div>
+  );
+});
+
 const BacktestHistoryPanel = memo(function BacktestHistoryPanel() {
   const { data: historyData, isLoading: loading, isError: error } = useBacktestHistory();
   const history = Array.isArray(historyData) ? historyData : [];
@@ -1648,7 +1736,14 @@ export function StrategyPage() {
         ) : factors ? (
           factorTab === 'registry' ? <FactorRegistryPanel factors={factors} /> :
           factorTab === 'alpha' ? <AlphaFactorPanel /> :
-          factorTab === 'history' ? <BacktestHistoryPanel /> : null
+          factorTab === 'history' ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, height: '100%' }}>
+              <BacktestSummaryCards />
+              <div style={{ flex: 1, minHeight: 0 }}>
+                <BacktestHistoryPanel />
+              </div>
+            </div>
+          ) : null
         ) : (
           <EmptyState title="数据加载中" description="正在获取因子和策略数据..." size="md" />
         )}

@@ -8,11 +8,48 @@ import { useTerminalStore } from '@/stores/terminal';
 import { useRiskStore } from '@/stores/risk';
 import { useTradingHistory } from '@/hooks/queries';
 import { usePnLWebSocket } from '@/hooks/usePnLWebSocket';
-import { apiPost } from '@/api/client';
+import { apiGet, apiPost } from '@/api/client';
 import { formatPrice, formatVolume, formatAmount } from '@/utils/format';
 import type { OrderBookEntry, TradeRecord } from '@/types';
 
-const MOCK_EXECUTION_STATS = { vwap: 12.48, twap: 12.45, avgSlippage: 0.03, fillRate: 94.2 };
+function useExecutionStats() {
+  const [stats, setStats] = useState<{ vwap: number; twap: number; avgSlippage: number; fillRate: number } | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    apiGet<{
+      total_trades?: number;
+      win_rate?: number;
+      sharpe_ratio?: number;
+      avg_win?: number;
+      avg_loss?: number;
+    }>('/trading/analytics')
+      .then((data: { total_trades?: number; win_rate?: number; sharpe_ratio?: number; avg_win?: number; avg_loss?: number }) => {
+        if (cancelled) return;
+        const totalTrades = data?.total_trades ?? 0;
+        const winRate = (data?.win_rate ?? 0) * 100;
+        const sharpe = data?.sharpe_ratio ?? 0;
+        const avgWin = data?.avg_win ?? 0;
+        setStats({
+          vwap: sharpe > 0 ? sharpe : 0,
+          twap: totalTrades > 0 ? totalTrades : 0,
+          avgSlippage: avgWin > 0 ? avgWin : 0,
+          fillRate: winRate > 0 ? winRate : 0,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setStats(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  return { stats, loading };
+}
 
 const panelStyle: React.CSSProperties = {
   background: 'var(--bg-glass)',
@@ -230,12 +267,31 @@ const TradeQueue = memo(function TradeQueue({ trades }: { trades: TradeRecord[] 
 });
 
 const ExecutionQualityPanel = memo(function ExecutionQualityPanel() {
-  const stats = MOCK_EXECUTION_STATS;
-  const metrics = [
-    { label: 'VWAP', value: formatPrice(stats.vwap) },
-    { label: 'TWAP', value: formatPrice(stats.twap) },
-    { label: 'AVG SLIPPAGE', value: `${stats.avgSlippage.toFixed(2)}%` },
-    { label: 'FILL RATE', value: `${stats.fillRate.toFixed(1)}%` },
+  const { stats, loading } = useExecutionStats();
+
+  if (loading) {
+    return (
+      <div style={{ padding: '16px 20px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} style={{ background: 'var(--bg-overlay)', borderRadius: 'var(--r-md)', padding: '14px 16px', height: 60 }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase', color: 'var(--label-tertiary)', letterSpacing: '0.06em', marginBottom: 6 }}>—</div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 18, color: 'var(--label-quaternary)', fontWeight: 600 }}>—</div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  const metrics = stats ? [
+    { label: 'SHARPE', value: stats.vwap.toFixed(2) },
+    { label: 'TRADES', value: String(stats.twap) },
+    { label: 'AVG WIN', value: `${stats.avgSlippage.toFixed(2)}` },
+    { label: 'WIN RATE', value: `${stats.fillRate.toFixed(1)}%` },
+  ] : [
+    { label: 'SHARPE', value: '—' },
+    { label: 'TRADES', value: '—' },
+    { label: 'AVG WIN', value: '—' },
+    { label: 'WIN RATE', value: '—' },
   ];
 
   return (

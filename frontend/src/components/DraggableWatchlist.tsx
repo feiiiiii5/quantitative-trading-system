@@ -1,9 +1,10 @@
-import { useState, useCallback, memo } from 'react';
+import { useState, useCallback, useMemo, memo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWatchlistStore } from '@/stores/watchlist';
 import { useMarketStore } from '@/stores/market';
 import { formatPrice, formatPercent, priceColor } from '@/utils/format';
 import { Sparkline } from '@/components/charts/Sparkline';
+import type { StockQuote } from '@/types';
 
 export const DraggableWatchlist = memo(function DraggableWatchlist() {
   const symbols = useWatchlistStore(s => s.symbols);
@@ -23,13 +24,19 @@ export const DraggableWatchlist = memo(function DraggableWatchlist() {
     setOverIdx(null);
   }, [dragIdx, symbols, reorder]);
 
-  const stockMap = new Map(stocks.map(s => [s.symbol, s]));
+  const getSparklineData = useCallback((s: StockQuote): number[] => {
+    const pts = [s.last_close, s.open, s.low, s.high, s.price];
+    return pts.filter((v): v is number => v != null);
+  }, []);
+
+  const stockMap = useMemo(() => new Map(stocks.map(s => [s.symbol, s])), [stocks]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
       {symbols.map((symbol, i) => {
         const stock = stockMap.get(symbol);
         const pct = stock?.change_pct ?? 0;
+        const sparkData = stock ? getSparklineData(stock) : [];
         return (
           <div
             key={symbol}
@@ -57,9 +64,9 @@ export const DraggableWatchlist = memo(function DraggableWatchlist() {
             <span style={{ flex: 1, color: 'var(--label-secondary)', fontFamily: 'var(--font-sans)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {stock?.name ?? '—'}
             </span>
-            {stock && (
+            {stock && sparkData.length >= 2 && (
               <Sparkline
-                data={[]}
+                data={sparkData}
                 width={40}
                 height={14}
                 color={priceColor(pct)}

@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import time
-from typing import Dict, Set
 
 import orjson
 from fastapi import WebSocket
@@ -15,11 +14,11 @@ class OptimizedWSManager:
     SEND_TIMEOUT = 1.0
 
     def __init__(self):
-        self._channels: Dict[str, Set[WebSocket]] = {}
-        self._ws_channels: Dict[WebSocket, Set[str]] = {}
-        self._connections: Set[WebSocket] = set()
-        self._last_active: Dict[WebSocket, float] = {}
-        self._last_sent: Dict[str, Dict] = {}
+        self._channels: dict[str, set[WebSocket]] = {}
+        self._ws_channels: dict[WebSocket, set[str]] = {}
+        self._connections: set[WebSocket] = set()
+        self._last_active: dict[WebSocket, float] = {}
+        self._last_sent: dict[str, dict] = {}
         self._lock = asyncio.Lock()
 
     async def connect(self, ws: WebSocket, channels: list[str] | None = None) -> bool:
@@ -90,7 +89,7 @@ class OptimizedWSManager:
             "data": diff,
             "ts": int(time.time() * 1000),
         }).decode("utf-8")
-        dead: Set[WebSocket] = set()
+        dead: set[WebSocket] = set()
         tasks = [self._safe_send(ws, payload) for ws in subscribers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for ws, result in zip(subscribers, results, strict=True):
@@ -112,7 +111,7 @@ class OptimizedWSManager:
             "data": data,
             "ts": int(time.time() * 1000),
         }).decode("utf-8")
-        dead: Set[WebSocket] = set()
+        dead: set[WebSocket] = set()
         tasks = [self._safe_send(ws, payload) for ws in subscribers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for ws, result in zip(subscribers, results, strict=True):

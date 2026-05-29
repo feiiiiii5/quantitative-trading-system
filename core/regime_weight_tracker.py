@@ -58,7 +58,7 @@ class RegimeWeightTracker:
         if n == 0:
             return {}
         equal = 1.0 / n
-        weights = {s: equal for s in self._strategy_names}
+        weights = dict.fromkeys(self._strategy_names, equal)
 
         if bias == "momentum":
             momentum_names = [s for s in self._strategy_names if any(k in s.lower() for k in ("momentum", "trend", "breakout", "supertrend"))]

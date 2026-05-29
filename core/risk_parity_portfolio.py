@@ -206,10 +206,7 @@ class ICWeightedRiskParity:
 
         adjusted = base_weights * ic_weights
         total = adjusted.sum()
-        if total > 1e-12:
-            adjusted = adjusted / total
-        else:
-            adjusted = np.ones(n) / n
+        adjusted = adjusted / total if total > 1e-12 else np.ones(n) / n
 
         return adjusted
 

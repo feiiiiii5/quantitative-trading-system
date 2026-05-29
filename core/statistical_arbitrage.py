@@ -319,7 +319,7 @@ class PairMiningEngine:
 
                 if not result.is_cointegrated:
                     continue
-                if not (1.0 < result.half_life < 60.0):
+                if result.half_life is None or not (1.0 < result.half_life < 60.0):
                     continue
                 if result.hurst_exponent >= 0.5:
                     continue

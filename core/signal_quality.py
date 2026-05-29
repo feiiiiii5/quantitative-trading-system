@@ -88,7 +88,7 @@ def evaluate_signal_quality(
     if not result or not result.signals:
         return SignalQualityReport(strategy_name=strategy.name, symbol=symbol)
 
-    closes = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
+    closes = pd.to_numeric(df["close"], errors="coerce").fillna(0).values.astype(float)
     n = len(closes)
 
     forward_returns = np.zeros(n)

@@ -7,12 +7,14 @@ QuantCore API路由模块
 """
 import threading  # noqa: F401 – expected by tests
 
+from fastapi import APIRouter
+
 from api.connection_manager import (  # noqa: F401 – re-exported for main.py & tests
-    ConnectionManager,
-    _TTLCache,
     _WS_AUTH_ENABLED,
+    ConnectionManager,
     _is_trading_hours,
     _manager,
+    _TTLCache,
     _ws_authenticate,
     push_alert_event,
     push_portfolio_metrics,
@@ -39,8 +41,6 @@ from api.routers.system import router as _system_router
 from api.routers.trading import router as _trading_router
 from api.routers.watchlist import router as _watchlist_router
 from api.routers.websocket import router as _websocket_router
-
-from fastapi import APIRouter
 
 router = APIRouter()
 

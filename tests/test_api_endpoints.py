@@ -722,8 +722,12 @@ class TestBareExceptRegression:
         assert "memory_mb" in inner or "uptime_seconds" in inner
 
     def test_correlation_with_invalid_symbol_returns_graceful(self, client):
-        resp = client.get("/api/stock/correlation/INVALID999", params={"period": "1mo"})
+        resp = client.get("/api/stock/correlation/INVALID999", params={"period": "1m"})
         assert resp.status_code in (200, 404, 500)
+
+    def test_correlation_with_invalid_period_returns_422(self, client):
+        resp = client.get("/api/stock/correlation/000001", params={"period": "1mo"})
+        assert resp.status_code == 422
 
 
 class TestTCAAPI:

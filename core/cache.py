@@ -56,10 +56,10 @@ class TickCache:
         self._ttl = ttl
         self._lock = threading.Lock()
 
-    def _schedule_eviction(self, key: str, delay: float) -> None:
+    def _schedule_eviction(self, key: str, delay: float, expire_at: float) -> None:
         try:
             loop = asyncio.get_running_loop()
-            loop.call_later(delay, self._evict_key, key)
+            loop.call_later(delay, self._evict_key, key, expire_at)
         except RuntimeError:
             pass
 
@@ -82,11 +82,13 @@ class TickCache:
                 oldest_key = min(self._cache, key=lambda k: self._cache[k][1])
                 del self._cache[oldest_key]
             self._cache[key] = (value, expire_at)
-        self._schedule_eviction(key, effective_ttl + 0.1)
+        self._schedule_eviction(key, effective_ttl + 0.1, expire_at)
 
-    def _evict_key(self, key: str) -> None:
+    def _evict_key(self, key: str, scheduled_expire_at: float) -> None:
         with self._lock:
-            self._cache.pop(key, None)
+            entry = self._cache.get(key)
+            if entry is not None and entry[1] == scheduled_expire_at:
+                del self._cache[key]
 
     def __len__(self) -> int:
         with self._lock:
